@@ -1,0 +1,9 @@
+-- BigQuery DDL for raw_dwh.VI_L_TVD_LEISTUNGSKLASSE
+-- Replaces source Oracle table DWH$VI_L_TVD_LEISTUNGSKLASSE for job EXIS_SD_APT_NNA_VOIC
+
+CREATE TABLE IF NOT EXISTS `your-gcp-project-id.raw_dwh.VI_L_TVD_LEISTUNGSKLASSE` (
+    LEISTUNGSKLASSE_ID INT64 NOT NULL,
+    LEISTUNGSKLASSE_TEXT STRING,
+    LEISTUNGSKLASSEGR_ID INT64,
+    _LAST_MODIFIED_TS TIMESTAMP OPTIONS(description="Last modified timestamp for row tracking")
+);
