@@ -1,0 +1,47 @@
+#
+# Placeholder for Cloud Monitoring alerting policies for BERT_V_TA_DISC_ZUSGF.
+#
+# IMPORTANT: This file cannot be fully generated without specific requirements
+# for alerting conditions, thresholds, and notification channels.
+#
+# To replace legacy 'trap' error handling and DWMSG_MeldeFehler:
+# 1. Create alerting policies based on Cloud Logging metrics (e.g., the custom log metric defined above).
+# 2. Define notification channels (e.g., email, PagerDuty, Pub/Sub) for alerts.
+#
+# Example (conceptual, not runnable without specific project details):
+# ---
+# [
+#   {
+#     "displayName": "Alert on BERT_V_TA_DISC_ZUSGF DAG Failures",
+#     "combiner": "OR",
+#     "conditions": [
+#       {
+#         "displayName": "Condition: High error rate",
+#         "conditionThreshold": {
+#           "filter": "metric.type=\"logging.googleapis.com/user/bert_v_ta_disc_zusgf_errors\" AND resource.type=\"cloud_composer_environment\"",
+#           "aggregations": [
+#             {
+#               "alignmentPeriod": "300s",
+#               "perSeriesAligner": "ALIGN_RATE"
+#             }
+#           ],
+#           "comparison": "COMPARISON_GT",
+#           "duration": "600s",
+#           "thresholdValue": 0,
+#           "trigger": {
+#             "count": 1
+#           }
+#         }
+#       }
+#     ],
+#     "alertStrategy": {
+#       "autoClose": "604800s"
+#     },
+#     "notificationChannels": [
+#       "projects/<PROJECT_ID>/notificationChannels/<CHANNEL_ID_EMAIL>",
+#       "projects/<PROJECT_ID>/notificationChannels/<CHANNEL_ID_PAGERDUTY>"
+#     ],
+#     "enabled": true
+#   }
+# ]
+# ---
