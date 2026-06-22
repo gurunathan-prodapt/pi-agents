@@ -1,0 +1,44 @@
+# BigQuery SQL Transformation for DW.BERT_AUSD_V_TA_P_DISCOUNT_RR
+# Replaces: vobs/dw_source/isrpt/isbert/SQL/aktuell/aufbereitung/sql/d_ausd_v_ta_p_discount_rr.sql
+
+DECLARE v_datum STRING;
+
+SET v_datum = (
+  SELECT COALESCE(FORMAT_DATE('%Y%m%d', DATE(MAX(m.timecreated))), '19000101')
+  FROM `dw.dwtk_meldungen` m
+  WHERE m.job_kennung = 'BERT_DROP_TEMP_TABLE'
+);
+
+TRUNCATE TABLE `dw.ta_p_discount_rr`;
+
+INSERT INTO `dw.ta_p_discount_rr` (
+  cntrct_id,
+  discount_id,
+  disc_vector_ty,
+  cntrct_obj_version,
+  cntrct_template_id,
+  disc_invoice_item_id,
+  rabatt,
+  rabatthoehe,
+  rabattierte_rech_pos,
+  contract_number,
+  std_vertrag
+)
+SELECT
+  da.cntrct_id,
+  da.discount_id,
+  da.disc_vector_ty,
+  da.cntrct_obj_version,
+  da.cntrct_template_id,
+  da.disc_invoice_item_id,
+  da.rabatt,
+  da.rabatthoehe,
+  da.rabattierte_rech_pos,
+  c.contract_number,
+  ct.cds_description AS std_vertrag
+FROM `dw.ta_discount_rr` da
+JOIN `dw.ta_cntrct_crs` c
+  ON da.cntrct_id = c.cntrct_id
+ AND da.cntrct_obj_version = c.obj_version
+JOIN `dw.ta_cntrct_templ` ct
+  ON da.cntrct_template_id = ct.cntrct_template_id;

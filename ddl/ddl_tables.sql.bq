@@ -1,0 +1,54 @@
+# BigQuery DDLs for DW.BERT_AUSD_V_TA_P_DISCOUNT_RR
+# Based on schema inferred from source SQL logic.
+
+-- DDL for target table dw.ta_p_discount_rr
+-- Replaces: sof$ta_p_discount_rr (Oracle)
+CREATE TABLE IF NOT EXISTS `dw.ta_p_discount_rr` (
+  cntrct_id INT64,
+  discount_id INT64,
+  disc_vector_ty STRING,
+  cntrct_obj_version INT64,
+  cntrct_template_id INT64,
+  disc_invoice_item_id INT64,
+  rabatt NUMERIC,
+  rabatthoehe NUMERIC,
+  rabattierte_rech_pos NUMERIC,
+  contract_number STRING,
+  std_vertrag STRING
+);
+
+-- DDL for source table dw.dwtk_meldungen
+-- Replaces: isbert_schema.dwtk_meldungen (Oracle)
+CREATE TABLE IF NOT EXISTS `dw.dwtk_meldungen` (
+  timecreated TIMESTAMP,
+  job_kennung STRING
+);
+
+-- DDL for source table dw.ta_discount_rr
+-- Replaces: sof$ta_discount_rr (Oracle)
+CREATE TABLE IF NOT EXISTS `dw.ta_discount_rr` (
+  cntrct_id INT64,
+  discount_id INT64,
+  disc_vector_ty STRING,
+  cntrct_obj_version INT64,
+  cntrct_template_id INT64,
+  disc_invoice_item_id INT64,
+  rabatt NUMERIC,
+  rabatthoehe NUMERIC,
+  rabattierte_rech_pos NUMERIC
+);
+
+-- DDL for source table dw.ta_cntrct_crs
+-- Replaces: sof$ta_cntrct_crs (Oracle)
+CREATE TABLE IF NOT EXISTS `dw.ta_cntrct_crs` (
+  cntrct_id INT64,
+  obj_version INT64,
+  contract_number STRING
+);
+
+-- DDL for source table dw.ta_cntrct_templ
+-- Replaces: sof$ta_cntrct_templ (Oracle)
+CREATE TABLE IF NOT EXISTS `dw.ta_cntrct_templ` (
+  cntrct_template_id INT64,
+  cds_description STRING
+);
