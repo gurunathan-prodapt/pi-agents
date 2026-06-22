@@ -1,0 +1,1 @@
+ERROR: migration notes skipped for vobs/dw_source/isrpt/isbert/SQL/aktuell/aufbereitung/bin/k_ausd_v_ta_cntrct_crs.ksh — design unavailable.
