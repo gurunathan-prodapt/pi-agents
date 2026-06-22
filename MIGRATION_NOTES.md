@@ -1,0 +1,1 @@
+ERROR: migration notes skipped for vobs/dw_source/isrpt/isbert/SQL/aktuell/aufbereitung/bin/k_ausd_bp_ta_iccid_vertrag.ksh — design unavailable.
