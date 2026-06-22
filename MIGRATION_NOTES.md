@@ -1,0 +1,1 @@
+ERROR: migration notes skipped for vobs/dw_source/isrpt/isbert/SQL/aktuell/aufbereitung/bin/r_ausd_v_ta_barrier_zusgf.ksh — design unavailable.
