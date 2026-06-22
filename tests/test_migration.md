@@ -1,0 +1,1 @@
+ERROR: tests skipped for k_ausd_v_ta_inv_acc.ksh — design unavailable.
