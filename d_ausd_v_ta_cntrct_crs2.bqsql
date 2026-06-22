@@ -1,0 +1,29 @@
+-- Legacy Source: vobs/dw_source/isrpt/isbert/SQL/aktuell/aufbereitung/sql/d_ausd_v_ta_cntrct_crs2.sql
+-- Job: DW.BERT_AUSD_V_TA_CNTRCT_CRS2
+--
+-- This script contains the primary data manipulation logic for populating
+-- the ta_cntrct_crs2 table in BigQuery. It's a translation of the
+-- original Oracle SQL script, designed to be executed by an Airflow BigQueryOperator.
+
+INSERT INTO `{{ params.dwh_project_id }}.{{ params.dwh_dataset }}.ta_cntrct_crs2` (
+        cntrct_id, obj_version, contract_number, cntrct_template_id, cntrct_validity_id,
+        valid_from, com_per_ext_rea_cv, billcycle_id, vo_code, cntrct_start_date,
+        cntrct_st, cntrct_parent, cntrct_ty, cost_centre, cost_centre_user,
+        commitment_reference_date, order_number, rv_num)
+SELECT
+        c.cntrct_id, c.obj_version, c.contract_number, c.cntrct_template_id, c.cntrct_validity_id,
+        c.valid_from, c.com_per_ext_rea_cv, c.billcycle_id, c.vo_code, c.cntrct_start_date,
+        c.cntrct_st, c.cntrct_parent, c.cntrct_ty, c.cost_centre, c.cost_centre_user,
+        c.commitment_reference_date, c.order_number,
+        cr.contract_number AS RV_NUM
+   FROM
+        `{{ params.source_project_id }}.{{ params.source_dataset }}.ta_cntrct_crs` AS c
+        LEFT OUTER JOIN `{{ params.source_project_id }}.{{ params.source_dataset }}.ta_cntrct_crs` AS cr
+          ON c.cntrct_parent = cr.cntrct_id
+   WHERE
+        -- Original Oracle: cr.cntrct_ty (+) = 10 AND c.cntrct_ty <> 10
+        -- This means: if there's a match on cntrct_parent, cr.cntrct_ty must be 10.
+        -- If no match (due to LEFT OUTER JOIN), cr.cntrct_id is NULL, so cr.cntrct_ty is also NULL.
+        -- The condition (cr.cntrct_ty = 10 OR cr.cntrct_id IS NULL) correctly models this.
+        (cr.cntrct_ty = 10 OR cr.cntrct_id IS NULL)
+   AND  c.cntrct_ty <> 10;
