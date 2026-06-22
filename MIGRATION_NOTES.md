@@ -1,0 +1,1 @@
+ERROR: migration notes skipped for k_ausd_adressen.ksh — design unavailable.
