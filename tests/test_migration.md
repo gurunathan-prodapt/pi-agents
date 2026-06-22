@@ -1,0 +1,1 @@
+ERROR: tests skipped for BERT_V_TA_DISC_ZUSGF — design unavailable.
