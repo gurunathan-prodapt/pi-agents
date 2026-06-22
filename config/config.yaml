@@ -1,0 +1,36 @@
+# DW.BERT_AUSD_V_TA_CNTRCT_TEMPL - Configuration file
+# This file centralizes configuration parameters for the Airflow DAG and related scripts.
+
+gcp_project_id: "your-gcp-project-id"
+bigquery_dataset_control: "control"
+bigquery_dataset_metadata: "metadata"
+bigquery_dataset_staging: "staging"
+bigquery_dataset_curated: "curated"
+bigquery_dataset_audit: "audit"
+
+# Oracle Connection details (used by data_ingestion.py)
+oracle_conn_id: "oracle_carmen_db" # Airflow connection ID for Carmen DB
+
+# Target tables
+target_final_fact_table: "final_fact_table"
+
+# Source tables for staging
+source_cds_ta_cntrct_template: "cds$ta_cntrct_template"
+source_cds_ta_care_description: "cds$ta_care_description"
+
+# Metadata table for processing date
+metadata_dwtk_meldungen_table: "dwtk_meldungen"
+metadata_dwtk_meldungen_job_kennung: "BERT_DROP_TEMP_TABLE"
+
+# Airflow specific configurations
+airflow_schedule_interval: "0 1 * * *" # Example: daily at 1 AM UTC
+airflow_default_args:
+  owner: "airflow"
+  depends_on_past: False
+  email_on_failure: False
+  email_on_retry: False
+  retries: 1
+  retry_delay_seconds: 300 # 5 minutes
+
+# Notification settings
+notification_email: "your_email@example.com"
