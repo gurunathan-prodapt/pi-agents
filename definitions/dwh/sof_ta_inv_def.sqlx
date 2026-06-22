@@ -1,0 +1,87 @@
+config {
+  type: "table",
+  database: "project_id",
+  schema: "dwh",
+  name: "sof_ta_inv_def",
+  -- Dataform tables are typically full refreshes by default, which aligns with the
+  -- original Oracle script's TRUNCATE + INSERT pattern.
+  -- You can explicitly set 'on replace' if preferred for clarity:
+  -- on: {
+  --   action: "replace",
+  --   pre_operations: []
+  -- }
+}
+
+-- Transformed from vobs/dw_source/isrpt/isbert/SQL/aktuell/aufbereitung/sql/d_ausd_v_ta_inv_def.sql
+-- Legacy job: vobs/dw_source/isrpt/isbert/SQL/aktuell/aufbereitung/bin/r_ausd_v_ta_inv_def.ksh
+
+-- Define 'v_datum' using a compilation variable.
+-- In a real scenario, this would be passed from Airflow to Dataform
+-- as a compilation argument, e.g., --vars=v_datum=YYYYMMDD
+-- For local Dataform execution or testing, you might need to set a default or
+-- dynamically fetch it using a pre_operation if not provided by the orchestrator.
+-- For this migration, we assume Airflow computes and passes it.
+-- Placeholder value '19000101' will be used if `v_datum` is not set.
+-- Example of defining a compilation variable directly within Dataform for testing:
+-- var v_datum_compilation_var = dataform.projectConfig.vars.v_datum || "19000101";
+
+-- The actual BigQuery query
+SELECT
+        id.inv_definition_id,
+        id.acc_ref_id,
+        id.inv_pay_ty_cv,
+        id.inv_media_cv,
+        id.billcycle_id,
+        id.sales_tax_freed,
+        id.inv_cont_config_id,
+        d.cds_description AS rechn_inh_konfig_text
+FROM
+        ${ref("stg_carmen", "cds_ta_inv_definition")} AS id
+LEFT JOIN
+        ${ref("stg_carmen", "cds_ta_inv_cont_config")} AS icc
+ON
+        id.inv_cont_config_id  = icc.inv_cont_config_id
+LEFT JOIN
+        ${ref("stg_carmen", "cds_ta_care_description")} AS d
+ON
+        icc.cds_description_id = d.cds_description_id
+WHERE
+        id.insert_at <= PARSE_DATE('%Y%m%d', ${dataform.projectConfig.vars.v_datum || '19000101'})
+AND     (   id.modified_at IS NULL
+         OR id.modified_at > PARSE_DATE('%Y%m%d', ${dataform.projectConfig.vars.v_datum || '19000101'})     )
+AND     id.valid_from <= PARSE_DATE('%Y%m%d', ${dataform.projectConfig.vars.v_datum || '19000101'})
+AND     (   id.valid_to IS NULL
+         OR id.valid_to > PARSE_DATE('%Y%m%d', ${dataform.projectConfig.vars.v_datum || '19000101'})       )
+AND     id.is_production = 1
+-- Oracle (+) converted to LEFT JOIN implies the right-side conditions
+-- apply to the ON clause for columns that are part of the join key,
+-- but for non-join-key columns, they become WHERE clause filters.
+-- This complex Oracle outer join WHERE clause logic needs careful translation.
+-- For icc conditions with (+), they filter the rows *after* the join
+-- as if they were part of the WHERE clause if the outer joined table exists.
+-- The NVL logic for dates needs to be translated carefully.
+AND     COALESCE(icc.insert_at, PARSE_DATE('%Y%m%d', ${dataform.projectConfig.vars.v_datum || '19000101'}) + INTERVAL 1 DAY) <= PARSE_DATE('%Y%m%d', ${dataform.projectConfig.vars.v_datum || '19000101'})
+AND     COALESCE(icc.modified_at, PARSE_DATE('%Y%m%d', ${dataform.projectConfig.vars.v_datum || '19000101'}) + INTERVAL 1 DAY) > PARSE_DATE('%Y%m%d', ${dataform.projectConfig.vars.v_datum || '19000101'})
+AND     COALESCE(icc.valid_from, PARSE_DATE('%Y%m%d', ${dataform.projectConfig.vars.v_datum || '19000101'}) + INTERVAL 1 DAY) <= PARSE_DATE('%Y%m%d', ${dataform.projectConfig.vars.v_datum || '19000101'})
+AND     COALESCE(icc.valid_to, PARSE_DATE('%Y%m%d', ${dataform.projectConfig.vars.v_datum || '19000101'}) + INTERVAL 1 DAY) > PARSE_DATE('%Y%m%d', ${dataform.projectConfig.vars.v_datum || '19000101'})
+AND     COALESCE(icc.is_production, 1) = 1; -- Assuming default for is_production in outer join case is 1
+
+-- Note on Oracle (+) to BigQuery LEFT JOIN translation with WHERE clauses:
+-- Oracle's proprietary (+) syntax means that conditions applied to the outer-joined
+-- table in the WHERE clause behave differently than standard SQL.
+-- If a condition on the outer-joined table in the WHERE clause evaluates to FALSE or UNKNOWN,
+-- and the row originated from the outer join (i.e., the right side was NULL),
+-- the row is still included in the result.
+-- However, if the condition *explicitly* references a column from the outer-joined table
+-- and that column is NULL due to the outer join, the condition evaluates to NULL,
+-- and the row is excluded in standard SQL WHERE clauses.
+-- To replicate Oracle's (+) behavior precisely with conditions in WHERE,
+-- those conditions should generally be moved into the ON clause of the LEFT JOIN
+-- with appropriate OR (right_table.column IS NULL) logic.
+-- However, for the given Oracle query, conditions on `icc` after `id.inv_cont_config_id = icc.inv_cont_config_id (+)`
+-- are implicitly treated such that if `icc` is null, the condition becomes true
+-- when combined with `NVL` or if the comparison is with NULL.
+-- The provided translation attempts to maintain the intent of filtering based on the date and `is_production` flags,
+-- using COALESCE with a date outside the range or default `is_production` to simulate Oracle's `(+)` behavior
+-- when the right side of the join is null for these specific conditions.
+-- This might require further validation against actual data behavior.

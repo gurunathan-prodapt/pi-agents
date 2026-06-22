@@ -1,0 +1,10 @@
+config {
+  type: "declare",
+  database: "project_id",
+  schema: "stg_carmen",
+  name: "cds_ta_inv_cont_config"
+}
+
+-- Declare the existence of the cds_ta_inv_cont_config staging table.
+-- This table is assumed to be ingested from the source system by an external process.
+-- No SQL is generated for this model, it merely registers the table with Dataform.
