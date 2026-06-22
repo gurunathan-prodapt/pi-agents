@@ -1,0 +1,10 @@
+-- DDL for job_error_log table
+-- Legacy job: vobs/dw_source/isrpt/isbert/SQL/aktuell/aufbereitung/bin/k_ausd_v_ta_cntrct_templ.ksh
+
+CREATE TABLE IF NOT EXISTS project.dataset.job_error_log (
+    job_kennung STRING NOT NULL OPTIONS(description="Identifier for the job, e.g., from p_JobKennung"),
+    eintragsnr INT64 NOT NULL OPTIONS(description="Entry number for the job, e.g., from p_EintragsNr"),
+    error_time TIMESTAMP NOT NULL OPTIONS(description="Timestamp when the error occurred"),
+    error_message STRING NOT NULL OPTIONS(description="Detailed error message"),
+    sql_state STRING OPTIONS(description="SQLSTATE code if applicable")
+);

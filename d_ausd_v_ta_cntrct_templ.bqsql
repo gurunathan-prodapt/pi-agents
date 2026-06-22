@@ -1,0 +1,38 @@
+-- Migrated from Oracle SQL script: d_ausd_v_ta_cntrct_templ.sql
+-- Legacy job: vobs/dw_source/isrpt/isbert/SQL/aktuell/aufbereitung/bin/k_ausd_v_ta_cntrct_templ.ksh
+
+-- This script performs the core data manipulation for the ta_cntrct_templ table.
+-- It's intended to be executed within a BigQuery Stored Procedure.
+
+-- Variable for effective date, to be set by the calling stored procedure.
+-- For example: DECLARE v_datum_bq STRING; SET v_datum_bq = '20030109';
+
+-- Truncate the target table before insertion.
+-- This assumes sof$ta_cntrct_templ maps to project.dataset.ta_cntrct_templ
+TRUNCATE TABLE project.dataset.ta_cntrct_templ;
+
+-- Insert data into the target table based on filtered source tables.
+-- Original Oracle DB-link alias '&v_carmen' is removed as not applicable in BigQuery.
+-- Original TO_DATE('&v_datum','YYYYMMDD') is replaced by PARSE_DATE('%Y%m%d', v_datum_bq)
+-- assuming v_datum_bq is a STRING variable holding the date in YYYYMMDD format.
+INSERT INTO project.dataset.ta_cntrct_templ
+(CNTRCT_TEMPLATE_ID,
+  CDS_DESCRIPTION_ID,
+  CDS_DESCRIPTION )
+SELECT
+        ct.cntrct_template_id,
+        ct.cds_description_id,
+        cd.cds_description
+FROM
+        project.dataset.cds_ta_cntrct_template     ct
+JOIN    project.dataset.cds_ta_care_description    cd
+ON      ct.cds_description_id    = cd.cds_description_id
+WHERE
+        ct.insert_at <= PARSE_DATE('%Y%m%d', v_datum_bq)
+AND     (   ct.modified_at IS NULL
+         OR ct.modified_at > PARSE_DATE('%Y%m%d', v_datum_bq)     )
+AND     ct.valid_from <= PARSE_DATE('%Y%m%d', v_datum_bq)
+AND     (   ct.valid_to IS NULL
+         OR ct.valid_to > PARSE_DATE('%Y%m%d', v_datum_bq)       )
+AND     ct.is_production = 1
+AND     cd.language = 1;
