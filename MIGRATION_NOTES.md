@@ -1,0 +1,1 @@
+ERROR: migration notes skipped for EXIS_SD_APT_NNA_DATA — design unavailable.
