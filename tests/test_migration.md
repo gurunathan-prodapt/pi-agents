@@ -1,0 +1,1 @@
+ERROR: tests skipped for k_ausd_v_ta_action_assoc.ksh — design unavailable.
