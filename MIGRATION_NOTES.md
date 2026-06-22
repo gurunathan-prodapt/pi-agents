@@ -1,0 +1,1 @@
+ERROR: migration notes skipped for k_ausd_v_ta_c_bfc.ksh — design unavailable.
