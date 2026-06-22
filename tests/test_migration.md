@@ -1,0 +1,1 @@
+ERROR: tests skipped for DW.BERT_AUSD_BP_TA_RN_VERTRAG — design unavailable.
