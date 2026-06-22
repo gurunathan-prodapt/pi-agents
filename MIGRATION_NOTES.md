@@ -1,0 +1,1 @@
+ERROR: migration notes skipped for DW.BERT_AUSD_BP_TA_ICCID_VERTRAG — design unavailable.
