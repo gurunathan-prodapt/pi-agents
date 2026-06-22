@@ -1,0 +1,13 @@
+config {
+  type: "assertion",
+  database: "project_id",
+  schema: "dataform_assertions",
+  name: "sof_ta_inv_def_not_empty"
+}
+
+-- Transformed from vobs/dw_source/isrpt/isbert/SQL/aktuell/aufbereitung/sql/d_ausd_v_ta_inv_def.sql
+-- Legacy job: vobs/dw_source/isrpt/isbert/SQL/aktuell/aufbereitung/bin/r_ausd_v_ta_inv_def.ksh
+
+-- Basic assertion: Ensure the target table is not empty after the transformation.
+SELECT 1 FROM ${ref("dwh", "sof_ta_inv_def")} WHERE FALSE
+HAVING COUNT(1) = 0
