@@ -1,0 +1,212 @@
+# Migration Design — vobs/dw_source/isrpt/isbert/SQL/aktuell/aufbereitung/bin/r_ausd_v_ta_discount_rr.ksh
+
+## 1. Purpose & Scope
+This document outlines the migration design for the KornShell script `r_ausd_v_ta_discount_rr.ksh` to Google Cloud Platform, with BigQuery as the target data warehouse.
+
+The original script (`r_ausd_v_ta_discount_rr.ksh`) serves as a wrapper or orchestration layer for a core data reconciliation process concerning the `ta_discount_rr` table. Its primary functions include:
+*   Initializing the runtime environment by sourcing common utility scripts.
+*   Parsing command-line parameters.
+*   Setting up logging and error handling mechanisms using a custom framework.
+*   Invoking a core processing script (`k_ausd_v_ta_discount_rr.ksh`) to perform the actual reconciliation.
+*   Logging the job's start, status, and completion.
+*   Managing error trapping and reporting.
+
+The scope of this migration design focuses on converting the orchestration logic of this wrapper script into a BigQuery-compatible solution, primarily utilizing BigQuery stored procedures and associated logging mechanisms. The core reconciliation logic within `k_ausd_v_ta_discount_rr.ksh` is considered an external dependency and would require its own separate migration design.
+
+## 2. Source Inventory
+**File Name:** `vobs/dw_source/isrpt/isbert/SQL/aktuell/aufbereitung/bin/r_ausd_v_ta_discount_rr.ksh`
+*   **Technology:** KornShell (shell script)
+*   **Complexity Tier:** Medium
+*   **Automation Bucket:** Semi-Automatic (B2)
+*   **Summary:** This KornShell script acts as a wrapper to orchestrate the execution of a core data reconciliation script for the 'ta_discount_rr' table, handling environment setup, parameter parsing, error logging, and status reporting.
+*   **Key Operations:** Environment setup (`.dw_init`, `f_alis_msgerr.ksh`, `h_alis_parameter.ksh`, `h_alis_date.ksh`), parameter parsing (`getopts`), logging (`DWMSG_ErmittleNr`, `DWMSG_Logdateiname`, `DWMSG_ErzeugeEintrag`, `DWMSG_SetzeStichtagInfo`, `DWMSG_SetzeStatusOK`, `DWMSG_MeldeFehler`, `DWMSG_Fehlerbehandlung`), core script invocation (`k_ausd_v_ta_discount_rr.ksh`), error trapping (`trap`).
+
+## 3. Target Architecture
+The migrated solution will reside within Google BigQuery.
+*   **Orchestration Logic:** The wrapper script's logic will be converted into a BigQuery Stored Procedure (e.g., `project.dataset.sp_vertragsdatenabgleich_ta_discount_rr`).
+*   **Logging:** The current file-based logging and job status tracking will be replaced by dedicated BigQuery tables:
+    *   `project.dataset.job_log`: To store detailed log messages, job start/end events, and error information.
+    *   `project.dataset.job_control`: To maintain the overall status and metadata (e.g., `Stichtag`) for each job execution.
+*   **Core Logic (`k_ausd_v_ta_discount_rr.ksh`):** This is identified as a critical dependency. Its migration path is outside the scope of this specific design but will likely involve a separate BigQuery Stored Procedure (`project.dataset.sp_k_ausd_v_ta_discount_rr`), or a Python-based Cloud Function/Cloud Run service if it contains significant non-SQL logic or external system interactions.
+*   **External Calls:** Any shell script sourcing (`.dw_init`, utility scripts) will be replaced by either direct BigQuery SQL constructs, parameterization within the stored procedure, or by migrating those utility functions into reusable BigQuery UDFs or helper stored procedures.
+
+## 4. Data Flow & Lineage
+The original script `r_ausd_v_ta_discount_rr.ksh` orchestrates the following flow:
+
+**Legacy Flow:**
+1.  **Environment Setup:** Sources `$HOME/.dw_init` and utility scripts (`f_alis_msgerr.ksh`, `h_alis_parameter.ksh`, `h_alis_date.ksh`).
+2.  **Parameter Parsing:** Processes command-line arguments.
+3.  **Job Initialization:** Generates a job entry number (`DW_EintragsNr`), log file name (`LogDatei`), and creates an initial entry in the logging mechanism. Sets `StichtagInfo`.
+4.  **Error Trapping:** Sets `trap` handlers for `INT` and `ERR` signals.
+5.  **Core Script Invocation:** Executes `${BERT_DIR_ROOT}/aufbereitung/bin/k_ausd_v_ta_discount_rr.ksh` with job-specific parameters.
+6.  **Success/Error Handling:** Upon successful completion, updates job status to OK. If an error occurs, the `trap` handler calls `DWMSG_Fehlerbehandlung` and exits.
+7.  **Table Interaction:** The script indirectly interacts with the `ta_discount_rr` table via the invoked core script.
+
+**Target BigQuery Flow:**
+1.  **Main Stored Procedure Call:** The migration will begin with an external orchestrator (e.g., Cloud Composer/Airflow, Cloud Scheduler, or a direct `bq` command) calling the `project.dataset.sp_vertragsdatenabgleich_ta_discount_rr` stored procedure, passing any required parameters.
+2.  **Parameter Handling:** The stored procedure will accept input parameters (e.g., `p_help`, `p_s`, `p_l`).
+3.  **Logging and Control:**
+    *   A unique `job_entry_nr` will be generated by querying `project.dataset.job_log`.
+    *   Initial job entry, `Stichtag`, and status will be recorded in `project.dataset.job_log` and `project.dataset.job_control`.
+4.  **Core Logic Invocation:** The stored procedure will `CALL` `project.dataset.sp_k_ausd_v_ta_discount_rr` (the migrated core script).
+5.  **Error Handling:** BigQuery's `BEGIN...EXCEPTION WHEN ERROR THEN ... END` block will replace `trap` mechanisms, ensuring errors during core logic execution are caught and logged in `project.dataset.job_log` and `project.dataset.job_control`.
+6.  **Status Update:** On completion (success or failure), the `project.dataset.job_control` table will be updated with the final job status.
+7.  **Table Interaction:** The `sp_k_ausd_v_ta_discount_rr` will directly interact with the `ta_discount_rr` table (or its BigQuery equivalent).
+
+## 5. Transformation Logic
+The transformation logic will convert shell script constructs into their BigQuery SQL equivalents within a stored procedure.
+
+**Original (KornShell) -> Target (BigQuery SQL Stored Procedure)**
+
+*   **Script Execution:** `#!/bin/ksh` -> `CREATE OR REPLACE PROCEDURE ...`
+*   **Variables:** `ProgName="...", Name_Kernskript="...", typeset -u JobKennung="..."` -> `DECLARE v_prog_name STRING DEFAULT '...';`
+*   **Functions:** `usage()` -> `IF p_help THEN ... RETURN;` (for usage), other framework functions (`DWMSG_...`) will be replaced by direct INSERT/UPDATE statements on logging tables or separate helper stored procedures/UDFs.
+*   **Sourcing scripts:** `. $HOME/.dw_init`, `. ${BERT_DIR_ROOT}/...` -> Replaced by explicit variable declarations, parameters, or calls to helper BigQuery procedures/UDFs.
+*   **Parameter Parsing:** `getopts` `while getopts ... do case ... esac done` -> Input parameters to the stored procedure (e.g., `IN p_s STRING`, `IN p_l STRING`). Validation logic (`if [ ! $ErrNr -eq 0 ]`) translates to `IF` conditions and `SIGNAL SQLSTATE` for error handling.
+*   **Logging:** `DWMSG_MeldeFehler`, `DWMSG_ErmittleNr`, `DWMSG_Logdateiname`, `DWMSG_ErzeugeEintrag`, `DWMSG_SetzeStichtagInfo`, `DWMSG_SetzeStatusOK` -> `INSERT INTO project.dataset.job_log`, `INSERT INTO project.dataset.job_control`, `UPDATE project.dataset.job_control`.
+*   **Core Script Invocation:** `${Name_Kernskript} -j $JobKennung -f ${DW_EintragsNr}` -> `CALL project.dataset.sp_k_ausd_v_ta_discount_rr(v_job_kennung, v_dw_eintragsnr);`
+*   **Error Trapping:** `trap "DWMSG_Fehlerbehandlung..." INT`, `trap "DWMSG_Fehlerbehandlung..." ERR` -> BigQuery `BEGIN...EXCEPTION WHEN ERROR THEN ... END` block.
+*   **Output:** `print "..." | tee -a $LogDatei` -> `SELECT "..."` (for console output, mainly for debugging/monitoring), `INSERT INTO project.dataset.job_log` for persistent logging.
+
+**Pseudocode for Main Stored Procedure (`sp_vertragsdatenabgleich_ta_discount_rr`):**
+```sql
+CREATE OR REPLACE PROCEDURE `project.dataset.sp_vertragsdatenabgleich_ta_discount_rr`(
+  IN p_help BOOL,
+  IN p_s STRING,
+  IN p_l STRING
+)
+BEGIN
+  DECLARE v_prog_name STRING DEFAULT 'Vertragsdatenabgleich';
+  DECLARE v_job_kennung STRING DEFAULT 'BERT_V_TA_DISCOUNT_RR';
+  DECLARE v_sysdate STRING DEFAULT FORMAT_DATE('%d%m%Y', CURRENT_DATE());
+  DECLARE v_err_nr INT64 DEFAULT 0;
+  DECLARE v_err_arg STRING DEFAULT '';
+  DECLARE v_dw_eintragsnr INT64 DEFAULT 0;
+  DECLARE v_logdatei STRING DEFAULT '';
+  DECLARE v_status STRING DEFAULT 'INIT';
+
+  -- Usage/help handling
+  IF p_help THEN
+    SELECT v_prog_name AS Programm, 'V1.0.0' AS Version, 'Aufruf: Parameter -h zeigt diese Seite an' AS Beschreibung;
+    RETURN;
+  END IF;
+
+  -- Parameter validation placeholder (replaces getopts logic)
+  IF p_s IS NULL OR p_l IS NULL THEN
+    SET v_err_nr = 193;
+    SET v_err_arg = IF(p_s IS NULL, 's', 'l');
+  END IF;
+
+  IF v_err_nr != 0 THEN
+    -- Simulate DWMSG_MeldeFehler
+    INSERT INTO `project.dataset.job_log` (...) VALUES (v_job_kennung, v_dw_eintragsnr, 'E', CONCAT('Parameterfehler: ', v_err_arg), CURRENT_TIMESTAMP());
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = CONCAT('Parameter error: ', v_err_arg);
+  END IF;
+
+  -- Simulate DWMSG_ErmittleNr
+  SET v_dw_eintragsnr = (SELECT IFNULL(MAX(job_entry_nr), 0) + 1 FROM `project.dataset.job_log` WHERE job_kennung = v_job_kennung);
+  -- Simulate DWMSG_Logdateiname
+  SET v_logdatei = CONCAT(v_job_kennung, '_', CAST(v_dw_eintragsnr AS STRING), '.log');
+  -- Simulate DWMSG_ErzeugeEintrag
+  INSERT INTO `project.dataset.job_log` (...) VALUES (v_job_kennung, v_dw_eintragsnr, 'I', CONCAT('Job start: ', v_prog_name), v_logdatei, CURRENT_TIMESTAMP());
+  -- Simulate DWMSG_SetzeStichtagInfo
+  INSERT INTO `project.dataset.job_control` (...) VALUES (v_job_kennung, v_dw_eintragsnr, v_sysdate, 'DDMMYYYY', 'INIT', CURRENT_TIMESTAMP(), CURRENT_TIMESTAMP());
+
+  BEGIN
+    -- Print job banner
+    SELECT 'Job' AS section, v_dw_eintragsnr AS job_nr, v_job_kennung AS job_kennung, v_logdatei AS logdatei;
+
+    -- Invoke core script (replace with actual BigQuery SP for k_ausd_v_ta_discount_rr.ksh)
+    CALL `project.dataset.sp_k_ausd_v_ta_discount_rr`(v_job_kennung, v_dw_eintragsnr);
+
+    -- Simulate success message
+    INSERT INTO `project.dataset.job_log` (...) VALUES (v_job_kennung, v_dw_eintragsnr, 'I', 'Die Abarbeitung wurde ohne erkennbare Fehler beendet', CURRENT_TIMESTAMP());
+    -- Simulate DWMSG_SetzeStatusOK
+    UPDATE `project.dataset.job_control` SET status = 'OK', updated_at = CURRENT_TIMESTAMP() WHERE job_kennung = v_job_kennung AND job_entry_nr = v_dw_eintragsnr;
+    SET v_status = 'OK';
+
+  EXCEPTION WHEN ERROR THEN
+    -- Simulate DWMSG_Fehlerbehandlung
+    INSERT INTO `project.dataset.job_log` (...) VALUES (v_job_kennung, v_dw_eintragsnr, 'E', 'AppError: Abbruch', CURRENT_TIMESTAMP());
+    UPDATE `project.dataset.job_control` SET status = 'ERROR', updated_at = CURRENT_TIMESTAMP() WHERE job_kennung = v_job_kennung AND job_entry_nr = v_dw_eintragsnr;
+    SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'AppError: Abbruch';
+  END;
+END;
+```
+
+**Supporting Objects SQL:**
+```sql
+-- Logging table
+CREATE TABLE IF NOT EXISTS `project.dataset.job_log` (
+  job_kennung STRING,
+  job_entry_nr INT64,
+  log_level STRING,
+  message STRING,
+  log_file_name STRING,
+  created_at TIMESTAMP
+);
+
+-- Job control table
+CREATE TABLE IF NOT EXISTS `project.dataset.job_control` (
+  job_kennung STRING,
+  job_entry_nr INT64,
+  stichtag STRING,
+  stichtag_format STRING,
+  status STRING,
+  created_at TIMESTAMP,
+  updated_at TIMESTAMP
+);
+```
+
+## 6. External Dependencies
+The original script has several dependencies:
+
+*   **Sourced Utility Scripts:**
+    *   `$HOME/.dw_init`: Environment initialization.
+    *   `${BERT_DIR_ROOT}/allgemein/is/util/bin/f_alis_msgerr.ksh`: Error messaging framework.
+    *   `${BERT_DIR_ROOT}/allgemein/is/util/bin/h_alis_parameter.ksh`: Parameter handling utilities.
+    *   `${BERT_DIR_ROOT}/allgemein/is/util/bin/h_alis_date.ksh`: Date handling utilities.
+    *   **Replacement Strategy:** These will be replaced by native BigQuery SQL constructs, stored procedure parameters, or small helper stored procedures/UDFs as part of the `sp_vertragsdatenabgleich_ta_discount_rr` or `sp_k_ausd_v_ta_discount_rr`. Environment variables like `BERT_DIR_ROOT` will be hardcoded or passed as parameters to the BigQuery procedures.
+*   **Core Reconciliation Script:**
+    *   `${BERT_DIR_ROOT}/aufbereitung/bin/k_ausd_v_ta_discount_rr.ksh`: This is the most critical dependency, containing the actual data reconciliation logic for `ta_discount_rr`.
+    *   **Replacement Strategy:** This script must be migrated separately. The recommendation is to convert it into a BigQuery Stored Procedure (`project.dataset.sp_k_ausd_v_ta_discount_rr`) if its logic is primarily SQL-based. If it involves complex file system operations, external system calls, or non-SQL transformations, it might be migrated to a Python-based Cloud Function or a Cloud Run service that interacts with BigQuery. The wrapper stored procedure will then `CALL` this migrated component.
+*   **Table `ta_discount_rr`:**
+    *   The script's purpose is to reconcile data for this table.
+    *   **Replacement Strategy:** This table will be migrated to a BigQuery table, e.g., `project.dataset.ta_discount_rr`.
+
+## 7. Unresolved / Risks
+
+*   **Core Script Migration (`k_ausd_v_ta_discount_rr.ksh`):** The actual logic within this core script is unknown. Its complexity and nature (SQL vs. shell/file operations) will dictate its specific migration strategy. If it's pure SQL, a BQ Stored Procedure is suitable. If it's more complex, a Python-based Cloud Function or Cloud Run service interacting with BigQuery might be necessary, introducing inter-service communication and orchestration considerations (e.g., Cloud Workflows or Cloud Composer). This is a **high-risk** item.
+*   **Framework Function Reimplementation:** The exact logic of functions like `DWMSG_MeldeFehler`, `DWMSG_ErmittleNr`, etc., needs to be fully understood to accurately reimplement them as BigQuery SQL logic within the main stored procedure or as separate helper procedures. This requires a detailed analysis of the sourced `.ksh` files.
+*   **Parameter `s` and `l`:** These parameters are declared in `getopts` but not explicitly handled in the provided script. Their purpose and usage in `k_ausd_v_ta_discount_rr.ksh` or other sourced scripts need to be clarified to ensure correct migration.
+*   **Signal Trapping Equivalence:** Shell `trap` behavior cannot be perfectly replicated in BigQuery SQL. While `BEGIN...EXCEPTION` handles SQL errors, external interruptions (like `INT`) require external orchestration (e.g., Cloud Composer with retry/catch mechanisms).
+*   **Environment Variable Resolution:** The dynamic resolution of paths like `${BERT_DIR_ROOT}` needs to be handled. In BigQuery, these will be replaced by explicit dataset/procedure names or parameters.
+
+## 8. Build Plan
+The migration build will involve creating BigQuery objects in a specific order:
+
+1.  **Create BigQuery Datasets:**
+    *   `project.dataset` (if not already existing)
+    *   *(Potentially other datasets based on the core script's needs)*
+
+2.  **Create Logging and Control Tables:**
+    *   `project.dataset.job_log` (BigQuery Table)
+    *   `project.dataset.job_control` (BigQuery Table)
+    *   **Language:** BigQuery DDL (Data Definition Language)
+
+3.  **Develop and Deploy Core Script Stored Procedure (Placeholder/Stub):**
+    *   `project.dataset.sp_k_ausd_v_ta_discount_rr` (BigQuery Stored Procedure, initially a stub, then fully implemented after analysis of `k_ausd_v_ta_discount_rr.ksh`).
+    *   **Language:** BigQuery SQL
+
+4.  **Develop and Deploy Wrapper Stored Procedure:**
+    *   `project.dataset.sp_vertragsdatenabgleich_ta_discount_rr` (BigQuery Stored Procedure)
+    *   **Language:** BigQuery SQL
+
+5.  **Develop Orchestration:**
+    *   An external orchestration mechanism (e.g., Cloud Composer DAG, Cloud Functions/Run with Cloud Scheduler) to invoke `project.dataset.sp_vertragsdatenabgleich_ta_discount_rr`. This will handle passing parameters and potentially monitoring.
+    *   **Language:** Python (for Cloud Composer/Cloud Functions), YAML/JSON (for Cloud Workflows).
+
+6.  **Testing and Validation:**
+    *   Unit tests for each stored procedure.
+    *   Integration tests for the full workflow from orchestrator to the core logic.
+    *   Data validation to ensure the reconciliation process produces identical results to the legacy system.
