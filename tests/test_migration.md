@@ -1,0 +1,1 @@
+ERROR: tests skipped for vobs/dw_source/isrpt/isbert/SQL/aktuell/aufbereitung/bin/k_ausd_bp_ta_bpr_beschr.ksh — design unavailable.
