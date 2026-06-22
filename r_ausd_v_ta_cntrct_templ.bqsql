@@ -1,0 +1,99 @@
+-- BigQuery Stored Procedure for k_ausd_v_ta_cntrct_templ.ksh orchestration logic
+-- Legacy job: vobs/dw_source/isrpt/isbert/SQL/aktuell/aufbereitung/bin/k_ausd_v_ta_cntrct_templ.ksh
+
+CREATE OR REPLACE PROCEDURE project.dataset.r_ausd_v_ta_cntrct_templ(
+    p_JobKennung STRING,
+    p_EintragsNr INT64
+)
+BEGIN
+    -- Declare variables
+    DECLARE v_TabName STRING DEFAULT 'ta_cntrct_templ'; -- Matches the target table name
+    DECLARE v_records INT64 DEFAULT 0;
+    DECLARE v_datum_bq STRING;
+    DECLARE current_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP();
+
+    -- Get v_datum_bq from dwtk_meldungen, similar to original SELECT NVL(TO_CHAR(MAX(m.timecreated),...
+    -- Assuming project.dataset.dwtk_meldungen is the migrated table for isbert_schema.dwtk_meldungen
+    SET v_datum_bq = (
+        SELECT COALESCE(FORMAT_TIMESTAMP('%Y%m%d', MAX(m.timecreated)), '19000101')
+        FROM project.dataset.dwtk_meldungen m
+        WHERE m.job_kennung = 'BERT_DROP_TEMP_TABLE'
+    );
+
+    -- Parameter validation
+    IF p_JobKennung IS NULL OR p_JobKennung = '' THEN
+        INSERT INTO project.dataset.job_error_log (job_kennung, eintragsnr, error_time, error_message, sql_state)
+        VALUES (COALESCE(p_JobKennung, 'UNKNOWN'), COALESCE(p_EintragsNr, -1), current_timestamp, 'p_JobKennung cannot be NULL or empty.', 'P0001');
+        SIGNAL SQLSTATE 'P0001' SET MESSAGE_TEXT = 'Mandatory parameter p_JobKennung is missing.';
+    END IF;
+
+    IF p_EintragsNr IS NULL THEN
+        INSERT INTO project.dataset.job_error_log (job_kennung, eintragsnr, error_time, error_message, sql_state)
+        VALUES (COALESCE(p_JobKennung, 'UNKNOWN'), COALESCE(p_EintragsNr, -1), current_timestamp, 'p_EintragsNr cannot be NULL.', 'P0002');
+        SIGNAL SQLSTATE 'P0002' SET MESSAGE_TEXT = 'Mandatory parameter p_EintragsNr is missing.';
+    END IF;
+
+    -- Record job STARTED status
+    INSERT INTO project.dataset.job_table (job_kennung, eintragsnr, status, start_time)
+    VALUES (p_JobKennung, p_EintragsNr, 'STARTED', current_timestamp);
+
+    -- Deactivate older active jobs for the same table
+    UPDATE project.dataset.job_table
+    SET status = 'DEACTIVATED', end_time = current_timestamp
+    WHERE job_kennung = p_JobKennung
+      AND eintragsnr != p_EintragsNr
+      AND status = 'STARTED'; -- Only deactivate currently active jobs for the same type
+
+    -- Execute core SQL logic from d_ausd_v_ta_cntrct_templ.sql
+    BEGIN
+        -- Truncate the target table before insertion.
+        TRUNCATE TABLE project.dataset.ta_cntrct_templ;
+
+        -- Insert data into the target table based on filtered source tables.
+        INSERT INTO project.dataset.ta_cntrct_templ
+        (CNTRCT_TEMPLATE_ID,
+          CDS_DESCRIPTION_ID,
+          CDS_DESCRIPTION )
+        SELECT
+                ct.cntrct_template_id,
+                ct.cds_description_id,
+                cd.cds_description
+        FROM
+                project.dataset.cds_ta_cntrct_template     ct
+        JOIN    project.dataset.cds_ta_care_description    cd
+        ON      ct.cds_description_id    = cd.cds_description_id
+        WHERE
+                ct.insert_at <= PARSE_DATE('%Y%m%d', v_datum_bq)
+        AND     (   ct.modified_at IS NULL
+                 OR ct.modified_at > PARSE_DATE('%Y%m%d', v_datum_bq)     )
+        AND     ct.valid_from <= PARSE_DATE('%Y%m%d', v_datum_bq)
+        AND     (   ct.valid_to IS NULL
+                 OR ct.valid_to > PARSE_DATE('%Y%m%d', v_datum_bq)       )
+        AND     ct.is_production = 1
+        AND     cd.language = 1;
+
+        SET v_records = @@row_count; -- Get the number of rows inserted
+
+        -- Update job FINISHED status with records processed
+        UPDATE project.dataset.job_table
+        SET status = 'FINISHED', end_time = CURRENT_TIMESTAMP(), records_processed = v_records
+        WHERE job_kennung = p_JobKennung
+          AND eintragsnr = p_EintragsNr
+          AND status = 'STARTED';
+
+    EXCEPTION WHEN ERROR THEN
+        -- Log error and signal SQLSTATE
+        INSERT INTO project.dataset.job_error_log (job_kennung, eintragsnr, error_time, error_message, sql_state)
+        VALUES (p_JobKennung, p_EintragsNr, CURRENT_TIMESTAMP(), ERROR_MESSAGE(), @@error.statement_text);
+
+        -- Update job status to ERROR
+        UPDATE project.dataset.job_table
+        SET status = 'ERROR', end_time = CURRENT_TIMESTAMP(), error_message = ERROR_MESSAGE()
+        WHERE job_kennung = p_JobKennung
+          AND eintragsnr = p_EintragsNr
+          AND status = 'STARTED';
+
+        SIGNAL SQLSTATE 'P9999' SET MESSAGE_TEXT = CONCAT('Error in core SQL logic: ', ERROR_MESSAGE());
+    END;
+
+END;

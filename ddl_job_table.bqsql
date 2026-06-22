@@ -1,0 +1,12 @@
+-- DDL for job_table
+-- Legacy job: vobs/dw_source/isrpt/isbert/SQL/aktuell/aufbereitung/bin/k_ausd_v_ta_cntrct_templ.ksh
+
+CREATE TABLE IF NOT EXISTS project.dataset.job_table (
+    job_kennung STRING NOT NULL OPTIONS(description="Identifier for the job, e.g., from p_JobKennung"),
+    eintragsnr INT64 NOT NULL OPTIONS(description="Entry number for the job, e.g., from p_EintragsNr"),
+    status STRING NOT NULL OPTIONS(description="Current status of the job (STARTED, FINISHED, DEACTIVATED, ERROR)"),
+    start_time TIMESTAMP OPTIONS(description="Timestamp when the job started"),
+    end_time TIMESTAMP OPTIONS(description="Timestamp when the job finished"),
+    records_processed INT64 OPTIONS(description="Number of records processed by the job"),
+    error_message STRING OPTIONS(description="Error message if the job failed")
+);
