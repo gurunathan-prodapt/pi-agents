@@ -1,0 +1,1 @@
+ERROR: tests skipped for DW.BERT_AUSD_V_TA_CNTRCT_CRS2 — design unavailable.
