@@ -1,0 +1,1 @@
+ERROR: tests skipped for DW.BERT_AUSD_BP_TA_BCP_ICCID — design unavailable.
