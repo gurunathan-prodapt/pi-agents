@@ -1,0 +1,1 @@
+ERROR: tests skipped for DW.ACCESSP_SIGMA_GPRS_MONATLICH_JP — design unavailable.
