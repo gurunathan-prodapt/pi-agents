@@ -1,0 +1,16 @@
+# Build Skipped
+
+Design phase failed:
+
+ERROR: Tool 'execute_api' not found.
+Available tools: execute_sql, read_source_file, list_cm_mcp_tools, call_cm_mcp, list_sat_mcp_tools, call_sat_mcp
+
+Possible causes:
+  1. LLM hallucinated the function name - review agent instruction clarity
+  2. Tool not registered - verify agent.tools list
+  3. Name mismatch - check for typos
+
+Suggested fixes:
+  - Review agent instruction to ensure tool usage is clear
+  - Verify tool is included in agent.tools list
+  - Check for typos in function name
