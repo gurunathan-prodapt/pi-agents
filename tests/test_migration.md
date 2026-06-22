@@ -1,0 +1,1 @@
+ERROR: tests skipped for k_ausd_adressen.ksh — design unavailable.
