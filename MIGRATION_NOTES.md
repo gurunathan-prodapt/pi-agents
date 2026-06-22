@@ -1,0 +1,1 @@
+ERROR: migration notes skipped for DW.DWH_APT_EXPORT_MONATLICH_JP — design unavailable.
