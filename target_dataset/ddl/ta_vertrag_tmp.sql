@@ -1,0 +1,51 @@
+--
+-- BigQuery DDL for target_dataset.ta_vertrag_tmp
+-- Legacy Source: sof$ta_vertrag_tmp (Oracle)
+-- Job: vobs/dw_source/isrpt/isbert/SQL/aktuell/aufbereitung/bin/k_ausd_v_ta_vertrag_tmp.ksh
+--
+CREATE SCHEMA IF NOT EXISTS `target_dataset`;
+
+CREATE TABLE IF NOT EXISTS `target_dataset.ta_vertrag_tmp`
+(
+    `vertrag_id_carmen` INT64,
+    `partner_id_carmen` INT64,
+    `rechdef_id_carmen` INT64,
+    `kundenkonto` STRING,
+    `mwst_kennzeichen` STRING,
+    `rahmenvertrag_id` STRING,
+    `rechnungslauf` STRING,
+    `vo_kenn` STRING,
+    `order_number` STRING,
+    `geplant_kuend` DATE,
+    `eingang_kuend` DATE,
+    `vertragsbeginn` DATE,
+    `vertragsstatus` STRING,
+    `sperrart` STRING,
+    `sperrgrund` STRING,
+    `stillegungszeitraum` STRING,
+    `twincard` STRING,
+    `dwh_tarifgr_text` STRING,
+    `bindefrist` INT64,
+    `letztes_upgrade` DATE,
+    `vertragsbindung` INT64,
+    `vertragsbindungseinheit` STRING,
+    `rechnungszahlart` STRING,
+    `rechnungsmedium` STRING,
+    `twin_vertrag_id` INT64,
+    `upgradeberechtigt` STRING,
+    `apn` STRING,
+    `upgradegrund` STRING,
+    `SV_Id` INT64,
+    `VDA` STRING,
+    `cost_centre` STRING,
+    `cost_centre_user` STRING,
+    `cntrct_ty` INT64,
+    `segment_id` INT64,
+    `rv_action_id` INT64,
+    `rechn_inh_konfig_text` STRING,
+    `commitment_reference_date` DATE,
+    `cntrct_validity_id` INT64
+)
+OPTIONS(
+    description="BigQuery equivalent of Oracle temporary table sof$ta_vertrag_tmp"
+);
