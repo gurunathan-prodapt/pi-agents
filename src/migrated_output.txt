@@ -1,0 +1,11 @@
+The migration design document explicitly states a "Critical Unresolved Issue: Identification of Primary Source File." It highlights that the source code for `DW.ACCESSP_SIGMA_GPRS_MONATLICH_JP` could not be located or read despite multiple attempts.
+
+This prevents:
+*   Reading the actual source code.
+*   Detailed analysis of its technology, complexity, and automation rate.
+*   Understanding its specific data flow, transformation logic, and external dependencies.
+*   Generating an accurate target architecture and build plan.
+
+Therefore, I cannot generate complete, runnable target code for the BigQuery platform as the essential source information is missing. The document itself concludes: "The build plan cannot be formulated until the source file is identified and its contents analyzed."
+
+Without the source file, I cannot determine the logic to translate into BigQuery SQL or any other GCP component. Manual intervention, as suggested in the design document, is required to locate the source file before I can proceed.
