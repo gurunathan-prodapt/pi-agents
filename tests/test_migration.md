@@ -1,0 +1,1 @@
+ERROR: tests skipped for EXIS_SD_APT_BESTANDS — design unavailable.
