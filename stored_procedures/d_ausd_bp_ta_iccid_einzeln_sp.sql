@@ -1,0 +1,171 @@
+-- Legacy source: d_ausd_bp_ta_iccid_einzeln.sql (invoked by k_ausd_bp_ta_iccid_einzeln.ksh)
+-- BigQuery migration for job: vobs/dw_source/isrpt/isbert/SQL/aktuell/aufbereitung/bin/k_ausd_bp_ta_iccid_einzeln.ksh
+-- This stored procedure encapsulates the core data processing logic.
+
+CREATE OR REPLACE PROCEDURE `your_gcp_project_id.your_bigquery_dataset.d_ausd_bp_ta_iccid_einzeln_sp`(
+    p_stichtag STRING -- Format 'YYYYMMDD'
+)
+BEGIN
+    -- Local variables
+    DECLARE v_stichtag_date DATE;
+
+    -- Convert p_stichtag to DATE
+    SET v_stichtag_date = PARSE_DATE('%Y%m%d', p_stichtag);
+
+    -- Step01: Truncate the target table
+    TRUNCATE TABLE `your_gcp_project_id.your_bigquery_dataset.SOF_TA_ICCID_EINZELN_BQ`;
+
+    -- Step06: Insert data into the target table
+    INSERT INTO `your_gcp_project_id.your_bigquery_dataset.SOF_TA_ICCID_EINZELN_BQ`
+    ( CNTRCT_ID,
+      TN_ICCID,   TN_IMSI_MCC,  TN_IMSI_MNC,  TN_IMSI_HLR,  TN_IMSI_SI,   TN_STATUS,    TN_VALID_TO,  TN_E_ID,  TN_CARD_TYPE_NAME,
+      TC_ICCID,   TC_IMSI_MCC,  TC_IMSI_MNC,  TC_IMSI_HLR,  TC_IMSI_SI,   TC_STATUS,    TC_VALID_TO,  TC_E_ID,  TC_CARD_TYPE_NAME,
+      TB_ICCID,   TB_IMSI_MCC,  TB_IMSI_MNC,  TB_IMSI_HLR,  TB_IMSI_SI,   TB_STATUS,    TB_VALID_TO,  TB_E_ID,  TB_CARD_TYPE_NAME,
+      MS1_ICCID,  MS1_IMSI_MCC, MS1_IMSI_MNC, MS1_IMSI_HLR, MS1_IMSI_SI,  MS1_STATUS,   MS1_VALID_TO, MS1_E_ID, MS1_CARD_TYPE_NAME,
+      MS2_ICCID,  MS2_IMSI_MCC, MS2_IMSI_MNC, MS2_IMSI_HLR, MS2_IMSI_SI,  MS2_STATUS,   MS2_VALID_TO, MS2_E_ID, MS2_CARD_TYPE_NAME,
+      MS3_ICCID,  MS3_IMSI_MCC, MS3_IMSI_MNC, MS3_IMSI_HLR, MS3_IMSI_SI,  MS3_STATUS,   MS3_VALID_TO, MS3_E_ID, MS3_CARD_TYPE_NAME,
+      MS4_ICCID,  MS4_IMSI_MCC, MS4_IMSI_MNC, MS4_IMSI_HLR, MS4_IMSI_SI,  MS4_STATUS,   MS4_VALID_TO, MS4_E_ID, MS4_CARD_TYPE_NAME,
+      MS5_ICCID,  MS5_IMSI_MCC, MS5_IMSI_MNC, MS5_IMSI_HLR, MS5_IMSI_SI,  MS5_STATUS,   MS5_VALID_TO, MS5_E_ID, MS5_CARD_TYPE_NAME,
+      MS6_ICCID,  MS6_IMSI_MCC, MS6_IMSI_MNC, MS6_IMSI_HLR, MS6_IMSI_SI,  MS6_STATUS,   MS6_VALID_TO, MS6_E_ID, MS6_CARD_TYPE_NAME,
+      MS7_ICCID,  MS7_IMSI_MCC, MS7_IMSI_MNC, MS7_IMSI_HLR, MS7_IMSI_SI,  MS7_STATUS,   MS7_VALID_TO, MS7_E_ID, MS7_CARD_TYPE_NAME,
+      MS8_ICCID,  MS8_IMSI_MCC, MS8_IMSI_MNC, MS8_IMSI_HLR, MS8_IMSI_SI,  MS8_STATUS,   MS8_VALID_TO, MS8_E_ID, MS8_CARD_TYPE_NAME,
+      MS9_ICCID,  MS9_IMSI_MCC, MS9_IMSI_MNC, MS9_IMSI_HLR, MS9_IMSI_SI,  MS9_STATUS,   MS9_VALID_TO, MS9_E_ID, MS9_CARD_TYPE_NAME,
+      MS10_ICCID, MS10_IMSI_MCC, MS10_IMSI_MNC, MS10_IMSI_HLR, MS10_IMSI_SI, MS10_STATUS, MS10_VALID_TO, MS10_E_ID, MS10_CARD_TYPE_NAME
+    )
+    SELECT
+        bp.cntrct_id,
+        CASE WHEN bp.bpr_id = 31 THEN iccid ELSE NULL END AS TN_ICCID,
+        CASE WHEN bp.bpr_id = 31 THEN imsi_mcc ELSE NULL END AS TN_IMSI_MCC,
+        CASE WHEN bp.bpr_id = 31 THEN imsi_mnc ELSE NULL END AS TN_IMSI_MNC,
+        CASE WHEN bp.bpr_id = 31 THEN imsi_hlr ELSE NULL END AS TN_IMSI_HLR,
+        CASE WHEN bp.bpr_id = 31 THEN imsi_si ELSE NULL END AS TN_IMSI_SI,
+        CASE WHEN bp.bpr_id = 31 THEN CASE WHEN bp.valid_to <= v_stichtag_date THEN 'L' ELSE 'A' END ELSE NULL END AS TN_STATUS,
+        CASE WHEN bp.bpr_id = 31 THEN bp.valid_to ELSE NULL END AS TN_VALID_TO,
+        CASE WHEN bp.bpr_id = 31 THEN E_ID ELSE NULL END AS TN_E_ID,
+        CASE WHEN bp.bpr_id = 31 THEN CARD_TYPE_NAME ELSE NULL END AS TN_CARD_TYPE_NAME,
+
+        CASE WHEN bp.bpr_id = 2759 THEN iccid ELSE NULL END AS TC_ICCID,
+        CASE WHEN bp.bpr_id = 2759 THEN imsi_mcc ELSE NULL END AS TC_IMSI_MCC,
+        CASE WHEN bp.bpr_id = 2759 THEN imsi_mnc ELSE NULL END AS TC_IMSI_MNC,
+        CASE WHEN bp.bpr_id = 2759 THEN imsi_hlr ELSE NULL END AS TC_IMSI_HLR,
+        CASE WHEN bp.bpr_id = 2759 THEN imsi_si ELSE NULL END AS TC_IMSI_SI,
+        CASE WHEN bp.bpr_id = 2759 THEN CASE WHEN bp.valid_to <= v_stichtag_date THEN 'L' ELSE 'A' END ELSE NULL END AS TC_STATUS,
+        CASE WHEN bp.bpr_id = 2759 THEN bp.valid_to ELSE NULL END AS TC_VALID_TO,
+        CASE WHEN bp.bpr_id = 2759 THEN E_ID ELSE NULL END AS TC_E_ID,
+        CASE WHEN bp.bpr_id = 2759 THEN CARD_TYPE_NAME ELSE NULL END AS TC_CARD_TYPE_NAME,
+
+        CASE WHEN bp.bpr_id = 2800 THEN iccid ELSE NULL END AS TB_ICCID,
+        CASE WHEN bp.bpr_id = 2800 THEN imsi_mcc ELSE NULL END AS TB_IMSI_MCC,
+        CASE WHEN bp.bpr_id = 2800 THEN imsi_mnc ELSE NULL END AS TB_IMSI_MNC,
+        CASE WHEN bp.bpr_id = 2800 THEN imsi_hlr ELSE NULL END AS TB_IMSI_HLR,
+        CASE WHEN bp.bpr_id = 2800 THEN imsi_si ELSE NULL END AS TB_IMSI_SI,
+        CASE WHEN bp.bpr_id = 2800 THEN CASE WHEN bp.valid_to <= v_stichtag_date THEN 'L' ELSE 'A' END ELSE NULL END AS TB_STATUS,
+        CASE WHEN bp.bpr_id = 2800 THEN bp.valid_to ELSE NULL END AS TB_VALID_TO,
+        CASE WHEN bp.bpr_id = 2800 THEN E_ID ELSE NULL END AS TB_E_ID,
+        CASE WHEN bp.bpr_id = 2800 THEN CARD_TYPE_NAME ELSE NULL END AS TB_CARD_TYPE_NAME,
+
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384801 THEN bp.iccid ELSE NULL END AS MS1_ICCID,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384801 THEN bp.imsi_mcc ELSE NULL END AS MS1_IMSI_MCC,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384801 THEN bp.imsi_mnc ELSE NULL END AS MS1_IMSI_MNC,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384801 THEN bp.imsi_hlr ELSE NULL END AS MS1_IMSI_HLR,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384801 THEN bp.imsi_si ELSE NULL END AS MS1_IMSI_SI,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384801 THEN CASE WHEN bp.valid_to > v_stichtag_date THEN 'A' ELSE 'L' END ELSE NULL END AS MS1_STATUS,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384801 THEN bp.valid_to ELSE NULL END AS MS1_VALID_TO,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384801 THEN bp.E_ID ELSE NULL END AS MS1_E_ID,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384801 THEN bp.CARD_TYPE_NAME ELSE NULL END AS MS1_CARD_TYPE_NAME,
+
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384802 THEN bp.iccid ELSE NULL END AS MS2_ICCID,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384802 THEN bp.imsi_mcc ELSE NULL END AS MS2_IMSI_MCC,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384802 THEN bp.imsi_mnc ELSE NULL END AS MS2_IMSI_MNC,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384802 THEN bp.imsi_hlr ELSE NULL END AS MS2_IMSI_HLR,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384802 THEN bp.imsi_si ELSE NULL END AS MS2_IMSI_SI,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384802 THEN CASE WHEN bp.valid_to > v_stichtag_date THEN 'A' ELSE 'L' END ELSE NULL END AS MS2_STATUS,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384802 THEN bp.valid_to ELSE NULL END AS MS2_VALID_TO,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384802 THEN bp.E_ID ELSE NULL END AS MS2_E_ID,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384802 THEN bp.CARD_TYPE_NAME ELSE NULL END AS MS2_CARD_TYPE_NAME,
+
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384803 THEN bp.iccid ELSE NULL END AS MS3_ICCID,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384803 THEN bp.imsi_mcc ELSE NULL END AS MS3_IMSI_MCC,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384803 THEN bp.imsi_mnc ELSE NULL END AS MS3_IMSI_MNC,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384803 THEN bp.imsi_hlr ELSE NULL END AS MS3_IMSI_HLR,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384803 THEN bp.imsi_si ELSE NULL END AS MS3_IMSI_SI,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384803 THEN CASE WHEN bp.valid_to > v_stichtag_date THEN 'A' ELSE 'L' END ELSE NULL END AS MS3_STATUS,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384803 THEN bp.valid_to ELSE NULL END AS MS3_VALID_TO,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384803 THEN bp.E_ID ELSE NULL END AS MS3_E_ID,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384803 THEN bp.CARD_TYPE_NAME ELSE NULL END AS MS3_CARD_TYPE_NAME,
+
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384804 THEN bp.iccid ELSE NULL END AS MS4_ICCID,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384804 THEN bp.imsi_mcc ELSE NULL END AS MS4_IMSI_MCC,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384804 THEN bp.imsi_mnc ELSE NULL END AS MS4_IMSI_MNC,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384804 THEN bp.imsi_hlr ELSE NULL END AS MS4_IMSI_HLR,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384804 THEN bp.imsi_si ELSE NULL END AS MS4_IMSI_SI,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384804 THEN CASE WHEN bp.valid_to > v_stichtag_date THEN 'A' ELSE 'L' END ELSE NULL END AS MS4_STATUS,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384804 THEN bp.valid_to ELSE NULL END AS MS4_VALID_TO,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384804 THEN bp.E_ID ELSE NULL END AS MS4_E_ID,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384804 THEN bp.CARD_TYPE_NAME ELSE NULL END AS MS4_CARD_TYPE_NAME,
+
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384805 THEN bp.iccid ELSE NULL END AS MS5_ICCID,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384805 THEN bp.imsi_mcc ELSE NULL END AS MS5_IMSI_MCC,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384805 THEN bp.imsi_mnc ELSE NULL END AS MS5_IMSI_MNC,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384805 THEN bp.imsi_hlr ELSE NULL END AS MS5_IMSI_HLR,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384805 THEN bp.imsi_si ELSE NULL END AS MS5_IMSI_SI,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384805 THEN CASE WHEN bp.valid_to > v_stichtag_date THEN 'A' ELSE 'L' END ELSE NULL END AS MS5_STATUS,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384805 THEN bp.valid_to ELSE NULL END AS MS5_VALID_TO,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384805 THEN bp.E_ID ELSE NULL END AS MS5_E_ID,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384805 THEN bp.CARD_TYPE_NAME ELSE NULL END AS MS5_CARD_TYPE_NAME,
+
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384806 THEN bp.iccid ELSE NULL END AS MS6_ICCID,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384806 THEN bp.imsi_mcc ELSE NULL END AS MS6_IMSI_MCC,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384806 THEN bp.imsi_mnc ELSE NULL END AS MS6_IMSI_MNC,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384806 THEN bp.imsi_hlr ELSE NULL END AS MS6_IMSI_HLR,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384806 THEN bp.imsi_si ELSE NULL END AS MS6_IMSI_SI,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384806 THEN CASE WHEN bp.valid_to > v_stichtag_date THEN 'A' ELSE 'L' END ELSE NULL END AS MS6_STATUS,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384806 THEN bp.valid_to ELSE NULL END AS MS6_VALID_TO,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384806 THEN bp.E_ID ELSE NULL END AS MS6_E_ID,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384806 THEN bp.CARD_TYPE_NAME ELSE NULL END AS MS6_CARD_TYPE_NAME,
+
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384807 THEN bp.iccid ELSE NULL END AS MS7_ICCID,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384807 THEN bp.imsi_mcc ELSE NULL END AS MS7_IMSI_MCC,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384807 THEN bp.imsi_mnc ELSE NULL END AS MS7_IMSI_MNC,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384807 THEN bp.imsi_hlr ELSE NULL END AS MS7_IMSI_HLR,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384807 THEN bp.imsi_si ELSE NULL END AS MS7_IMSI_SI,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384807 THEN CASE WHEN bp.valid_to > v_stichtag_date THEN 'A' ELSE 'L' END ELSE NULL END AS MS7_STATUS,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384807 THEN bp.valid_to ELSE NULL END AS MS7_VALID_TO,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384807 THEN bp.E_ID ELSE NULL END AS MS7_E_ID,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384807 THEN bp.CARD_TYPE_NAME ELSE NULL END AS MS7_CARD_TYPE_NAME,
+
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384808 THEN bp.iccid ELSE NULL END AS MS8_ICCID,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384808 THEN bp.imsi_mcc ELSE NULL END AS MS8_IMSI_MCC,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384808 THEN bp.imsi_mnc ELSE NULL END AS MS8_IMSI_MNC,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384808 THEN bp.imsi_hlr ELSE NULL END AS MS8_IMSI_HLR,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384808 THEN bp.imsi_si ELSE NULL END AS MS8_IMSI_SI,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384808 THEN CASE WHEN bp.valid_to > v_stichtag_date THEN 'A' ELSE 'L' END ELSE NULL END AS MS8_STATUS,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384808 THEN bp.valid_to ELSE NULL END AS MS8_VALID_TO,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384808 THEN bp.E_ID ELSE NULL END AS MS8_E_ID,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384808 THEN bp.CARD_TYPE_NAME ELSE NULL END AS MS8_CARD_TYPE_NAME,
+
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384809 THEN bp.iccid ELSE NULL END AS MS9_ICCID,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384809 THEN bp.imsi_mcc ELSE NULL END AS MS9_IMSI_MCC,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384809 THEN bp.imsi_mnc ELSE NULL END AS MS9_IMSI_MNC,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384809 THEN bp.imsi_hlr ELSE NULL END AS MS9_IMSI_HLR,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384809 THEN bp.imsi_si ELSE NULL END AS MS9_IMSI_SI,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384809 THEN CASE WHEN bp.valid_to > v_stichtag_date THEN 'A' ELSE 'L' END ELSE NULL END AS MS9_STATUS,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384809 THEN bp.valid_to ELSE NULL END AS MS9_VALID_TO,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384809 THEN bp.E_ID ELSE NULL END AS MS9_E_ID,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384809 THEN bp.CARD_TYPE_NAME ELSE NULL END AS MS9_CARD_TYPE_NAME,
+
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384810 THEN bp.iccid ELSE NULL END AS MS10_ICCID,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384810 THEN bp.imsi_mcc ELSE NULL END AS MS10_IMSI_MCC,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384810 THEN bp.imsi_mnc ELSE NULL END AS MS10_IMSI_MNC,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384810 THEN bp.imsi_hlr ELSE NULL END AS MS10_IMSI_HLR,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384810 THEN bp.imsi_si ELSE NULL END AS MS10_IMSI_SI,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384810 THEN CASE WHEN bp.valid_to > v_stichtag_date THEN 'A' ELSE 'L' END ELSE NULL END AS MS10_STATUS,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384810 THEN bp.valid_to ELSE NULL END AS MS10_VALID_TO,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384810 THEN bp.E_ID ELSE NULL END AS MS10_E_ID,
+        CASE WHEN bp.bpr_id * 100 + bp.slave_number = 384810 THEN bp.CARD_TYPE_NAME ELSE NULL END AS MS10_CARD_TYPE_NAME
+    FROM
+        `your_gcp_project_id.your_bigquery_dataset.SOF_TA_BPR_BASIS_BQ` AS bp
+    WHERE
+        bp.bpr_id IN (31, 2759, 2800, 3848);
+
+END;
