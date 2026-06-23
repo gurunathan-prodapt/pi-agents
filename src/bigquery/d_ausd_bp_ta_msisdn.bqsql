@@ -1,0 +1,21 @@
+-- Legacy Source: vobs/dw_source/isrpt/isbert/SQL/aufbereitung/sql/d_ausd_bp_ta_msisdn.sql
+-- Migrated Job: vobs/dw_source/isrpt/isbert/SQL/aktuell/aufbereitung/bin/k_ausd_bp_ta_msisdn.ksh
+
+INSERT INTO `{{ project_id }}.isbert_curated.sof_ta_msisdn`
+  (BPR_INSTANCE_ID,
+   MSISDN,
+   CALLNUMBER_ROLE_ID,
+   VALID_TO)
+SELECT
+  cn1.bpri_com_id AS bpr_instance_id,
+  cn1.msisdn,
+  cn1.callnumber_role_id,
+  COALESCE(cn1.valid_to, PARSE_DATE('%Y%m%d', '47121231')) AS valid_to
+FROM (
+  SELECT
+    cn.*,
+    MAX(COALESCE(cn.valid_to, PARSE_DATE('%Y%m%d', '47121231')))
+      OVER (PARTITION BY cn.bpri_com_id) AS max_valid_to
+  FROM `{{ project_id }}.isbert_raw.sof_ta_msisdn_his` AS cn
+) AS cn1
+WHERE COALESCE(cn1.valid_to, PARSE_DATE('%Y%m%d', '47121231')) = cn1.max_valid_to;
