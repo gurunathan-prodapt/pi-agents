@@ -1,0 +1,45 @@
+-- BigQuery DDL for SOF$TA_VERTRAG_TMP
+-- Replaces usage in legacy job vobs/dw_source/isrpt/isbert/SQL/aktuell/aufbereitung/bin/k_ausd_v_ta_vertrag_tmp.ksh
+-- Based on the INSERT statement in d_ausd_v_ta_vertrag_tmp.sql
+
+CREATE TABLE IF NOT EXISTS `project.dataset.sof_ta_vertrag_tmp`
+(
+    vertrag_id_carmen         STRING,
+    partner_id_carmen         STRING,
+    rechdef_id_carmen         STRING,
+    kundenkonto               STRING,
+    mwst_kennzeichen          STRING,
+    rahmenvertrag_id          STRING,
+    rechnungslauf             INT64,
+    vo_kenn                   STRING,
+    order_number              STRING,
+    geplant_kuend             DATE,
+    eingang_kuend             DATE,
+    vertragsbeginn            DATE,
+    vertragsstatus            STRING,
+    sperrart                  STRING,
+    sperrgrund                STRING,
+    stillegungszeitraum       STRING,
+    twincard                  STRING,
+    dwh_tarifgr_text          STRING,
+    bindefrist                STRING,
+    letztes_upgrade           DATE,
+    vertragsbindung           NUMERIC,
+    vertragsbindungseinheit   STRING,
+    rechnungszahlart          STRING,
+    rechnungsmedium           STRING,
+    twin_vertrag_id           STRING,
+    upgradeberechtigt         STRING,
+    apn                       STRING,
+    upgradegrund              STRING,
+    sv_id                     INT64,
+    vda                       STRING,
+    cost_centre               STRING,
+    cost_centre_user          STRING,
+    cntrct_ty                 INT64,
+    segment_id                INT64,
+    rv_action_id              INT64,
+    rechn_inh_konfig_text     STRING,
+    commitment_reference_date DATE,
+    cntrct_validity_id        INT64
+);
