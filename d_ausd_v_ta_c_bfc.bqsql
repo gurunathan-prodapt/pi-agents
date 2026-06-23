@@ -1,0 +1,140 @@
+-- Legacy source: d_ausd_v_ta_c_bfc.sql from Oracle
+-- Job: DW.BERT_AUSD_V_TA_C_BFC
+
+-- Variable declarations
+DECLARE v_datum DATE;
+DECLARE v_bfc_procedure DATE;
+DECLARE v_max_update INT64 DEFAULT 1000000;
+
+-- Determine Stichtag
+-- Original: SELECT NVL(TO_CHAR(MAX(m.timecreated),'YYYYMMDD'),'19000101') AS s_datum FROM isbert_schema.dwtk_meldungen m WHERE m.job_kennung = 'BERT_DROP_TEMP_TABLE';
+SET v_datum = (
+  SELECT
+    COALESCE(MAX(DATE(m.timecreated)), DATE '1900-01-01')
+  FROM `{{ params.project }}.{{ params.dataset }}.dwtk_meldungen` m
+  WHERE m.job_kennung = 'BERT_DROP_TEMP_TABLE'
+);
+
+-- Determine creation date of bindefrist procedure
+-- Original: SELECT TO_CHAR(created, 'YYYYMMDD') s_bfc_procedure FROM all_objects &v_carmen WHERE object_name = 'CDS$VR_BINDEFRIST' AND object_type = 'PACKAGE';
+SET v_bfc_procedure = (
+  SELECT
+    COALESCE(MAX(DATE(created)), DATE '1900-01-01')
+  FROM `{{ params.project }}.{{ params.dataset }}.all_objects`
+  WHERE object_name = 'CDS$VR_BINDEFRIST'
+    AND object_type = 'PACKAGE'
+);
+
+
+-- Step 1: refresh staging table
+-- Original: begin isbert_schema.DWPA_UTIL_SKRIPT.runstatement(0, 'TRUNCATE TABLE sof$ta_c_bfc_akt'); end;
+TRUNCATE TABLE `{{ params.project }}.{{ params.dataset }}.sof$ta_c_bfc_akt`;
+
+INSERT INTO `{{ params.project }}.{{ params.dataset }}.sof$ta_c_bfc_akt`
+SELECT
+  c.cntrct_id,
+  MAX(c.commitment_reference_date) AS commitment_reference_date,
+  MAX(c.cntrct_validity_id) AS cntrct_validity_id,
+  MAX(GREATEST(
+    COALESCE(c.bfc_age, DATE '1900-01-01'),
+    COALESCE(b.bfc_age, DATE '1900-01-01'),
+    COALESCE(v.bfc_age, DATE '1900-01-01'),
+    COALESCE(p_fi.bfc_age, DATE '1900-01-01'),
+    COALESCE(p_fo.bfc_age, DATE '1900-01-01'),
+    COALESCE(p_fi_n.bfc_age, DATE '1900-01-01'),
+    COALESCE(p_fo_n.bfc_age, DATE '1900-01-01')
+  )) AS bfc_age,
+  COUNT(1) AS bfc_count
+FROM
+  `{{ params.project }}.{{ params.dataset }}.sof$ta_cntrct_crs` c
+LEFT JOIN
+  `{{ params.project }}.{{ params.dataset }}.sof$ta_barrier` b
+  ON c.cntrct_id = b.cntrct_id
+LEFT JOIN
+  `{{ params.project }}.{{ params.dataset }}.sof$ta_cntrct_valid` v
+  ON c.cntrct_validity_id = v.cntrct_validity_id
+LEFT JOIN
+  `{{ params.project }}.{{ params.dataset }}.sof$ta_period` p_fi
+  ON v.first_period_id = p_fi.period_id
+LEFT JOIN
+  `{{ params.project }}.{{ params.dataset }}.sof$ta_period` p_fo
+  ON v.following_period_id = p_fo.period_id
+LEFT JOIN
+  `{{ params.project }}.{{ params.dataset }}.sof$ta_period` p_fi_n
+  ON v.first_notice_period_id = p_fi_n.period_id
+LEFT JOIN
+  `{{ params.project }}.{{ params.dataset }}.sof$ta_period` p_fo_n
+  ON v.follow_notice_period_id = p_fo_n.period_id
+GROUP BY
+  c.cntrct_id;
+
+-- Step 2: initial population
+-- Original: IF v_rows = 0 THEN INSERT ... END IF;
+IF (SELECT COUNT(1) FROM `{{ params.project }}.{{ params.dataset }}.sof$ta_c_bfc`) = 0 THEN
+  INSERT INTO `{{ params.project }}.{{ params.dataset }}.sof$ta_c_bfc` (
+    cntrct_id,
+    bfc_age,
+    bfc_count,
+    bfc_procedure,
+    commitment_reference_date,
+    cntrct_validity_id
+  )
+  SELECT
+    cntrct_id,
+    bfc_age,
+    bfc_count,
+    DATE '1900-01-01', -- Original uses TO_DATE('19000101', 'YYYYMMDD')
+    commitment_reference_date,
+    cntrct_validity_id
+  FROM `{{ params.project }}.{{ params.dataset }}.sof$ta_c_bfc_akt`;
+END IF;
+
+-- Step 3: Recompute binding dates where calculation basis has changed.
+MERGE INTO `{{ params.project }}.{{ params.dataset }}.sof$ta_c_bfc` D
+USING `{{ params.project }}.{{ params.dataset }}.sof$ta_c_bfc_akt` S
+ON (
+    D.cntrct_id = S.cntrct_id
+)
+WHEN MATCHED THEN UPDATE SET
+    bindefrist = `{{ params.project }}.{{ params.dataset }}.bfc_get_bindefrist`(S.cntrct_id, S.commitment_reference_date, S.cntrct_validity_id),
+    bfc_age = S.bfc_age,
+    bfc_count = S.bfc_count,
+    bfc_procedure = v_bfc_procedure, -- Original uses TO_DATE(&v_bfc_procedure, 'YYYYMMDD')
+    commitment_reference_date = S.commitment_reference_date,
+    cntrct_validity_id = S.cntrct_validity_id
+  WHERE
+       D.bfc_age < S.bfc_age
+    OR D.bfc_count <> S.bfc_count
+WHEN NOT MATCHED THEN INSERT (
+    cntrct_id,
+    bindefrist,
+    bfc_age,
+    bfc_count,
+    bfc_procedure,
+    commitment_reference_date,
+    cntrct_validity_id
+) VALUES (
+    S.cntrct_id,
+    `{{ params.project }}.{{ params.dataset }}.bfc_get_bindefrist`(S.cntrct_id, S.commitment_reference_date, S.cntrct_validity_id),
+    S.bfc_age,
+    S.bfc_count,
+    v_bfc_procedure, -- Original uses TO_DATE(&v_bfc_procedure, 'YYYYMMDD')
+    S.commitment_reference_date,
+    S.cntrct_validity_id
+);
+
+-- Step 4: Recompute binding dates that have not yet been calculated with the current procedure.
+UPDATE `{{ params.project }}.{{ params.dataset }}.sof$ta_c_bfc`
+SET
+    bindefrist = `{{ params.project }}.{{ params.dataset }}.bfc_get_bindefrist`(
+        cntrct_id,
+        commitment_reference_date,
+        cntrct_validity_id
+        ),
+    bfc_procedure = v_bfc_procedure -- Original uses TO_DATE(&v_bfc_procedure, 'YYYYMMDD')
+  WHERE bfc_procedure < v_bfc_procedure
+QUALIFY ROW_NUMBER() OVER (ORDER BY cntrct_id) <= v_max_update; -- Replacing ROWNUM <= &v_max_update
+
+-- Cleanup: drop temporary table.
+-- Original: begin isbert_schema.DWPA_UTIL_SKRIPT.runstatement(0, 'TRUNCATE TABLE sof$ta_c_bfc_akt REUSE STORAGE'); end;
+TRUNCATE TABLE `{{ params.project }}.{{ params.dataset }}.sof$ta_c_bfc_akt`;
