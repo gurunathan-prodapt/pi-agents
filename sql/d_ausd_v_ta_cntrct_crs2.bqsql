@@ -1,0 +1,63 @@
+-- Legacy Source: vobs/dw_source/isrpt/isbert/SQL/aktuell/aufbereitung/sql/d_ausd_v_ta_cntrct_crs2.sql
+-- Job: DW.BERT_AUSD_V_TA_CNTRCT_CRS2
+
+-- This file contains the core BigQuery SQL logic for inserting data.
+-- The Airflow DAG will execute this after truncating the target table.
+-- Note: The BigQueryOperator in the DAG handles the truncation separately,
+-- then runs this INSERT statement.
+
+-- Determine s_datum (not used in main insert, but included for completeness of original logic if needed)
+-- SELECT COALESCE(FORMAT_DATE('%Y%m%d', MAX(m.timecreated)),'19000101') AS s_datum
+--   FROM `dw_bert_staging.dwtk_meldungen` m
+--  WHERE m.job_kennung = 'BERT_DROP_TEMP_TABLE';
+
+-- Insert data into the contract table with frame contract information
+INSERT INTO `dw_bert_staging.sof_ta_cntrct_crs2` (
+        cntrct_id,
+        obj_version,
+        contract_number,
+        cntrct_template_id,
+        cntrct_validity_id,
+        valid_from,
+        com_per_ext_rea_cv,
+        billcycle_id,
+        vo_code,
+        cntrct_start_date,
+        cntrct_st,
+        cntrct_parent,
+        cntrct_ty,
+        cost_centre,
+        cost_centre_user,
+        commitment_reference_date,
+        order_number,
+        rv_num
+)
+SELECT
+        c.cntrct_id,
+        c.obj_version,
+        c.contract_number,
+        c.cntrct_template_id,
+        c.cntrct_validity_id,
+        c.valid_from,
+        c.com_per_ext_rea_cv,
+        c.billcycle_id,
+        c.vo_code,
+        c.cntrct_start_date,
+        c.cntrct_st,
+        c.cntrct_parent,
+        c.cntrct_ty,
+        c.cost_centre,
+        c.cost_centre_user,
+        c.commitment_reference_date,
+        c.order_number,
+        cr.contract_number AS RV_NUM
+FROM
+        `dw_bert_staging.sof_ta_cntrct_crs` AS c
+LEFT OUTER JOIN
+        `dw_bert_staging.sof_ta_cntrct_crs` AS cr
+ON
+        c.cntrct_parent = cr.cntrct_id
+    AND
+        cr.cntrct_ty = 10 -- RV
+WHERE
+        c.cntrct_ty <> 10;
