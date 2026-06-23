@@ -1,0 +1,44 @@
+-- Legacy source: vobs/dw_source/isdwh/exporter/apt/sql/d_exis_apt_rabattdaten.sql
+-- Job: EXIS
+SELECT
+    RAHMENVERTRAG_ID,
+    CNTRCT_TEMPLATE_ID AS TARIF_ID,
+    DWH_TARIFGR_TEXT,
+    RABATTIERTE_RECH_POS,
+    DISC_INVOICE_ITEM_ID AS RABATTIERTE_RECH_POS_ID,
+    RABATTHOEHE,
+    STRING_AGG(CAST(BPR_ID AS STRING), ',' ORDER BY BPR_ID) AS BASISPRODUKTE
+FROM (
+    SELECT
+        DISTINCT
+        RPT.RAHMENVERTRAG_ID,
+        RPT.DWH_TARIFGR_TEXT,
+        DISC.CNTRCT_TEMPLATE_ID,
+        DISC.RABATTIERTE_RECH_POS,
+        DISC.DISC_INVOICE_ITEM_ID,
+        DISC.RABATTHOEHE,
+        BPR.BPR_ID
+    FROM
+        `your-gcp-project-id.dwh_raw_layer.RPT$TA_S_D1_VERTRAG` AS RPT
+    INNER JOIN
+        `your-gcp-project-id.dwh_raw_layer.RPT$TA_S_D1_DISCOUNT_RR` AS DISC
+    ON
+        RPT.RAHMENVERTRAG_ID = DISC.CONTRACT_NUMBER
+        AND RPT.SV_ID = DISC.CNTRCT_TEMPLATE_ID
+    INNER JOIN
+        `your-gcp-project-id.dwh_raw_layer.SOF$TA_BPR_OPTIONEN` AS BPR
+    ON
+        RPT.VERTRAG_ID_CARMEN = BPR.CNTRCT_ID
+    INNER JOIN
+        `your-gcp-project-id.dwh_raw_layer.SOF$VI_L_OPTIONZUORDNUNG` AS OPT
+    ON
+        BPR.BPR_ID = OPT.OPTION_ID
+    )
+GROUP BY
+    RAHMENVERTRAG_ID,
+    CNTRCT_TEMPLATE_ID,
+    DWH_TARIFGR_TEXT,
+    RABATTIERTE_RECH_POS,
+    DISC_INVOICE_ITEM_ID,
+    RABATTHOEHE
+;
