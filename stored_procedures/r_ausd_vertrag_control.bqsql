@@ -1,0 +1,146 @@
+-- BigQuery Stored Procedure for k_ausd_v_ta_discount.ksh
+-- Legacy Source: vobs/dw_source/isrpt/isbert/SQL/aktuell/aufbereitung/bin/k_ausd_v_ta_discount.ksh
+-- This procedure orchestrates the data processing, parameter handling,
+-- job control, and error logging in BigQuery.
+
+CREATE OR REPLACE PROCEDURE `project_id.dataset_id.r_ausd_vertrag_control`(
+    IN p_JobKennung STRING,
+    IN p_EintragsNr STRING
+)
+BEGIN
+    DECLARE v_job_run_id STRING;
+    DECLARE v_job_name STRING DEFAULT 'k_ausd_v_ta_discount';
+    DECLARE v_start_time TIMESTAMP;
+    DECLARE v_end_time TIMESTAMP;
+    DECLARE v_status STRING;
+    DECLARE v_message STRING;
+    DECLARE v_error_message STRING;
+    DECLARE v_processed_records INT64;
+    DECLARE v_is_active_job BOOLEAN;
+    DECLARE v_run_date_str STRING;
+
+    -- Generate a unique job run ID
+    SET v_job_run_id = GENERATE_UUID();
+    SET v_start_time = CURRENT_TIMESTAMP();
+    SET v_status = 'RUNNING';
+
+    -- Log job start
+    INSERT INTO `project_id.dataset_id.job_log` (log_time, job_run_id, job_name, job_kennung, log_level, message)
+    VALUES (CURRENT_TIMESTAMP(), v_job_run_id, v_job_name, p_JobKennung, 'INFO', 'Job started.');
+
+    -- Parameter Validation
+    IF p_JobKennung IS NULL OR TRIM(p_JobKennung) = '' THEN
+        SET v_status = 'FAILED';
+        SET v_message = 'Parameter p_JobKennung is missing or empty.';
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = v_message;
+    END IF;
+
+    IF p_EintragsNr IS NULL OR TRIM(p_EintragsNr) = '' THEN
+        SET v_status = 'FAILED';
+        SET v_message = 'Parameter p_EintragsNr is missing or empty.';
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = v_message;
+    END IF;
+
+    -- Check for active jobs (legacy logic: ignore if active)
+    SELECT EXISTS(
+        SELECT 1 FROM `project_id.dataset_id.job_control`
+        WHERE job_kennung = p_JobKennung AND is_active = TRUE
+    ) INTO v_is_active_job;
+
+    IF v_is_active_job THEN
+        SET v_status = 'SKIPPED';
+        SET v_message = 'An active job with the same JobKennung is already running. Skipping execution.';
+        INSERT INTO `project_id.dataset_id.job_log` (log_time, job_run_id, job_name, job_kennung, log_level, message)
+        VALUES (CURRENT_TIMESTAMP(), v_job_run_id, v_job_name, p_JobKennung, 'INFO', v_message);
+        -- Update job control for the skipped job
+        INSERT INTO `project_id.dataset_id.job_control` (job_run_id, job_name, job_kennung, eintrags_nr, start_time, end_time, status, message, is_active)
+        VALUES (v_job_run_id, v_job_name, p_JobKennung, p_EintragsNr, v_start_time, CURRENT_TIMESTAMP(), v_status, v_message, FALSE);
+        RETURN; -- Exit procedure if skipped
+    END IF;
+
+    -- Register job start in control table and deactivate older runs
+    -- The original script's `starteSQLSkript` handled this, replicating here.
+    BEGIN TRANSACTION;
+
+        -- Deactivate any existing active jobs for this job_kennung before starting a new one
+        UPDATE `project_id.dataset_id.job_control`
+        SET end_time = CURRENT_TIMESTAMP(), status = 'DEACTIVATED', is_active = FALSE
+        WHERE job_kennung = p_JobKennung AND is_active = TRUE;
+
+        INSERT INTO `project_id.dataset_id.job_control` (job_run_id, job_name, job_kennung, eintrags_nr, start_time, status, is_active)
+        VALUES (v_job_run_id, v_job_name, p_JobKennung, p_EintragsNr, v_start_time, v_status, TRUE);
+
+    COMMIT TRANSACTION;
+
+    -- Determine v_datum as per original SQL logic
+    SET v_run_date_str = (
+      SELECT COALESCE(FORMAT_DATE('%Y%m%d', MAX(DATE(timecreated))), '19000101')
+      FROM `project_id.dataset_id.dwtk_meldungen`
+      WHERE job_kennung = 'BERT_DROP_TEMP_TABLE'
+    );
+
+    BEGIN
+        -- Core data processing logic from d_ausd_v_ta_discount.sql
+        -- This uses the translated SQL and captures the number of rows processed.
+        EXECUTE IMMEDIATE FORMAT("""
+            CREATE OR REPLACE TABLE `project_id.dataset_id.ta_discount`
+            CLUSTER BY cntrct_id, discount_id AS
+            SELECT
+              da.cntrct_id,
+              da.discount_id,
+              d.disc_vector_ty,
+              da.cntrct_obj_version,
+              cd.cds_description AS rabatt,
+              CAST(dv.calc_rule_value AS STRING) AS rabatthoehe
+            FROM `project_id.dataset_id.cds_ta_discount_bc_assoc` AS da
+            JOIN `project_id.dataset_id.cds_ta_discount` AS d
+              ON da.discount_id = d.discount_id
+            JOIN `project_id.dataset_id.cds_ta_care_description` AS cd
+              ON cd.cds_description_id = d.cds_description_id
+             AND cd.language = 1
+            JOIN `project_id.dataset_id.cds_ta_disc_vector` AS dv
+              ON d.discount_id = dv.discount_id
+             AND d.disc_vector_ty = dv.disc_vector_ty
+             AND d.obj_version = dv.discount_obj_version
+            WHERE da.insert_at <= PARSE_DATE('%%Y%%m%%d', '%s')
+              AND (da.modified_at IS NULL OR da.modified_at > PARSE_DATE('%%Y%%m%%d', '%s'))
+              AND d.insert_at <= PARSE_DATE('%%Y%%m%%d', '%s')
+              AND (d.modified_at IS NULL OR d.modified_at > PARSE_DATE('%%Y%%m%%d', '%s'))
+              AND d.valid_from <= PARSE_DATE('%%Y%%m%%d', '%s')
+              AND (d.valid_to IS NULL OR d.valid_to > PARSE_DATE('%%Y%%m%%d', '%s'))
+              AND dv.insert_at <= PARSE_DATE('%%Y%%m%%d', '%s')
+              AND (dv.modified_at IS NULL OR dv.modified_at > PARSE_DATE('%%Y%%m%%d', '%s'))
+              AND d.is_production = 1;
+        """, v_run_date_str, v_run_date_str, v_run_date_str, v_run_date_str, v_run_date_str, v_run_date_str, v_run_date_str, v_run_date_str);
+
+        -- Capture processed record count
+        SELECT COUNT(*) INTO v_processed_records FROM `project_id.dataset_id.ta_discount`;
+
+        SET v_status = 'SUCCEEDED';
+        SET v_message = FORMAT('Data processing completed successfully. Processed %d records.', v_processed_records);
+
+    EXCEPTION WHEN ERROR THEN
+        SET v_status = 'FAILED';
+        SET v_error_message = @@error.message;
+        SET v_message = FORMAT('Data processing failed: %s', v_error_message);
+        INSERT INTO `project_id.dataset_id.job_log` (log_time, job_run_id, job_name, job_kennung, log_level, message, error_details)
+        VALUES (CURRENT_TIMESTAMP(), v_job_run_id, v_job_name, p_JobKennung, 'ERROR', v_message, TO_JSON_STRING(STRUCT(v_error_message AS error_message)));
+    END;
+
+    SET v_end_time = CURRENT_TIMESTAMP();
+
+    -- Update job control table with final status
+    UPDATE `project_id.dataset_id.job_control`
+    SET
+        end_time = v_end_time,
+        status = v_status,
+        message = v_message,
+        processed_records = IF(v_status = 'SUCCEEDED', v_processed_records, NULL),
+        is_active = FALSE
+    WHERE job_run_id = v_job_run_id;
+
+    -- Log final status
+    INSERT INTO `project_id.dataset_id.job_log` (log_time, job_run_id, job_name, job_kennung, log_level, message)
+    VALUES (CURRENT_TIMESTAMP(), v_job_run_id, v_job_name, p_JobKennung, 'INFO', FORMAT('Job finished with status: %s. Message: %s', v_status, v_message));
+
+END;
