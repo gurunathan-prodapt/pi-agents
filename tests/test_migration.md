@@ -1,0 +1,1 @@
+ERROR: tests skipped for vobs/dw_source/isrpt/isbert/install_save/k_ausd_bp_ta_tarifoption.ksh — design unavailable.
