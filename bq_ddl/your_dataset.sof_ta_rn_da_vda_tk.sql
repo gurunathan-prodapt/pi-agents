@@ -1,0 +1,15 @@
+-- Legacy Source: N/A (Derived from Oracle SQL script d_ausd_bp_ta_rn_da_vda_tk.sql)
+-- Job: DW.BERT_AUSD_BP_TA_RN_DA_VDA_TK
+CREATE TABLE IF NOT EXISTS `your_dataset.sof_ta_rn_da_vda_tk`
+(
+  CNTRCT_ID STRING,
+  DA_RN_MSISDN STRING,
+  DA_RN_STATUS STRING,
+  DA_RN_VALID_TO DATE,
+  VDA_RN_MSISDN STRING,
+  VDA_RN_STATUS STRING,
+  VDA_RN_VALID_TO DATE,
+  TK_RN_MSISDN STRING,
+  TK_RN_STATUS STRING,
+  TK_RN_VALID_TO DATE
+);
