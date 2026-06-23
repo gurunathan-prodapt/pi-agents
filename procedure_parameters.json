@@ -1,0 +1,22 @@
+{
+  "procedure_name": "project.dataset.ausd_bp_ta_ibcp_ccid",
+  "parameters": [
+    {
+      "name": "p_stichtag_str",
+      "type": "STRING",
+      "description": "Optional cutoff date in YYYY-MM-DD format. Defaults to current system date if not provided.",
+      "is_optional": true,
+      "default_value_hint": "CURRENT_DATE()",
+      "example": "2023-10-26"
+    },
+    {
+      "name": "p_wiederanlaufwert_str",
+      "type": "STRING",
+      "description": "Optional restart value for incremental processing. Defaults to '0' (INT64) if not provided.",
+      "is_optional": true,
+      "default_value_hint": "0",
+      "example": "10000"
+    }
+  ],
+  "invocation_example": "CALL project.dataset.ausd_bp_ta_ibcp_ccid('2023-10-26', '10000');\nCALL project.dataset.ausd_bp_ta_ibcp_ccid(NULL, NULL);"
+}
