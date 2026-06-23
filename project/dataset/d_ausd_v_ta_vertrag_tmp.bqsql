@@ -1,0 +1,35 @@
+-- Legacy source: d_ausd_v_ta_vertrag_tmp.sql (referenced by k_ausd_v_ta_vertrag_tmp.ksh)
+-- Job: vobs/dw_source/isrpt/isbert/SQL/aktuell/aufbereitung/bin/k_ausd_v_ta_vertrag_tmp.ksh
+-- Target: BigQuery Stored Procedure for core SQL logic (Placeholder)
+
+-- This stored procedure represents the migration of the original 'd_ausd_v_ta_vertrag_tmp.sql'
+-- Its actual content needs to be derived from the analysis of the original SQL file.
+CREATE OR REPLACE PROCEDURE `project.dataset.d_ausd_v_ta_vertrag_tmp`(
+  IN p_EintragsNr STRING,
+  IN p_JobKennung STRING
+)
+BEGIN
+  -- Placeholder for the actual data manipulation logic.
+  -- Example:
+  -- INSERT INTO `project.dataset.ta_vertrag_tmp` (entry_nr, job_kennung, vertrag_id, vertrag_datum, some_value, load_ts)
+  -- SELECT
+  --   p_EintragsNr,
+  --   p_JobKennung,
+  --   source.vertrag_id,
+  --   source.vertrag_datum,
+  --   source.some_value,
+  --   CURRENT_TIMESTAMP()
+  -- FROM
+  --   `project.source_dataset.source_table` AS source
+  -- WHERE
+  --   source.entry_nr = p_EintragsNr;
+
+  -- For now, let's just log that it was called.
+  INSERT INTO `project.dataset.job_run_log`
+  (run_ts, job_kennung, eintrags_nr, tab_name, records)
+  VALUES
+  (CURRENT_TIMESTAMP(), p_JobKennung, p_EintragsNr, 'd_ausd_v_ta_vertrag_tmp_called', 0);
+
+  SELECT FORMAT('d_ausd_v_ta_vertrag_tmp called with p_EintragsNr=%s, p_JobKennung=%s', p_EintragsNr, p_JobKennung) AS debug_message;
+
+END;

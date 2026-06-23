@@ -1,0 +1,11 @@
+-- Legacy source: vobs/dw_source/isrpt/isbert/SQL/aktuell/aufbereitung/bin/k_ausd_v_ta_vertrag_tmp.ksh
+-- Job: vobs/dw_source/isrpt/isbert/SQL/aktuell/aufbereitung/bin/k_ausd_v_ta_vertrag_tmp.ksh
+-- Target: BigQuery DDL for error_log
+
+CREATE TABLE IF NOT EXISTS `project.dataset.error_log` (
+    error_ts TIMESTAMP,
+    module_name STRING,
+    error_nr INT64,
+    error_arg STRING,
+    message STRING
+);

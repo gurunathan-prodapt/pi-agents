@@ -1,0 +1,14 @@
+-- Legacy source: vobs/dw_source/isrpt/isbert/SQL/aktuell/aufbereitung/bin/k_ausd_v_ta_vertrag_tmp.ksh
+-- Job: vobs/dw_source/isrpt/isbert/SQL/aktuell/aufbereitung/bin/k_ausd_v_ta_vertrag_tmp.ksh
+-- Target: BigQuery DDL for ta_vertrag_tmp (Placeholder)
+
+CREATE TABLE IF NOT EXISTS `project.dataset.ta_vertrag_tmp` (
+    entry_nr STRING,
+    job_kennung STRING,
+    -- Add other columns based on actual source system schema
+    -- For example:
+    vertrag_id STRING,
+    vertrag_datum DATE,
+    some_value NUMERIC,
+    load_ts TIMESTAMP
+);
