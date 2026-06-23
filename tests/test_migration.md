@@ -1,0 +1,405 @@
+The migration of `k_ausd_bp_ta_bcp_msisdn.ksh` to Google BigQuery involves translating KornShell orchestration, Oracle SQL logic, and file-based post-processing into a BigQuery Stored Procedure and associated DML. The following test cases are designed to ensure behavioral equivalence and data integrity.
+
+---
+
+## 1. Output Parity Tests
+
+### 1.1. Core Data Transformation Output Parity
+
+*   **Purpose:** Verify that the main data transformation logic, originally from `d_ausd_bp_ta_bcp_msisdn.sql` and now embedded in the BigQuery Stored Procedure, produces identical results in the target table `sof_ta_bcp_msisdn` as the legacy Oracle job.
+*   **Setup:**
+    1.  **Legacy Environment:**
+        *   Ensure Oracle tables `sof_ta_bpr_bcp` and `sof_ta_rn_vertrag` exist.
+        *   Populate these tables with a comprehensive test dataset. This dataset should include:
+            *   Rows with matching `cntrct_id_ref` and `rn.cntrct_id`.
+            *   Rows in `sof_ta_bpr_bcp` where `cntrct_id_ref` has no match in `sof_ta_rn_vertrag`.
+            *   Rows in `sof_ta_rn_vertrag` where `cntrct_id` has no match in `sof_ta_bpr_bcp`.
+            *   Duplicate `cntrct_id_ref` values in `sof_ta_bpr_bcp` to test the `DISTINCT` clause.
+            *   NULL values in `cntrct_id_ref` or `tn_tel_msisdn`.
+            *   An empty set of source tables.
+        *   Ensure the target Oracle table `sof$ta_bcp_msisdn` is empty.
+    2.  **BigQuery Environment:**
+        *   Create BigQuery tables `my_dataset.sof_ta_bpr_bcp` and `my_dataset.sof_ta_rn_vertrag` with schemas matching their Oracle counterparts.
+        *   Load the *exact same* test dataset into these BigQuery source tables.
+        *   Ensure the target BigQuery table `my_dataset.sof_ta_bcp_msisdn` is empty.
+*   **Action:**
+    1.  **Legacy:** Execute the KornShell script:
+        ```bash
+        ./k_ausd_bp_ta_bcp_msisdn.ksh -j "LEGACY_TEST" -f "1" -s "01012023" -l "0"
+        ```
+        After execution, extract all data from `sof$ta_bcp_msisdn` in Oracle, ordered by all columns for deterministic comparison.
+    2.  **Migrated:** Execute the BigQuery Stored Procedure:
+        ```sql
+        CALL `my-gcp-project.my_dataset.r_ausd_bp_ta_bcp_msisdn`(
+            p_JobKennung => 'BQ_TEST',
+            p_EintragsNr => '1',
+            p_Stichtag => '01012023',
+            p_wiederanlaufWert => '0'
+        );
+        ```
+        After execution, extract all data from `my-gcp-project.my_dataset.sof_ta_bcp_msisdn`, ordered by all columns.
+*   **Pass/Fail Criterion:** The content (row count, column values, and data types) of `my-gcp-project.my_dataset.sof_ta_bcp_msisdn` must be identical to the content of `sof$ta_bcp_msisdn` from the legacy run.
+
+    ```python
+    # Example Python (pytest) assertion
+    import pandas as pd
+    from google.cloud import bigquery
+    import cx_Oracle # Assuming Oracle client for legacy data extraction
+
+    def test_core_data_parity(oracle_conn_str, bq_project_id, bq_dataset_id):
+        # --- Setup (simplified for example, actual setup involves data loading) ---
+        # Assume source tables are pre-populated in both environments
+
+        # --- Action: Legacy Execution ---
+        # Execute legacy ksh script (e.g., via subprocess or manual run)
+        # subprocess.run(["./k_ausd_bp_ta_bcp_msisdn.ksh", "-j", "LEGACY_TEST", "-f", "1", "-s", "01012023", "-l", "0"])
+
+        # Extract data from Oracle
+        oracle_conn = cx_Oracle.connect(oracle_conn_str)
+        legacy_query = "SELECT CNTRCT_ID, BPR_ID, CNTRCT_ID_REF, TN_TEL_MSISDN FROM sof$ta_bcp_msisdn ORDER BY 1,2,3,4"
+        legacy_df = pd.read_sql(legacy_query, oracle_conn)
+        oracle_conn.close()
+
+        # --- Action: Migrated Execution ---
+        bq_client = bigquery.Client(project=bq_project_id)
+        sp_call = f"""
+            CALL `{bq_project_id}.{bq_dataset_id}.r_ausd_bp_ta_bcp_msisdn`(
+                p_JobKennung => 'BQ_TEST',
+                p_EintragsNr => '1',
+                p_Stichtag => '01012023',
+                p_wiederanlaufWert => '0'
+            );
+        """
+        bq_client.query(sp_call).result() # Execute the stored procedure
+
+        # Extract data from BigQuery
+        migrated_query = f"""
+            SELECT CNTRCT_ID, BPR_ID, CNTRCT_ID_REF, TN_TEL_MSISDN
+            FROM `{bq_project_id}.{bq_dataset_id}.sof_ta_bcp_msisdn`
+            ORDER BY 1,2,3,4
+        """
+        migrated_df = bq_client.query(migrated_query).result().to_dataframe()
+
+        # --- Pass/Fail Criterion ---
+        pd.testing.assert_frame_equal(legacy_df, migrated_df, check_dtype=True, check_names=True)
+    ```
+
+### 1.2. Post-processing Output Parity (cibasisprodukt.csv)
+
+*   **Purpose:** Verify that the post-processing logic (migrated `sed`, `sort`, `join` commands) produces an identical final output table `cibasisprodukt_csv` in BigQuery as the `cibasisprodukt.csv` file generated by the legacy system (assuming the commented section in the legacy script is reactivated).
+*   **Setup:**
+    1.  **Legacy Environment:**
+        *   Same source data setup as 1.1.
+        *   **Crucially, uncomment and enable the post-processing section** in `k_ausd_bp_ta_bcp_msisdn.ksh` for this test.
+        *   Ensure the legacy script has write permissions to create `cibasisprodukt.csv`.
+    2.  **BigQuery Environment:**
+        *   Same source data setup as 1.1.
+        *   Ensure the target BigQuery table `my_dataset.cibasisprodukt_csv` is empty.
+*   **Action:**
+    1.  **Legacy:** Execute the KornShell script (with post-processing enabled). Capture the content of the generated `cibasisprodukt.csv` file.
+    2.  **Migrated:** Execute the BigQuery Stored Procedure.
+*   **Pass/Fail Criterion:** The content (row count, column values, and data types) of `my-gcp-project.my_dataset.cibasisprodukt_csv` must be identical to the content of the legacy `cibasisprodukt.csv` file. Column order and data types should be preserved.
+
+    ```python
+    # Example Python (pytest) assertion
+    import pandas as pd
+    from google.cloud import bigquery
+    import io # For reading string as file
+
+    def test_post_processing_parity(bq_project_id, bq_dataset_id):
+        # --- Setup (simplified for example) ---
+        # Assume source tables are pre-populated in both environments
+        # Assume legacy ksh script is modified to enable post-processing
+
+        # --- Action: Legacy Execution ---
+        # Execute legacy ksh script (e.g., via subprocess or manual run)
+        # subprocess.run(["./k_ausd_bp_ta_bcp_msisdn.ksh", "-j", "LEGACY_TEST", "-f", "1", "-s", "01012023", "-l", "0"])
+        
+        # Read the generated legacy CSV file
+        # This path needs to be accessible from the test runner
+        with open("/path/to/legacy/cibasisprodukt.csv", "r") as f:
+            legacy_csv_content = f.read()
+        
+        # Convert legacy CSV content to DataFrame, assuming ';' delimiter and no header
+        legacy_csv_df = pd.read_csv(io.StringIO(legacy_csv_content), sep=';', header=None,
+                                    names=['col1', 'col2_bp', 'col3_msisdn', 'col2_fax'])
+        legacy_csv_df = legacy_csv_df.sort_values(by=list(legacy_csv_df.columns)).reset_index(drop=True)
+
+        # --- Action: Migrated Execution ---
+        bq_client = bigquery.Client(project=bq_project_id)
+        sp_call = f"""
+            CALL `{bq_project_id}.{bq_dataset_id}.r_ausd_bp_ta_bcp_msisdn`(
+                p_JobKennung => 'BQ_TEST',
+                p_EintragsNr => '1',
+                p_Stichtag => '01012023',
+                p_wiederanlaufWert => '0'
+            );
+        """
+        bq_client.query(sp_call).result()
+
+        # Extract data from BigQuery target table
+        migrated_query = f"""
+            SELECT col1, col2_bp, col3_msisdn, col2_fax
+            FROM `{bq_project_id}.{bq_dataset_id}.cibasisprodukt_csv`
+            ORDER BY 1,2,3,4
+        """
+        migrated_csv_df = bq_client.query(migrated_query).result().to_dataframe()
+
+        # --- Pass/Fail Criterion ---
+        pd.testing.assert_frame_equal(legacy_csv_df, migrated_csv_df, check_dtype=True, check_names=True)
+    ```
+
+---
+
+## 2. Transformation Correctness Tests
+
+### 2.1. Joins and Filters (Core SQL)
+
+*   **Purpose:** Verify that the `INNER JOIN` logic between `sof_ta_bpr_bcp` and `sof_ta_rn_vertrag` on `cntrct_id_ref = rn.cntrct_id` is correctly implemented in BigQuery, handling various join scenarios as per standard SQL.
+*   **Setup:** Populate BigQuery source tables (`my_dataset.sof_ta_bpr_bcp`, `my_dataset.sof_ta_rn_vertrag`) with specific test data:
+    *   **Exact Matches:** Rows where `bp.cntrct_id_ref` perfectly matches `rn.cntrct_id`.
+    *   **No Matches:** Rows in `bp.sof_ta_bpr_bcp` where `cntrct_id_ref` has no corresponding `cntrct_id` in `sof_ta_rn_vertrag`.
+    *   **NULL Join Keys:** Rows where `bp.cntrct_id_ref` is `NULL` or `rn.cntrct_id` is `NULL`.
+    *   **One-to-Many:** One `bp.cntrct_id_ref` matching multiple `rn.cntrct_id` (to verify `DISTINCT` behavior).
+*   **Action:** Execute the BigQuery Stored Procedure.
+*   **Pass/Fail Criterion:**
+    *   Rows with `NULL` in `bp.cntrct_id_ref` or `rn.cntrct_id` should not appear in the output of `sof_ta_bcp_msisdn` (standard `INNER JOIN` behavior).
+    *   Rows from `sof_ta_bpr_bcp` that have no match in `sof_ta_rn_vertrag` should not be present in `sof_ta_bcp_msisdn`.
+    *   The `DISTINCT` clause should ensure that each combination of `(CNTRCT_ID, BPR_ID, CNTRCT_ID_REF, TN_TEL_MSISDN)` is unique in the target table.
+
+    ```sql
+    -- BigQuery assertions after SP execution
+    -- Test 1: No NULLs in join keys after INNER JOIN
+    SELECT COUNT(*)
+    FROM `my-gcp-project.my_dataset.sof_ta_bcp_msisdn`
+    WHERE CNTRCT_ID_REF IS NULL OR CNTRCT_ID IS NULL;
+    -- Expected: 0
+
+    -- Test 2: Verify DISTINCTness (no duplicate rows)
+    SELECT COUNT(*)
+    FROM (
+        SELECT CNTRCT_ID, BPR_ID, CNTRCT_ID_REF, TN_TEL_MSISDN
+        FROM `my-gcp-project.my_dataset.sof_ta_bcp_msisdn`
+        GROUP BY 1,2,3,4
+        HAVING COUNT(*) > 1
+    );
+    -- Expected: 0
+    ```
+
+### 2.2. Type and NULL Handling (Post-processing)
+
+*   **Purpose:** Verify that `REPLACE(CAST(... AS STRING), ' ', '')` and the `JOIN` operations in the post-processing section correctly handle various data types, spaces, and NULL values.
+*   **Setup:** Populate `my_dataset.sof_ta_bcp_msisdn` with data that specifically tests these aspects:
+    *   Numeric values (e.g., `CNTRCT_ID`, `BPR_ID`) that will be `CAST` to `STRING`.
+    *   String values (`TN_TEL_MSISDN`) that may contain spaces.
+    *   NULL values in any of the columns used in the post-processing (`CNTRCT_ID`, `BPR_ID`, `CNTRCT_ID_REF`, `TN_TEL_MSISDN`).
+    *   Rows designed to test the `RIGHT JOIN` and `LEFT JOIN` behavior (e.g., a row in `tmp_cibasis_data96_dat` with no match in `tmp_cibasis_data24_dat`, or a row in `tmp_cibasis_24_96_tmp` with no match in `tmp_cibasis_fax_dat`).
+*   **Action:** Execute the BigQuery Stored Procedure.
+*   **Pass/Fail Criterion:**
+    *   All spaces should be removed from the string representations of columns in `tmp_cibasis_data24_dat`, `tmp_cibasis_data96_dat`, and `tmp_cibasis_fax_dat`.
+    *   `NULL` values in source columns should propagate correctly (e.g., `CAST(NULL AS STRING)` results in `NULL`).
+    *   The `RIGHT JOIN` (for `tmp_cibasis_24_96_tmp`) should correctly preserve unmatched rows from `tmp_cibasis_data96_dat`.
+    *   The `LEFT JOIN` (for `cibasisprodukt_csv`) should correctly preserve unmatched rows from `tmp_cibasis_24_96_tmp`.
+
+    ```sql
+    -- BigQuery assertions after SP execution
+    -- Test 1: No spaces in any column of the final output
+    SELECT COUNT(*)
+    FROM `my-gcp-project.my_dataset.cibasisprodukt_csv`
+    WHERE col1 LIKE '% %' OR col2_bp LIKE '% %' OR col3_msisdn LIKE '% %' OR col2_fax LIKE '% %';
+    -- Expected: 0
+
+    -- Test 2: Verify NULL propagation for a specific scenario (e.g., col2_fax from LEFT JOIN)
+    -- This requires specific test data where a row in tmp_cibasis_24_96_tmp has no match in tmp_cibasis_fax_dat.
+    SELECT COUNT(*)
+    FROM `my-gcp-project.my_dataset.cibasisprodukt_csv`
+    WHERE col1 = 'CONTRACT_ID_WITH_NO_FAX_MATCH' AND col2_fax IS NULL;
+    -- Expected: 1 (if 'CONTRACT_ID_WITH_NO_FAX_MATCH' is a specific test case)
+
+    -- Test 3: Verify NULL propagation for a specific scenario (e.g., col2_bp from RIGHT JOIN)
+    -- This requires specific test data where a row in tmp_cibasis_data96_dat has no match in tmp_cibasis_data24_dat.
+    SELECT COUNT(*)
+    FROM `my-gcp-project.my_dataset.cibasisprodukt_csv`
+    WHERE col1 = 'CONTRACT_ID_WITH_NO_BP_MATCH' AND col2_bp IS NULL;
+    -- Expected: 1 (if 'CONTRACT_ID_WITH_NO_BP_MATCH' is a specific test case)
+    ```
+
+---
+
+## 3. External-System Replacements Tests
+
+### 3.1. Parameter Parsing and Validation
+
+*   **Purpose:** Verify that the BigQuery Stored Procedure correctly validates input parameters (`p_JobKennung`, `p_EintragsNr`, `p_Stichtag`) and handles `p_wiederanlaufWert` defaulting, mirroring the legacy `getopts`, `pruefeParameterGesetzt`, and `DWDate_Datum_Check` logic.
+*   **Setup:** None (tests involve calling the procedure with various parameters).
+*   **Action:** Call the BigQuery Stored Procedure with the following parameter combinations:
+    1.  Missing `p_JobKennung` (pass `NULL`).
+    2.  Missing `p_EintragsNr` (pass `NULL`).
+    3.  Missing `p_Stichtag` (pass `NULL`).
+    4.  Invalid `p_Stichtag` format (e.g., `'2023-01-01'`, `'01/01/2023'`, `'010123'`).
+    5.  Valid parameters for all required fields.
+    6.  Missing `p_wiederanlaufWert` (pass `NULL`).
+*   **Pass/Fail Criterion:**
+    *   For cases 1-4, the procedure call must `RAISE` an error with a message indicating the specific parameter validation failure (e.g., "FEHLER: JobKennung parameter is required.", "FEHLER: Stichtag ... is not in required DDMMYYYY format.").
+    *   For case 5, the procedure must execute successfully.
+    *   For case 6, the procedure must execute successfully, and the internal `v_restart_value` should correctly default to `'0'`. (Verification of `v_restart_value` might require temporary modification of the SP to log or return this value).
+
+    ```sql
+    -- BigQuery assertions
+    -- Test 1: Missing p_JobKennung
+    -- This query is expected to fail with a specific error message.
+    -- The exact error message can be captured from BigQuery job logs.
+    CALL `my-gcp-project.my_dataset.r_ausd_bp_ta_bcp_msisdn`(
+        p_JobKennung => NULL,
+        p_EintragsNr => '1',
+        p_Stichtag => '01012023',
+        p_wiederanlaufWert => '0'
+    );
+    -- Expected: Procedure call fails with error containing "FEHLER: JobKennung parameter is required."
+
+    -- Test 2: Invalid p_Stichtag format
+    CALL `my-gcp-project.my_dataset.r_ausd_bp_ta_bcp_msisdn`(
+        p_JobKennung => 'TEST_JOB',
+        p_EintragsNr => '1',
+        p_Stichtag => '2023-01-01', -- Incorrect format
+        p_wiederanlaufWert => '0'
+    );
+    -- Expected: Procedure call fails with error containing "FEHLER: Stichtag ... is not in required DDMMYYYY format."
+
+    -- Test 3: Default p_wiederanlaufWert (requires SP to log or return for direct verification)
+    -- Assuming the SP logs the value of v_restart_value:
+    CALL `my-gcp-project.my_dataset.r_ausd_bp_ta_bcp_msisdn`(
+        p_JobKennung => 'TEST_JOB',
+        p_EintragsNr => '1',
+        p_Stichtag => '01012023',
+        p_wiederanlaufWert => NULL
+    );
+    -- Expected: Successful execution. Check BigQuery job logs for "INFO: Parameters ... WiederanlaufWert: 0".
+    ```
+
+### 3.2. Date Derivation (`gestern.ksh` replacement)
+
+*   **Purpose:** Verify that `v_datum_heute` and `v_datum_gestern` are correctly derived within the BigQuery Stored Procedure, matching the logic of the legacy `gestern.ksh` script.
+*   **Setup:** None.
+*   **Action:** Execute the BigQuery Stored Procedure with valid parameters.
+*   **Pass/Fail Criterion:** The `v_datum_heute` variable should be `CURRENT_DATE()` and `v_datum_gestern` should be `DATE_SUB(CURRENT_DATE(), INTERVAL 1 DAY)`. This can be verified by inspecting BigQuery job logs, as the procedure explicitly logs these values.
+
+    ```sql
+    -- BigQuery assertion (after SP execution)
+    -- Check BigQuery job logs for the following messages:
+    -- "INFO: Derived Dates - Heute: YYYY-MM-DD, Gestern: YYYY-MM-DD"
+    -- Compare the logged dates with the actual CURRENT_DATE() and DATE_SUB(CURRENT_DATE(), INTERVAL 1 DAY).
+    ```
+
+### 3.3. Record Count Mechanism
+
+*   **Purpose:** Verify that the BigQuery record counting mechanism (using `COUNT(*)`) accurately replaces the legacy temporary file (`$DW_DIR_UTL/bert_k_ausd_bp_ta_bcp_msisdn.tmp`) and its subsequent parsing.
+*   **Setup:** Populate BigQuery source tables with data that will result in a known, non-zero number of records in `my_dataset.sof_ta_bcp_msisdn`.
+*   **Action:** Execute the BigQuery Stored Procedure.
+*   **Pass/Fail Criterion:** The `v_records` variable, as logged by the procedure, must exactly match the `COUNT(*)` of rows in `my-gcp-project.my_dataset.sof_ta_bcp_msisdn` after the main SQL execution.
+
+    ```sql
+    -- BigQuery assertion (after SP execution)
+    -- 1. Get the actual count from the target table:
+    SELECT COUNT(*) FROM `my-gcp-project.my_dataset.sof_ta_bcp_msisdn`;
+    -- 2. Check BigQuery job logs for the message:
+    -- "INFO: Data processing completed. <v_records_value> records processed for PoolBasisprodukt."
+    -- The <v_records_value> from the log must match the result of the COUNT(*) query.
+    ```
+
+### 3.4. Orchestration (Airflow DAG)
+
+*   **Purpose:** Verify that the Airflow DAG (`k_ausd_bp_ta_bcp_msisdn_bq`) correctly triggers the BigQuery Stored Procedure and passes the specified parameters.
+*   **Setup:**
+    *   An Airflow environment is configured with the `google_cloud_default` connection.
+    *   The BigQuery Stored Procedure `r_ausd_bp_ta_bcp_msisdn` is deployed in BigQuery.
+    *   BigQuery source tables are populated with test data.
+*   **Action:** Trigger the Airflow DAG using the Airflow UI or CLI.
+    ```bash
+    # Example CLI command
+    airflow dags trigger k_ausd_bp_ta_bcp_msisdn_bq --conf '{"stichtag": "01012023", "job_kennung": "AIRFLOW_TEST"}'
+    ```
+*   **Pass/Fail Criterion:**
+    *   The Airflow DAG run must complete successfully without task failures.
+    *   The `call_r_ausd_bp_ta_bcp_msisdn_procedure` task must succeed.
+    *   BigQuery job history or logs must show that the `r_ausd_bp_ta_bcp_msisdn` stored procedure was invoked with the parameters passed from the DAG (e.g., `p_JobKennung='AIRFLOW_TEST'`, `p_Stichtag='01012023'`).
+    *   The target tables (`my_dataset.sof_ta_bcp_msisdn`, `my_dataset.cibasisprodukt_csv`) should be populated with data as expected.
+
+---
+
+## 4. Data-Quality / Row-Count / Schema Assertions
+
+### 4.1. Target Table Schema and Data Types
+
+*   **Purpose:** Verify that the schema and data types of the target BigQuery tables (`sof_ta_bcp_msisdn`, `cibasisprodukt_csv`) match the expected definitions, aligning with the legacy system's output.
+*   **Setup:** None (this is a metadata check after a successful run).
+*   **Action:** After a successful run of the BigQuery Stored Procedure.
+*   **Pass/Fail Criterion:**
+    *   `my-gcp-project.my_dataset.sof_ta_bcp_msisdn` must have the following schema:
+        *   `CNTRCT_ID`: `INT64` (or `STRING` if Oracle source was `VARCHAR2` and values could be non-numeric)
+        *   `BPR_ID`: `INT64` (or `STRING`)
+        *   `CNTRCT_ID_REF`: `INT64` (or `STRING`)
+        *   `TN_TEL_MSISDN`: `STRING`
+    *   `my-gcp-project.my_dataset.cibasisprodukt_csv` must have the following schema:
+        *   `col1`: `STRING`
+        *   `col2_bp`: `STRING`
+        *   `col3_msisdn`: `STRING`
+        *   `col2_fax`: `STRING`
+
+    ```sql
+    -- BigQuery assertion for sof_ta_bcp_msisdn schema
+    SELECT column_name, data_type
+    FROM `my-gcp-project`.my_dataset.INFORMATION_SCHEMA.COLUMNS
+    WHERE table_name = 'sof_ta_bcp_msisdn'
+    ORDER BY ordinal_position;
+    -- Expected output should match the defined schema.
+
+    -- BigQuery assertion for cibasisprodukt_csv schema
+    SELECT column_name, data_type
+    FROM `my-gcp-project`.my_dataset.INFORMATION_SCHEMA.COLUMNS
+    WHERE table_name = 'cibasisprodukt_csv'
+    ORDER BY ordinal_position;
+    -- Expected output should match the defined schema.
+    ```
+
+### 4.2. Row Count Assertion
+
+*   **Purpose:** Verify that the final row counts in the target BigQuery tables match the expected counts from the legacy system for a given input dataset.
+*   **Setup:** Same as 1.1 (populate source tables with a known test dataset).
+*   **Action:** After a successful run of the BigQuery Stored Procedure.
+*   **Pass/Fail Criterion:**
+    *   The `COUNT(*)` of `my-gcp-project.my_dataset.sof_ta_bcp_msisdn` must match the `COUNT(*)` of `sof$ta_bcp_msisdn` from the legacy run (as established in Test 1.1).
+    *   The `COUNT(*)` of `my-gcp-project.my_dataset.cibasisprodukt_csv` must match the row count of the legacy `cibasisprodukt.csv` file (as established in Test 1.2).
+
+    ```sql
+    -- BigQuery assertion
+    SELECT COUNT(*) FROM `my-gcp-project.my_dataset.sof_ta_bcp_msisdn`;
+    -- Expected: <Count from legacy sof$ta_bcp_msisdn for the same input data>
+
+    SELECT COUNT(*) FROM `my-gcp-project.my_dataset.cibasisprodukt_csv`;
+    -- Expected: <Count from legacy cibasisprodukt.csv for the same input data>
+    ```
+
+### 4.3. Data Integrity (Non-NULLability)
+
+*   **Purpose:** Verify that critical columns in the target tables do not contain unexpected `NULL` values, especially for columns that were implicitly `NOT NULL` in the source or are essential for downstream processes.
+*   **Setup:** Populate source tables with data that might lead to `NULL`s if transformations are incorrect (e.g., `NULL`s in `TN_TEL_MSISDN` in `sof_ta_rn_vertrag` for rows that *do* join).
+*   **Action:** After a successful run of the BigQuery Stored Procedure.
+*   **Pass/Fail Criterion:**
+    *   `CNTRCT_ID` and `BPR_ID` in `sof_ta_bcp_msisdn` should not be `NULL` (assuming they are always present in `sof_ta_bpr_bcp`).
+    *   `TN_TEL_MSISDN` in `sof_ta_bcp_msisdn` should not be `NULL` if the corresponding `rn.tn_tel_msisdn` was not `NULL` and a join occurred.
+    *   `col1` in `cibasisprodukt_csv` should not be `NULL` as it's derived from `CNTRCT_ID`.
+
+    ```sql
+    -- BigQuery assertions
+    -- Check for unexpected NULLs in core output
+    SELECT COUNT(*) FROM `my-gcp-project.my_dataset.sof_ta_bcp_msisdn` WHERE CNTRCT_ID IS NULL;
+    -- Expected: 0
+
+    SELECT COUNT(*) FROM `my-gcp-project.my_dataset.sof_ta_bcp_msisdn` WHERE BPR_ID IS NULL;
+    -- Expected: 0
+
+    -- Check for unexpected NULLs in post-processed output
+    SELECT COUNT(*) FROM `my-gcp-project.my_dataset.cibasisprodukt_csv` WHERE col1 IS NULL;
+    -- Expected: 0
+    ```
