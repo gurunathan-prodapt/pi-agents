@@ -1,0 +1,7 @@
+-- Legacy source: vobs/dw_source/isrpt/isbert/SQL/aktuell/aufbereitung/sql/d_ausd_geschaeftspartner.sql
+-- Job: vobs/dw_source/isrpt/isbert/SQL/aktuell/aufbereitung/bin/r_ausd_geschaeftspartner.ksh
+
+CREATE TABLE IF NOT EXISTS isbert_target_ds.sof_ta_segm_prem (
+    BP_ID INT64,
+    SEGMENT_ID INT64
+);
