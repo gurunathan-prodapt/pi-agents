@@ -1,0 +1,515 @@
+-- Legacy Source: vobs/dw_source/isrpt/isbert/SQL/aktuell/aufbereitung/sql/d_ausd_adressen.sql
+-- Job: vobs/dw_source/isrpt/isbert/SQL/aktuell/aufbereitung/bin/k_ausd_adressen.ksh
+-- Converted to BigQuery Standard SQL
+
+-- Parameter for the effective date (stichtag)
+-- This variable will be set by the Airflow DAG based on p_Stichtag.
+DECLARE v_stichtag_str STRING DEFAULT '{{ dag_run.conf.p_stichtag if dag_run.conf else params.p_stichtag }}';
+DECLARE v_stichtag DATE DEFAULT PARSE_DATE('%Y%m%d', v_stichtag_str);
+
+-- Step01: Clear target tables if they exist and are persistent.
+-- The original Oracle script truncates these tables, implying they are not temporary.
+-- Assuming 'sof_ta_' tables starting with 'e_' are final output tables,
+-- and others (like sof_ta_country) are intermediate persistent tables.
+
+TRUNCATE TABLE `{{ params.target_dataset }}.sof_ta_bp_ref_gp`;
+TRUNCATE TABLE `{{ params.target_dataset }}.sof_ta_bp_ref_re`;
+TRUNCATE TABLE `{{ params.target_dataset }}.sof_ta_bp_ref_ev`;
+TRUNCATE TABLE `{{ params.target_dataset }}.sof_ta_bp_ref_dn`;
+TRUNCATE TABLE `{{ params.target_dataset }}.sof_ta_bp_ref_gp_nodp`;
+TRUNCATE TABLE `{{ params.target_dataset }}.sof_ta_bp_ref_re_nodp`;
+TRUNCATE TABLE `{{ params.target_dataset }}.sof_ta_bp_ref_ev_nodp`;
+TRUNCATE TABLE `{{ params.target_dataset }}.sof_ta_bp_ref_dn_nodp`;
+TRUNCATE TABLE `{{ params.target_dataset }}.sof_ta_reachability`;
+TRUNCATE TABLE `{{ params.target_dataset }}.sof_ta_business_pt`;
+TRUNCATE TABLE `{{ params.target_dataset }}.sof_ta_country`;
+TRUNCATE TABLE `{{ params.target_dataset }}.sof_ta_country_desc`;
+TRUNCATE TABLE `{{ params.target_dataset }}.sof_ta_laender_kng`;
+TRUNCATE TABLE `{{ params.target_dataset }}.sof_ta_e_reach_gp`;
+TRUNCATE TABLE `{{ params.target_dataset }}.sof_ta_e_reach_re`;
+TRUNCATE TABLE `{{ params.target_dataset }}.sof_ta_e_reach_dn`;
+TRUNCATE TABLE `{{ params.target_dataset }}.sof_ta_e_reach_ev`;
+TRUNCATE TABLE `{{ params.target_dataset }}.sof_ta_e_business_gp`;
+TRUNCATE TABLE `{{ params.target_dataset }}.sof_ta_e_business_re`;
+TRUNCATE TABLE `{{ params.target_dataset }}.sof_ta_e_business_dn`;
+TRUNCATE TABLE `{{ params.target_dataset }}.sof_ta_e_business_ev`;
+TRUNCATE TABLE `{{ params.target_dataset }}.sof_ta_e_regulierer`;
+
+-- Step00: Variable definition (v_datum handled by DECLARE above).
+-- The original `v_carmen` variable was used for a database link or schema prefix.
+-- In BigQuery, this is typically handled by fully qualified table names in the form `project.dataset.table`.
+-- For source tables, we'll use `params.source_dataset`.
+
+-- Step02: Create temporary tables for bp_ref
+INSERT INTO `{{ params.target_dataset }}.sof_ta_bp_ref_gp`
+( BP_ID, REACHABILITY_ID, CNTRCT_CP2_ID, INV_DEF_INVREC_ID, BPR_INST_EVNREC_ID, BPR_INST_SRVUSR_ID)
+SELECT
+        bpr.bp_id,
+        bpr.reachability_id,
+        bpr.cntrct_cp2_id,
+        bpr.inv_def_invrec_id,
+        bpr.bpr_inst_evnrec_id,
+        bpr.bpr_inst_srvusr_id
+FROM    `{{ params.source_dataset }}.cds_ta_bp_ref` bpr
+WHERE   (bpr.insert_at <= v_stichtag
+         AND (   bpr.modified_at IS NULL
+             OR bpr.modified_at > v_stichtag))
+  AND   (bpr.valid_from <= v_stichtag
+         AND (   bpr.valid_to IS NULL
+              OR bpr.valid_to > v_stichtag))
+  AND   bpr.is_production  = 1
+  AND   bpr.bp_ref_ty      = 4
+  AND   bpr.address_ref_ty = 6
+;
+
+INSERT INTO `{{ params.target_dataset }}.sof_ta_bp_ref_re`
+(BP_ID, REACHABILITY_ID, CNTRCT_CP2_ID, INV_DEF_INVREC_ID, BPR_INST_EVNREC_ID, BPR_INST_SRVUSR_ID)
+SELECT
+        bpr.bp_id,
+        bpr.reachability_id,
+        bpr.cntrct_cp2_id,
+        bpr.inv_def_invrec_id,
+        bpr.bpr_inst_evnrec_id,
+        bpr.bpr_inst_srvusr_id
+FROM    `{{ params.source_dataset }}.cds_ta_bp_ref` bpr
+WHERE   (bpr.insert_at <= v_stichtag
+         AND (   bpr.modified_at IS NULL
+              OR bpr.modified_at > v_stichtag))
+  AND   (bpr.valid_from <= v_stichtag
+         AND (   bpr.valid_to IS NULL
+              OR bpr.valid_to > v_stichtag))
+  AND   bpr.is_production  = 1
+  AND   bpr.bp_ref_ty = 1
+  AND   bpr.address_ref_ty = 5          --rechnungsempfaenger
+UNION ALL
+SELECT
+        id.rdndnt_cp2_bp_id AS bp_id,
+        id.rdndnt_cp2_reachability_id AS reachability_id,
+        NULL AS cntrct_cp2_id,
+        id.inv_definition_id AS inv_def_invrec_id,
+        NULL AS bpr_inst_evnrec_id,
+        NULL AS bpr_inst_srvusr_id
+FROM    `{{ params.source_dataset }}.cds_ta_inv_definition` id
+WHERE   (id.insert_at <= v_stichtag
+         AND (   id.modified_at IS NULL
+              OR id.modified_at > v_stichtag))
+  AND   (id.valid_from <= v_stichtag
+         AND (   id.valid_to IS NULL
+              OR id.valid_to > v_stichtag))
+  AND   id.is_production  = 1
+  AND   id.rdndant_invrec = 0;
+
+INSERT INTO `{{ params.target_dataset }}.sof_ta_bp_ref_ev`
+(BP_ID, REACHABILITY_ID, CNTRCT_CP2_ID, INV_DEF_INVREC_ID, BPR_INST_EVNREC_ID, BPR_INST_SRVUSR_ID)
+SELECT
+        bpr.bp_id,
+        bpr.reachability_id,
+        bpr.cntrct_cp2_id,
+        bpr.inv_def_invrec_id,
+        bpr.bpr_inst_evnrec_id,
+        bpr.bpr_inst_srvusr_id
+FROM    `{{ params.source_dataset }}.cds_ta_bp_ref` bpr
+WHERE   (bpr.insert_at <= v_stichtag
+         AND (   bpr.modified_at IS NULL
+             OR bpr.modified_at > v_stichtag))
+  AND   (bpr.valid_from <= v_stichtag
+         AND (   bpr.valid_to IS NULL
+              OR bpr.valid_to > v_stichtag))
+  AND   bpr.is_production  = 1
+  AND   bpr.bp_ref_ty      = 1
+  AND   bpr.address_ref_ty = 7
+;
+
+INSERT INTO `{{ params.target_dataset }}.sof_ta_bp_ref_dn`
+(BP_ID, REACHABILITY_ID, CNTRCT_CP2_ID, INV_DEF_INVREC_ID, BPR_INST_EVNREC_ID, BPR_INST_SRVUSR_ID)
+SELECT
+        bpr.bp_id,
+        bpr.reachability_id,
+        bpr.cntrct_cp2_id,
+        bpr.inv_def_invrec_id,
+        bpr.bpr_inst_evnrec_id,
+        bpr.bpr_inst_srvusr_id
+FROM    `{{ params.source_dataset }}.cds_ta_bp_ref` bpr
+WHERE   (bpr.insert_at <= v_stichtag
+         AND (   bpr.modified_at IS NULL
+             OR bpr.modified_at > v_stichtag))
+  AND   (bpr.valid_from <= v_stichtag
+         AND (   bpr.valid_to IS NULL
+              OR bpr.valid_to > v_stichtag))
+  AND   bpr.is_production  = 1
+  AND   bpr.bp_ref_ty      = 1
+  AND   bpr.address_ref_ty = 8
+;
+
+-- Step03: Create temporary tables for reachability, country, country_description, and laender_kng
+INSERT INTO `{{ params.target_dataset }}.sof_ta_country`
+(  COUNTRY_CODE, DESCRIPTION_ID, PARENT_COUNTRY_CODE, EU_INDICATOR, SAP_CODE, CORR_CODE, VALID)
+SELECT
+      country.COUNTRY_CODE,
+      country.DESCRIPTION_ID,
+      country.PARENT_COUNTRY_CODE,
+      country.EU_INDICATOR,
+      country.SAP_CODE,
+      country.CORR_CODE,
+      country.VALID
+FROM    `{{ params.source_dataset }}.glv_ta_country` country
+;
+
+INSERT INTO `{{ params.target_dataset }}.sof_ta_country_desc`
+(   DESCRIPTION_ID, LANGUAGE, SHORT_DESCRIPTION, DESCRIPTION, LONG_DESCRIPTION)
+SELECT
+           des.DESCRIPTION_ID,
+           des.LANGUAGE,
+           des.SHORT_DESCRIPTION,
+         des.DESCRIPTION,
+           des.LONG_DESCRIPTION
+FROM    `{{ params.source_dataset }}.glv_ta_description` des
+;
+
+INSERT INTO `{{ params.target_dataset }}.sof_ta_laender_kng`
+(COUNTRY_CODE, DESCRIPTION_ID, LANGUAGE, SHORT_DESCRIPTION, DESCRIPTION, LONG_DESCRIPTION)
+SELECT  co.country_code,
+        de.DESCRIPTION_ID,
+              de.LANGUAGE,
+              de.SHORT_DESCRIPTION,
+              de.DESCRIPTION,
+              de.LONG_DESCRIPTION
+FROM    `{{ params.target_dataset }}.sof_ta_country`         co
+JOIN    `{{ params.target_dataset }}.sof_ta_country_desc`    de
+ON   co.description_id = de.description_id
+WHERE   co.valid = 1
+;
+
+INSERT INTO `{{ params.target_dataset }}.sof_ta_reachability`
+(  BP_ID, REACHABILITY_ID, OBJ_VERSION, COUNTRY_CODE, FOR_THE_ATTENTION_OF,
+  ADDRESS_ATTACHMENT, ADDRESS_ATTACHMENT_ORG, CORP_UNIT, SURNAME_S, FIRST_NAME_G,
+  ZIP_CODE, CITY, POBOX, STREET, HOUSE_NR, PUBLIC_AREA_A, PRIVATE_AREA_P,
+  CORP_UNIT_OU1, ADDRESS_LINE_1, ADDRESS_LINE_2, REACHABLE_FROM, REACHABLE_THRU)
+SELECT
+        re.bp_id,
+        re.reachability_id,
+        re.obj_version,
+        re.country_code,
+        re.for_the_attention_of,
+        re.address_attachment,
+        re.address_attachment_org,
+        re.corp_unit,
+        re.surname_s,
+        re.first_name_g,
+        re.zip_code,
+        re.city,
+        re.pobox,
+        re.street,
+        re.house_nr,
+        re.public_area_a,
+        re.private_area_p,
+        re.corp_unit_ou1,
+        re.address_line_1,
+        re.address_line_2,
+        re.reachable_from,
+        re.reachable_thru
+FROM    `{{ params.source_dataset }}.bpd_ta_reachability` re
+WHERE   (re.insert_at <= v_stichtag
+         AND (   re.modified_at IS NULL
+              OR re.modified_at > v_stichtag))
+  AND   (re.valid_from <= v_stichtag
+         AND (   re.valid_to IS NULL
+              OR re.valid_to > v_stichtag))
+  AND   re.is_production = 1
+;
+
+INSERT INTO `{{ params.target_dataset }}.sof_ta_e_reach_gp`
+(  BP_ID, REACHABILITY_ID, OBJ_VERSION, COUNTRY_CODE, FOR_THE_ATTENTION_OF,
+  ADDRESS_ATTACHMENT, ADDRESS_ATTACHMENT_ORG, CORP_UNIT, SURNAME_S, FIRST_NAME_G,
+  ZIP_CODE, CITY, POBOX, STREET, HOUSE_NR, PUBLIC_AREA_A, PRIVATE_AREA_P,
+  CORP_UNIT_OU1, ADDRESS_LINE_1, ADDRESS_LINE_2, REACHABLE_FROM, REACHABLE_THRU,
+  CNTRCT_CP2_ID, INV_DEF_INVREC_ID, BPR_INST_EVNREC_ID, BPR_INST_SRVUSR_ID, LAND_SD)
+SELECT
+        re.BP_ID,
+        re.REACHABILITY_ID,
+        re.OBJ_VERSION,
+        re.COUNTRY_CODE,
+        re.FOR_THE_ATTENTION_OF,
+        re.ADDRESS_ATTACHMENT,
+        re.ADDRESS_ATTACHMENT_ORG,
+        re.CORP_UNIT,
+        re.SURNAME_S,
+        re.FIRST_NAME_G,
+        re.ZIP_CODE,
+        re.CITY,
+        re.POBOX,
+        re.STREET,
+        re.HOUSE_NR,
+        re.PUBLIC_AREA_A,
+        re.PRIVATE_AREA_P,
+        re.CORP_UNIT_OU1,
+        re.ADDRESS_LINE_1,
+        re.ADDRESS_LINE_2,
+        re.REACHABLE_FROM,
+        re.REACHABLE_THRU,
+        br.cntrct_cp2_id,
+        br.inv_def_invrec_id,
+        br.bpr_inst_evnrec_id,
+        br.bpr_inst_srvusr_id,
+        SUBSTR(lk.short_description, 1, 3) AS land_sd
+FROM    `{{ params.target_dataset }}.sof_ta_bp_ref_gp`       br
+JOIN    `{{ params.target_dataset }}.sof_ta_reachability`    re
+  ON   br.bp_id = re.bp_id
+  AND   br.reachability_id = re.reachability_id
+LEFT JOIN `{{ params.target_dataset }}.sof_ta_laender_kng`     lk
+  ON   re.country_code    = lk.country_code
+;
+
+INSERT INTO `{{ params.target_dataset }}.sof_ta_e_reach_re`
+(  BP_ID, REACHABILITY_ID, OBJ_VERSION, COUNTRY_CODE, FOR_THE_ATTENTION_OF,
+  ADDRESS_ATTACHMENT, ADDRESS_ATTACHMENT_ORG, CORP_UNIT, SURNAME_S, FIRST_NAME_G,
+  ZIP_CODE, CITY, POBOX, STREET, HOUSE_NR, PUBLIC_AREA_A, PRIVATE_AREA_P,
+  CORP_UNIT_OU1, ADDRESS_LINE_1, ADDRESS_LINE_2, REACHABLE_FROM, REACHABLE_THRU,
+  CNTRCT_CP2_ID, INV_DEF_INVREC_ID, BPR_INST_EVNREC_ID, BPR_INST_SRVUSR_ID, LAND_SD)
+SELECT
+        re.BP_ID,
+        re.REACHABILITY_ID,
+        re.OBJ_VERSION,
+        re.COUNTRY_CODE,
+        re.FOR_THE_ATTENTION_OF,
+        re.ADDRESS_ATTACHMENT,
+        re.ADDRESS_ATTACHMENT_ORG,
+        re.CORP_UNIT,
+        re.SURNAME_S,
+        re.FIRST_NAME_G,
+        re.ZIP_CODE,
+        re.CITY,
+        re.POBOX,
+        re.STREET,
+        re.HOUSE_NR,
+        re.PUBLIC_AREA_A,
+        re.PRIVATE_AREA_P,
+        re.CORP_UNIT_OU1,
+        re.ADDRESS_LINE_1,
+        re.ADDRESS_LINE_2,
+        re.REACHABLE_FROM,
+        re.REACHABLE_THRU,
+        br.cntrct_cp2_id,
+        br.inv_def_invrec_id,
+        br.bpr_inst_evnrec_id,
+        br.bpr_inst_srvusr_id,
+        SUBSTR(lk.short_description, 1, 3) AS land_sd
+FROM    `{{ params.target_dataset }}.sof_ta_bp_ref_re`       br
+JOIN    `{{ params.target_dataset }}.sof_ta_reachability`    re
+  ON   br.bp_id           = re.bp_id
+  AND   br.reachability_id = re.reachability_id
+LEFT JOIN `{{ params.target_dataset }}.sof_ta_laender_kng`     lk
+  ON   re.country_code    = lk.country_code
+;
+
+INSERT INTO `{{ params.target_dataset }}.sof_ta_e_reach_ev`
+( BP_ID, REACHABILITY_ID, OBJ_VERSION, COUNTRY_CODE, FOR_THE_ATTENTION_OF,
+  ADDRESS_ATTACHMENT, ADDRESS_ATTACHMENT_ORG, CORP_UNIT, SURNAME_S, FIRST_NAME_G,
+  ZIP_CODE, CITY, POBOX, STREET, HOUSE_NR, PUBLIC_AREA_A, PRIVATE_AREA_P,
+  CORP_UNIT_OU1, ADDRESS_LINE_1, ADDRESS_LINE_2, REACHABLE_FROM, REACHABLE_THRU,
+  CNTRCT_CP2_ID, INV_DEF_INVREC_ID, BPR_INST_EVNREC_ID, BPR_INST_SRVUSR_ID, LAND_SD)
+SELECT
+        re.BP_ID,
+        re.REACHABILITY_ID,
+        re.OBJ_VERSION,
+        re.COUNTRY_CODE,
+        re.FOR_THE_ATTENTION_OF,
+        re.ADDRESS_ATTACHMENT,
+        re.ADDRESS_ATTACHMENT_ORG,
+        re.CORP_UNIT,
+        re.SURNAME_S,
+        re.FIRST_NAME_G,
+        re.ZIP_CODE,
+        re.CITY,
+        re.POBOX,
+        re.STREET,
+        re.HOUSE_NR,
+        re.PUBLIC_AREA_A,
+        re.PRIVATE_AREA_P,
+        re.CORP_UNIT_OU1,
+        re.ADDRESS_LINE_1,
+        re.ADDRESS_LINE_2,
+        re.REACHABLE_FROM,
+        re.REACHABLE_THRU,
+        br.cntrct_cp2_id,
+        br.inv_def_invrec_id,
+        br.bpr_inst_evnrec_id,
+        br.bpr_inst_srvusr_id,
+        SUBSTR(lk.short_description, 1, 3) AS land_sd
+FROM    `{{ params.target_dataset }}.sof_ta_bp_ref_ev`       br
+JOIN    `{{ params.target_dataset }}.sof_ta_reachability`    re
+  ON   br.bp_id = re.bp_id
+  AND   br.reachability_id = re.reachability_id
+LEFT JOIN `{{ params.target_dataset }}.sof_ta_laender_kng`     lk
+  ON   re.country_code    = lk.country_code
+;
+
+INSERT INTO `{{ params.target_dataset }}.sof_ta_e_reach_dn`
+(  BP_ID, REACHABILITY_ID, OBJ_VERSION, COUNTRY_CODE, FOR_THE_ATTENTION_OF,
+  ADDRESS_ATTACHMENT, ADDRESS_ATTACHMENT_ORG, CORP_UNIT, SURNAME_S, FIRST_NAME_G,
+  ZIP_CODE, CITY, POBOX, STREET, HOUSE_NR, PUBLIC_AREA_A, PRIVATE_AREA_P,
+  CORP_UNIT_OU1, ADDRESS_LINE_1, ADDRESS_LINE_2, REACHABLE_FROM, REACHABLE_THRU,
+  CNTRCT_CP2_ID, INV_DEF_INVREC_ID, BPR_INST_EVNREC_ID, BPR_INST_SRVUSR_ID, LAND_SD)
+SELECT
+        re.BP_ID,
+        re.REACHABILITY_ID,
+        re.OBJ_VERSION,
+        re.COUNTRY_CODE,
+        re.FOR_THE_ATTENTION_OF,
+        re.ADDRESS_ATTACHMENT,
+        re.ADDRESS_ATTACHMENT_ORG,
+        re.CORP_UNIT,
+        re.SURNAME_S,
+        re.FIRST_NAME_G,
+        re.ZIP_CODE,
+        re.CITY,
+        re.POBOX,
+        re.STREET,
+        re.HOUSE_NR,
+        re.PUBLIC_AREA_A,
+        re.PRIVATE_AREA_P,
+        re.CORP_UNIT_OU1,
+        re.ADDRESS_LINE_1,
+        re.ADDRESS_LINE_2,
+        re.REACHABLE_FROM,
+        re.REACHABLE_THRU,
+        br.cntrct_cp2_id,
+        br.inv_def_invrec_id,
+        br.bpr_inst_evnrec_id,
+        br.bpr_inst_srvusr_id,
+        SUBSTR(lk.short_description, 1, 3) AS land_sd
+FROM    `{{ params.target_dataset }}.sof_ta_bp_ref_dn`       br
+JOIN    `{{ params.target_dataset }}.sof_ta_reachability`    re
+  ON   br.bp_id = re.bp_id
+  AND   br.reachability_id = re.reachability_id
+LEFT JOIN `{{ params.target_dataset }}.sof_ta_laender_kng`     lk
+  ON   re.country_code    = lk.country_code
+;
+
+-- Step04: Create business partner tables
+INSERT INTO `{{ params.target_dataset }}.sof_ta_business_pt`
+(BP_ID, ORGANISATION_NAME, TITLE, SURNAME, FIRST_NAME, SALES_TAX_FREED, TM_CUSTOMERID)
+SELECT
+        bp.bp_id,
+        bp.organisation_name,
+        bp.title,
+        bp.surname,
+        bp.first_name,
+        bp.sales_tax_freed,
+        bp.tm_customerid
+FROM    `{{ params.source_dataset }}.bpd_ta_business_partner` bp
+WHERE   (bp.insert_at <= v_stichtag
+         AND (   bp.modified_at IS NULL
+              OR bp.modified_at > v_stichtag))
+;
+
+INSERT INTO `{{ params.target_dataset }}.sof_ta_bp_ref_gp_nodp`
+(BP_ID)
+SELECT DISTINCT bp_id
+FROM    `{{ params.target_dataset }}.sof_ta_bp_ref_gp` ref_gp
+;
+
+INSERT INTO `{{ params.target_dataset }}.sof_ta_e_business_gp`
+(BP_ID, ORGANISATION_NAME, TITLE, SURNAME, FIRST_NAME, SALES_TAX_FREED, TM_CUSTOMERID )
+SELECT
+        bp.bp_id,
+        bp.organisation_name,
+        bp.title,
+        bp.surname,
+        bp.first_name,
+        bp.sales_tax_freed,
+        bp.tm_customerid
+FROM    `{{ params.target_dataset }}.sof_ta_bp_ref_gp_nodp`  br
+JOIN    `{{ params.target_dataset }}.sof_ta_business_pt`     bp
+  ON   br.bp_id = bp.bp_id
+;
+
+INSERT INTO `{{ params.target_dataset }}.sof_ta_bp_ref_re_nodp`
+(BP_ID)
+SELECT DISTINCT bp_id
+FROM    `{{ params.target_dataset }}.sof_ta_bp_ref_re` ref_re
+;
+
+INSERT INTO `{{ params.target_dataset }}.sof_ta_e_business_re`
+(BP_ID, ORGANISATION_NAME, TITLE, SURNAME, FIRST_NAME, SALES_TAX_FREED, TM_CUSTOMERID )
+SELECT
+        bp.bp_id,
+        bp.organisation_name,
+        bp.title,
+        bp.surname,
+        bp.first_name,
+        bp.sales_tax_freed,
+        bp.tm_customerid
+FROM    `{{ params.target_dataset }}.sof_ta_bp_ref_re_nodp`  br
+JOIN    `{{ params.target_dataset }}.sof_ta_business_pt`     bp
+  ON   br.bp_id = bp.bp_id
+;
+
+INSERT INTO `{{ params.target_dataset }}.sof_ta_bp_ref_ev_nodp`
+(BP_ID)
+SELECT DISTINCT bp_id
+FROM    `{{ params.target_dataset }}.sof_ta_bp_ref_ev` ref_ev
+;
+
+INSERT INTO `{{ params.target_dataset }}.sof_ta_e_business_ev`
+(BP_ID, ORGANISATION_NAME, TITLE, SURNAME, FIRST_NAME, SALES_TAX_FREED, TM_CUSTOMERID )
+SELECT
+        bp.bp_id,
+        bp.organisation_name,
+        bp.title,
+        bp.surname,
+        bp.first_name,
+        bp.sales_tax_freed,
+        bp.tm_customerid
+FROM    `{{ params.target_dataset }}.sof_ta_bp_ref_ev_nodp`  br
+JOIN    `{{ params.target_dataset }}.sof_ta_business_pt`     bp
+  ON   br.bp_id = bp.bp_id
+;
+
+INSERT INTO `{{ params.target_dataset }}.sof_ta_bp_ref_dn_nodp`
+(BP_ID)
+SELECT DISTINCT bp_id
+FROM    `{{ params.target_dataset }}.sof_ta_bp_ref_dn` ref_dn
+;
+
+INSERT INTO `{{ params.target_dataset }}.sof_ta_e_business_dn`
+(BP_ID, ORGANISATION_NAME, TITLE, SURNAME, FIRST_NAME, SALES_TAX_FREED, TM_CUSTOMERID )
+SELECT
+        bp.bp_id,
+        bp.organisation_name,
+        bp.title,
+        bp.surname,
+        bp.first_name,
+        bp.sales_tax_freed,
+        bp.tm_customerid
+FROM    `{{ params.target_dataset }}.sof_ta_bp_ref_dn_nodp`  br
+JOIN    `{{ params.target_dataset }}.sof_ta_business_pt`     bp
+  ON   br.bp_id = bp.bp_id
+;
+
+-- Step05: Create bp_ref for regulierer
+INSERT INTO `{{ params.target_dataset }}.sof_ta_e_regulierer`
+( INV_DEF_MOPREF_ID, MOP_BP_ID, MEANS_OF_PAYMENT_ID)
+SELECT
+        bpr.inv_def_mopref_id,
+        bpr.mop_bp_id,
+        bpr.means_of_payment_id
+FROM    `{{ params.source_dataset }}.cds_ta_bp_ref` bpr
+WHERE   (bpr.insert_at <= v_stichtag
+         AND (   bpr.modified_at IS NULL
+              OR bpr.modified_at > v_stichtag))
+  AND   (bpr.valid_from <= v_stichtag
+         AND (   bpr.valid_to IS NULL
+              OR bpr.valid_to > v_stichtag))
+  AND   bpr.is_production  = 1
+  AND   bpr.bp_ref_ty  = 2
+  AND   bpr.mop_ref_ty = 1      --regulierer
+;
+
+-- Step06: Cleanup of intermediate tables.
+-- The explicit TRUNCATE statements at the beginning cover this.
+-- If these tables were truly temporary, BigQuery's session-scoped TEMP tables would handle cleanup automatically.
+-- Given the original script had explicit TRUNCATEs for these, it implies they are persistent and need explicit clearing.
+
+-- ************************* Step07 **********************************
+-- Processing finished.
