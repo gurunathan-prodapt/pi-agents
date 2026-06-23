@@ -1,0 +1,43 @@
+-- DDL for table SOF_TA_RN_EINZELN
+-- Legacy Source: sof$ta_rn_einzeln (Oracle)
+-- Job: vobs/dw_source/isrpt/isbert/SQL/aktuell/aufbereitung/bin/k_ausd_bp_ta_rn_vertrag.ksh
+
+CREATE TABLE IF NOT EXISTS my_project.my_dataset.sof_ta_rn_einzeln (
+    cntrct_id STRING NOT NULL,
+    TN_multi_single STRING,
+    TN_TEL_msisdn STRING,
+    TN_TEL_status STRING,
+    TN_TEL_valid_to DATE,
+    TN_FAX_msisdn STRING,
+    TN_FAX_status STRING,
+    TN_FAX_valid_to DATE,
+    TN_DAT_msisdn STRING,
+    TN_DAT_status STRING,
+    TN_DAT_valid_to DATE,
+    TC_multi_single STRING,
+    TC_TEL_msisdn STRING,
+    TC_TEL_status STRING,
+    TC_TEL_valid_to DATE,
+    TC_FAX_msisdn STRING,
+    TC_FAX_status STRING,
+    TC_FAX_valid_to DATE,
+    TC_DAT_msisdn STRING,
+    TC_DAT_status STRING,
+    TC_DAT_valid_to DATE,
+    TB_multi_single STRING,
+    TB_TEL_msisdn STRING,
+    TB_TEL_status STRING,
+    TB_TEL_valid_to DATE,
+    TB_FAX_msisdn STRING,
+    TB_FAX_status STRING,
+    TB_FAX_valid_to DATE,
+    TB_DAT_msisdn STRING,
+    TB_DAT_status STRING,
+    TB_DAT_valid_to DATE,
+    MS_RN_1_msisdn STRING,
+    MS_RN_1_status STRING,
+    MS_RN_1_valid_to DATE,
+    MS_RN_2_msisdn STRING,
+    MS_RN_2_status STRING,
+    MS_RN_2_valid_to DATE
+);
