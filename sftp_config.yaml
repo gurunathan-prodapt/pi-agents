@@ -1,0 +1,14 @@
+-- Example configuration file for SFTP details, possibly used by Cloud Run or stored in Secret Manager.
+-- This file is illustrative; actual credentials should be stored securely in GCP Secret Manager.
+
+# This file is NOT deployed directly but represents the structure of SFTP configuration.
+# The Cloud Run service `external_distributor_cloud_run.py` would read these details
+# from BigQuery `exporter_config` and Secret Manager.
+
+sftp_connection:
+  host: "sftp.example.com"
+  port: 22
+  user: "exporter_user"
+  # password_secret_name refers to a secret in GCP Secret Manager
+  password_secret_name: "r-exis-v2-sftp-password"
+  target_base_path: "/outbound/data"
