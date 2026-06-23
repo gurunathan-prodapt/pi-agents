@@ -1,0 +1,1 @@
+ERROR: migration notes skipped for vobs/dw_source/isrpt/isbert/SQL/aktuell/aufbereitung/bin/r_ausd_bp_ta_bpr_apn.ksh — design unavailable.
