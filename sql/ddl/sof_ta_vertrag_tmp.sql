@@ -1,0 +1,45 @@
+-- BigQuery DDL for the staging table sof_ta_vertrag_tmp
+-- Replaces legacy Oracle table sof$ta_vertrag_tmp for job DW.BERT_AUSD_V_TA_P_VERTRAG
+
+CREATE TABLE IF NOT EXISTS `project_id.dataset_id.sof_ta_vertrag_tmp`
+(
+    vertrag_id_carmen STRING,
+    partner_id_carmen STRING,
+    rechdef_id_carmen STRING,
+    kundenkonto STRING,
+    mwst_kennzeichen STRING,
+    rahmenvertrag_id STRING,
+    rechnungslauf STRING,
+    vo_kenn STRING,
+    geplant_kuend DATE,
+    eingang_kuend DATE,
+    vertragsbeginn DATE,
+    vertragsstatus STRING,
+    sperrart STRING,
+    sperrgrund STRING,
+    stillegungszeitraum STRING,
+    twincard STRING,
+    dwh_tarifgr_text STRING,
+    bindefrist STRING,
+    letztes_upgrade DATE,
+    vertragsbindung STRING,
+    vertragsbindungseinheit STRING,
+    rechnungszahlart STRING,
+    rechnungsmedium STRING,
+    twin_vertrag_id STRING,
+    upgradeberechtigt STRING,
+    apn STRING,
+    upgradegrund STRING,
+    sv_id STRING,
+    vda STRING,
+    cost_centre STRING,
+    cost_centre_user STRING,
+    cntrct_ty STRING,
+    segment_id STRING,
+    rv_action_id STRING,
+    rechn_inh_konfig_text STRING,
+    order_number STRING,
+    commitment_reference_date DATE,
+    cntrct_validity_id STRING
+)
+;
