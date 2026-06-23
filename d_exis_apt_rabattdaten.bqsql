@@ -1,0 +1,49 @@
+-- Migrated from vobs/dw_source/isdwh/exporter/apt/sql/d_exis_apt_rabattdaten.sql
+-- Job: EXIS_SD_APT_RABATT
+--
+-- This SQL script selects data from multiple tables, performs joins,
+-- aggregates data using STRING_AGG, and renames columns, intended for
+-- export to a CSV file.
+--
+-- Replaces Oracle PL/SQL with Google Standard SQL.
+-- Table references updated to BigQuery fully qualified names.
+-- LISTAGG replaced with STRING_AGG.
+-- Implicit joins replaced with explicit INNER JOIN.
+
+SELECT
+    RAHMENVERTRAG_ID,
+    CNTRCT_TEMPLATE_ID AS TARIF_ID,
+    DWH_TARIFGR_TEXT,
+    RABATTIERTE_RECH_POS,
+    DISC_INVOICE_ITEM_ID AS RABATTIERTE_RECH_POS_ID,
+    RABATTHOEHE,
+    STRING_AGG(CAST(BPR_ID AS STRING), ',' ORDER BY BPR_ID) AS BASISPRODUKTE
+FROM (
+    SELECT DISTINCT
+        RPT.RAHMENVERTRAG_ID,
+        RPT.DWH_TARIFGR_TEXT,
+        DISC.CNTRCT_TEMPLATE_ID,
+        DISC.RABATTIERTE_RECH_POS,
+        DISC.DISC_INVOICE_ITEM_ID,
+        DISC.RABATTHOEHE,
+        BPR.BPR_ID
+    FROM
+        `project_id.dataset_id.RPT_TA_S_D1_VERTRAG` AS RPT
+    INNER JOIN
+        `project_id.dataset_id.RPT_TA_S_D1_DISCOUNT_RR` AS DISC
+        ON RPT.RAHMENVERTRAG_ID = DISC.CONTRACT_NUMBER
+        AND RPT.SV_ID = DISC.CNTRCT_TEMPLATE_ID
+    INNER JOIN
+        `project_id.dataset_id.SOF_TA_BPR_OPTIONEN` AS BPR
+        ON RPT.VERTRAG_ID_CARMEN = BPR.CNTRCT_ID
+    INNER JOIN
+        `project_id.dataset_id.SOF_VI_L_OPTIONZUORDNUNG` AS OPT
+        ON BPR.BPR_ID = OPT.OPTION_ID
+)
+GROUP BY
+    RAHMENVERTRAG_ID,
+    CNTRCT_TEMPLATE_ID,
+    DWH_TARIFGR_TEXT,
+    RABATTIERTE_RECH_POS,
+    DISC_INVOICE_ITEM_ID,
+    RABATTHOEHE;
