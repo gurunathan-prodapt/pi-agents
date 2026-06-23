@@ -1,0 +1,37 @@
+-- Target: BigQuery SQL
+-- Legacy Source: vobs/dw_source/isrpt/isbert/SQL/aktuell/aufbereitung/bin/k_ausd_bp_ta_bpr_basis_his.ksh
+-- This file is a placeholder for the actual data transformation logic originally contained in 'd_ausd_bp_ta_bpr_basis_his.sql'.
+-- The content of this file needs to be translated from its original SQL dialect (likely Oracle/SQL*Plus) to BigQuery SQL.
+-- It is expected to contain DML operations (INSERT, UPDATE, DELETE, MERGE) that process data
+-- from source tables and load it into the target table 'PoolBasisprodukt'.
+-- Parameters like 'v_Stichtag_DATE' and 'v_wiederanlaufWert' (if used by the original SQL)
+-- should be integrated here, possibly through direct substitution or by being passed as arguments
+-- if this SQL is executed via EXECUTE IMMEDIATE from a stored procedure.
+
+-- Example placeholder content for the main SQL logic:
+-- MERGE `project.dataset.PoolBasisprodukt` AS T
+-- USING (
+--     SELECT
+--         src.id AS product_id,
+--         src.name AS product_name,
+--         src.value AS product_value,
+--         CAST(@stichtag_date AS DATE) AS processing_date, -- Example of using a passed parameter
+--         CURRENT_TIMESTAMP() AS last_updated
+--     FROM
+--         `project.dataset.source_table` AS src
+--     WHERE
+--         src.effective_date = CAST(@stichtag_date AS DATE)
+--         AND (@wiederanlaufwert = 0 OR src.status_code >= @wiederanlaufwert) -- Example using another parameter
+-- ) AS S
+-- ON T.product_id = S.product_id
+-- WHEN MATCHED THEN
+--     UPDATE SET
+--         T.product_name = S.product_name,
+--         T.product_value = S.product_value,
+--         T.last_updated = S.last_updated
+-- WHEN NOT MATCHED THEN
+--     INSERT (product_id, product_name, product_value, processing_date, last_updated)
+--     VALUES (S.product_id, S.product_name, S.product_value, S.processing_date, S.last_updated);
+
+-- Placeholder for potential output or record count (if needed by the calling procedure)
+-- SELECT COUNT(1) FROM `project.dataset.PoolBasisprodukt` WHERE processing_date = CAST(@stichtag_date AS DATE);
