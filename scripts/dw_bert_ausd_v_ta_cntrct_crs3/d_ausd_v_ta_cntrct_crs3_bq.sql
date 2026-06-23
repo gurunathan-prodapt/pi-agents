@@ -1,0 +1,92 @@
+-- BigQuery SQL Conversion for d_ausd_v_ta_cntrct_crs3.sql
+-- Legacy Source: vobs/dw_source/isrpt/isbert/SQL/aktuell/aufbereitung/sql/d_ausd_v_ta_cntrct_crs3.sql
+-- Job: DW.BERT_AUSD_V_TA_CNTRCT_CRS3
+DECLARE v_datum STRING;
+
+SET v_datum = (
+  SELECT COALESCE(FORMAT_DATE('%Y%m%d', MAX(DATE(m.timecreated))), '19000101')
+  FROM `my-gcp-project.isbert_schema.dwtk_meldungen` m
+  WHERE m.job_kennung = 'BERT_DROP_TEMP_TABLE'
+);
+
+TRUNCATE TABLE `my-gcp-project.sof_schema.sof_ta_cntrct_crs3`;
+
+INSERT INTO `my-gcp-project.sof_schema.sof_ta_cntrct_crs3` (
+        cntrct_id,
+        obj_version,
+        contract_number,
+        cntrct_template_id,
+        cntrct_validity_id,
+        valid_from,
+        com_per_ext_rea_cv,
+        billcycle_id,
+        vo_code,
+        cntrct_start_date,
+        cntrct_st,
+        cntrct_parent,
+        cntrct_ty,
+        cost_centre,
+        cost_centre_user,
+        commitment_reference_date,
+        order_number,
+        rv_num,
+        twinbill,
+        twin_vertrag_id
+)
+SELECT
+  c.cntrct_id,
+  c.obj_version,
+  c.contract_number,
+  c.cntrct_template_id,
+  c.cntrct_validity_id,
+  c.valid_from,
+  c.com_per_ext_rea_cv,
+  c.billcycle_id,
+  c.vo_code,
+  c.cntrct_start_date,
+  c.cntrct_st,
+  c.cntrct_parent,
+  c.cntrct_ty,
+  c.cost_centre,
+  c.cost_centre_user,
+  c.commitment_reference_date,
+  c.order_number,
+  c.rv_num,
+  CASE
+    WHEN ctb.cntrct_id IS NOT NULL THEN 'TB'
+  END AS twinbill,
+  ctb.cntrct_id AS twin_vertrag_id
+FROM `my-gcp-project.sof_schema.sof_ta_cntrct_crs2` c
+LEFT JOIN `my-gcp-project.sof_schema.sof_ta_cntrct_crs2` ctb
+  ON c.cntrct_id = ctb.cntrct_parent
+ AND ctb.cntrct_ty = 20
+WHERE c.cntrct_ty NOT IN (10, 20)
+
+UNION ALL
+
+SELECT
+  ctb.cntrct_id,
+  ctb.obj_version,
+  ctb.contract_number,
+  ctb.cntrct_template_id,
+  ctb.cntrct_validity_id,
+  ctb.valid_from,
+  ctb.com_per_ext_rea_cv,
+  ctb.billcycle_id,
+  ctb.vo_code,
+  ctb.cntrct_start_date,
+  ctb.cntrct_st,
+  ctb.cntrct_parent,
+  ctb.cntrct_ty,
+  ctb.cost_centre,
+  ctb.cost_centre_user,
+  ctb.commitment_reference_date,
+  ctb.order_number,
+  c.rv_num,
+  'TB' AS twinbill,
+  c.cntrct_id AS twin_vertrag_id
+FROM `my-gcp-project.sof_schema.sof_ta_cntrct_crs2` c
+JOIN `my-gcp-project.sof_schema.sof_ta_cntrct_crs2` ctb
+  ON c.cntrct_id = ctb.cntrct_parent
+WHERE ctb.cntrct_ty = 20
+  AND c.cntrct_ty NOT IN (10, 20);
