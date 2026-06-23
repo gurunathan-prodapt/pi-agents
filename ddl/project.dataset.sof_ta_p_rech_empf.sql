@@ -1,0 +1,29 @@
+-- DDL for project.dataset.sof_ta_p_rech_empf
+-- Replaces: N/A (target table from d_ausd_rechempf.sql)
+-- Job: vobs/dw_source/isrpt/isbert/SQL/aktuell/aufbereitung/bin/r_ausd_rechempf.ksh
+
+CREATE TABLE IF NOT EXISTS project.dataset.sof_ta_p_rech_empf (
+  KUNDENKONTO STRING,
+  RECHDEF_ID STRING,
+  DPPS_KONTONUMMER STRING,
+  RECHNUNGSEMPFAENGER STRING,
+  QUELLE STRING,
+  AKAD_TITEL STRING,
+  FIRMA STRING,
+  VORNAME STRING,
+  NACHNAME STRING,
+  ZUSATZ_1 STRING,
+  ZUSATZ_2 STRING,
+  STRASSE STRING,
+  PLZ STRING,
+  WOHNORT STRING,
+  LAND STRING,
+  BANKNAME STRING,
+  BANK_KONTONUMMER STRING,
+  BLZ STRING,
+  ORGANISATIONSEINHEIT STRING,
+  MWST_KENNZEICHEN INT64, -- Assuming TINYINT/BOOLEAN in Oracle maps to INT64 or BOOL
+  KUN_NR_RECH_EMPF STRING,
+  IBAN STRING,
+  BIC STRING
+);
