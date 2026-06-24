@@ -1,0 +1,1 @@
+ERROR: migration notes skipped for .git/hooks/commit-msg.sample — design unavailable.
