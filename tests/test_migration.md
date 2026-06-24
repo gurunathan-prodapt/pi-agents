@@ -1,0 +1,1 @@
+ERROR: tests skipped for .git/hooks/commit-msg.sample — design unavailable.
