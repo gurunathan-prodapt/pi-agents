@@ -1,0 +1,1 @@
+ERROR: migration notes skipped for .git/hooks/applypatch-msg.sample — design unavailable.
