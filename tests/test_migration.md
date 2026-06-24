@@ -1,0 +1,1 @@
+ERROR: tests skipped for DW.BERT_ABLAUFSTEUERUNG — design unavailable.
