@@ -1,0 +1,1 @@
+ERROR: tests skipped for .git/hooks/applypatch-msg.sample — design unavailable.
