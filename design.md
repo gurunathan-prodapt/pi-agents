@@ -1,0 +1,123 @@
+# Migration Design — vobs/dw_source/isdwh/allgemein/is/util/bin/h_alis_parser.ksh
+
+## 1. Purpose & Scope
+This shell script, `h_alis_parser.ksh`, functions as a sophisticated pattern and template parsing framework designed for code generation. Its primary purpose is to take template text and replace various placeholders with dynamic content. This includes substituting scalar attributes, expanding lists, handling nested list references, integrating content from included files, processing meta-blocks, and performing timestamp substitutions. The script is intended to process generic template-like files and output fully expanded text, serving as a foundational utility for generating other code or configuration files.
+
+## 2. Source Inventory
+The job consists of a single source file:
+- **File:** `vobs/dw_source/isdwh/allgemein/is/util/bin/h_alis_parser.ksh`
+  - **Technology:** KornShell (KSH), heavily utilizing `sed`, `awk` (specifically `nawk`), `grep`, `perl`, and shell built-ins (`eval`, `wc`, `cat`, `date`, `printf`).
+  - **Complexity Tier (Inferred):** Very Complex. The script involves dynamic code generation within `sed` and `awk` commands, `eval` execution of dynamically constructed shell pipelines, recursive parsing logic for placeholders, and file inclusion. This level of dynamic behavior and reliance on shell internals makes it highly complex to migrate.
+  - **Automation Bucket (Inferred):** B3 (Manual) / B4 (Redesign). Due to the dynamic nature of the script, particularly the `eval` statements and dynamic `sed/awk` script generation, full automation is highly unlikely. It will require significant manual redesign and re-implementation in a BigQuery-compatible procedural language.
+
+## 3. Target Architecture
+The migration will target Google BigQuery, leveraging its capabilities for data processing and procedural logic. The architecture will involve:
+- **BigQuery Tables:**
+    - `project.dataset.template_lines`: Stores the original template text, potentially broken down by line, along with metadata like `template_id` and `line_no`.
+    - `project.dataset.include_map`: Stores content for files intended for inclusion, mapping `include_name` to `include_text`.
+    - `project.dataset.meta_blocks`: Stores specific meta-block content, potentially keyed by `file_id`, `block_name`, and `line_no`.
+    - `project.dataset.list_values`: Stores elements for list expansions, mapping `template_id`, `list_name`, `element_no`, and `element_value`.
+    - `project.dataset.scalar_values`: Stores key-value pairs for scalar attribute substitutions, mapping `template_id`, `placeholder_name`, and `placeholder_value`.
+- **BigQuery Stored Procedures:**
+    - A main stored procedure (e.g., `project.dataset.parser_main`) to orchestrate the template parsing logic, handling iterative expansions, substitutions, and conditional logic.
+- **BigQuery User-Defined Functions (UDFs):**
+    - JavaScript UDFs may be necessary for highly complex string parsing or regex operations that are less ergonomic or performant in standard SQL.
+    - SQL UDFs for specific, reusable string manipulation or date formatting logic.
+    - Potential UDFs: `get_node` (for extracting blocks), `expand_list_block` (for list processing), `parse_timestamp_expression` (for timestamp arithmetic).
+- **Cloud Storage:** Used for initial staging of template files, included files, and other input artifacts. External tables in BigQuery can link to these.
+- **Orchestration:** Cloud Composer, Workflows, or Dataform for scheduling and managing the execution of BigQuery stored procedures and any necessary preprocessing or postprocessing steps (e.g., loading files from Cloud Storage to BigQuery tables).
+
+## 4. Data Flow & Lineage
+The script primarily operates on textual input and produces textual output.
+- **Input Sources:**
+    - Standard Input (STDIN): The primary method for receiving the template text to be parsed. In BigQuery, this will be represented by data loaded into `project.dataset.template_lines`.
+    - Filesystem: The script reads external files via `system("cat " $0)` in `parser_getnode` and explicitly via `cat $1` in `parser_filmeta` and `parser_filfile`. The `parser` function also handles `INCLUDE` directives for external files. In BigQuery, these external files will need to be ingested into Cloud Storage and then accessed via BigQuery external tables or loaded into native BigQuery tables (e.g., `project.dataset.include_map`).
+- **Processing Logic:** The script defines several functions (`parser_fillist`, `parser_filattrib`, `parser_getnode`, `parser_filmeta`, `parser_filfile`, `parser`) that sequentially or iteratively transform the input text by replacing placeholders. The core `parser` function handles a loop of transformations until convergence or a maximum iteration count is reached.
+- **Output Targets:**
+    - Standard Output (STDOUT): All processed text is written to STDOUT. In BigQuery, the final output will be generated by the `parser_main` stored procedure and can be exported to Cloud Storage, another BigQuery table, or used directly.
+- **Lineage:** The static lineage analysis (`lineage_edges`) did not identify any explicit external data flows (READS/WRITES) or invocations from/to other system components directly linked to this specific `.ksh` file within the broader ETL landscape. This suggests its role as a utility script with dynamic input/output, whose actual data interactions are determined at runtime.
+
+## 5. Transformation Logic
+The transformation logic will be re-implemented in BigQuery SQL and stored procedures, potentially with JavaScript UDFs for complex regex or dynamic logic.
+
+- **`parser_fillist`:** This function, responsible for expanding list placeholders, will be translated into BigQuery SQL logic within a stored procedure or a dedicated SQL UDF. It will need to handle the conditional logic based on list element count (single vs. multiple) and perform `REGEXP_REPLACE` operations. List elements will be sourced from `project.dataset.list_values` and handled as SQL `ARRAY`s.
+- **`parser_filattrib`:** This simple placeholder replacement will be implemented using `REGEXP_REPLACE` in BigQuery SQL, sourcing scalar values from `project.dataset.scalar_values`.
+- **`parser_getnode`:** Extracting named blocks will be implemented as a BigQuery SQL UDF, likely utilizing `REGEXP_CONTAINS` and `STRING_AGG` with `SPLIT` to identify and reconstruct the content within the `<NODE>...</NODE>` tags. File inclusion (`<NODE INCLUDE path>`) within this function will require accessing `project.dataset.include_map` or corresponding Cloud Storage locations.
+- **`parser_filmeta` and `parser_filfile`:** These functions dynamically construct and execute shell pipelines using `eval`. This dynamic behavior cannot be directly replicated in BigQuery SQL. Instead, the logic for parsing configuration, extracting meta-blocks, and applying attribute/list substitutions will be hard-coded as explicit steps within a BigQuery stored procedure. The `parser_getnode` equivalent, `project.dataset.get_node` (UDF), will be used. Input files will be staged in BigQuery tables.
+- **`parser` (Main Parsing Loop):** This core function iterates through input lines, identifying and processing various commands:
+    - **Variable Definitions (`name=value`):** These will be parsed and stored in a temporary table or `ARRAY<STRUCT>` within the stored procedure, analogous to `varlist`.
+    - **Variable Replacement:** `REGEXP_REPLACE` will be used to substitute variables.
+    - **File Inclusion (`INCLUDE file`):** This will involve querying `project.dataset.include_map` or reading from Cloud Storage to retrieve the content of the included file and integrating it into the processing stream. This might involve additional procedural logic to handle sequential includes.
+    - **List Definition (`LISTDEF`):** The logic for defining and parsing list attributes will be converted into procedural SQL, likely using `ARRAY`s and `STRUCT`s to manage the `attribs` and `varlist` structures.
+    - **List Parsing (`list [m|s]N-N`):** The complex list slicing and iteration logic will be re-implemented using BigQuery `ARRAY_SLICE`, `OFFSET`, `ORDINAL`, and procedural loops. Error handling for out-of-range lists will be converted to SQL `IF` conditions and error messages.
+    - **Timestamp Generation (`TIMESTAMP`):** The shell `date` command and custom timestamp arithmetic will be replaced by BigQuery's `FORMAT_TIMESTAMP`, `TIMESTAMP_ADD`, `TIMESTAMP_SUB`, and potentially a custom SQL or JavaScript UDF to handle the specific timestamp expression grammar.
+    - **Looping and Convergence:** The `do...while (repeat)` and `do...while (file)` loops will be implemented using BigQuery's `LOOP` and `WHILE` statements within a stored procedure, tracking changes to `current_text` in temporary tables (`expanded_lines`, `next_lines`) to detect convergence.
+
+## 6. External Dependencies
+The original script has several external dependencies that need to be addressed in the migration:
+- **Shell Utilities:**
+    - `sed`, `grep`, `perl`, `wc`, `cat`, `date`, `printf`: These are extensively used for text manipulation, filtering, and dynamic script generation. In BigQuery, their functionality will be replaced by:
+        - `REGEXP_REPLACE`, `REGEXP_CONTAINS`, `SPLIT`, `STRING_AGG`, `REPLACE` for text manipulation.
+        - `ARRAY_LENGTH`, `LENGTH`, `ORDINAL` for list/line counting and indexing.
+        - BigQuery's native date/timestamp functions (`CURRENT_TIMESTAMP`, `FORMAT_TIMESTAMP`, `TIMESTAMP_ADD`, `TIMESTAMP_SUB`).
+        - BigQuery `SELECT` and `CREATE TABLE/VIEW` for output.
+- **AWK (`nawk`):** `nawk` is used for complex pattern matching, field processing, and state management. Its logic will be re-implemented using BigQuery SQL's procedural capabilities (stored procedures, `LOOP`s, `WHILE`s), `REGEXP_EXTRACT`, and potentially JavaScript UDFs for highly intricate `awk` scripts.
+- **Shell built-ins (`eval`, `getline`):**
+    - `eval`: This dynamic code execution is a major challenge. It will be replaced by explicit, deterministic SQL logic within stored procedures. The intent behind `eval`-generated pipelines will be translated into sequences of BigQuery SQL statements.
+    - `getline` (in `awk`): This file reading mechanism will be replaced by loading external files into BigQuery tables and then querying those tables.
+- **Filesystem Access:** Direct reads from the filesystem for included files (`INCLUDE`) or configuration files will be externalized. The files will be stored in Cloud Storage buckets, and BigQuery will access them either via external tables or by loading them into native tables.
+
+## 7. Unresolved / Risks
+- **Dynamic `eval` of Shell Pipelines:** The use of `eval` to execute dynamically generated `sed`, `awk`, and `parser_filattrib`/`parser_fillist` pipelines is a significant migration challenge. This requires a complete redesign to translate the *intent* of the dynamic generation into static, explicit BigQuery SQL procedural logic. There is a risk of misinterpreting the dynamic behavior.
+- **Arbitrary File Inclusion:** The `INCLUDE` directive in `parser` and the `system("cat $0")` in `parser_getnode` imply reading arbitrary files from the filesystem. This will require defining a controlled mechanism in BigQuery (e.g., pre-ingesting all possible include files into a `project.dataset.include_map` table or a Cloud Storage bucket, or restricting includes to known patterns).
+- **Complex `sed`/`awk` Script Generation:** The dynamic construction of `sed` and `awk` scripts within `parser_fillist` and `parser_filfile`/`parser_filmeta` is very difficult to directly translate. This will require careful analysis and manual conversion of the generated `sed`/`awk` logic into equivalent BigQuery string manipulation functions (`REGEXP_REPLACE`, `REPLACE`, `SPLIT`).
+- **Timestamp Expression Grammar:** The `TIMESTAMP` command has custom arithmetic (`[0-9]* *[-+] *[0-9]*[ymdwhis][0-9]*[t]?.*/`). While BigQuery has robust date/time functions, this specific grammar might require a dedicated JavaScript UDF for precise parsing and translation.
+- **Performance of Iterative Transformations:** The main `parser` function employs an iterative `do...while` loop until convergence. Replicating this efficiently in BigQuery might require careful optimization of temporary tables and `UPDATE` statements within the stored procedure to avoid excessive data scans.
+- **Maintaining Execution Order:** The original script's behavior relies heavily on the sequential application of transformations. The BigQuery implementation must ensure that the order of operations, especially for `gsub` and placeholder substitutions, is preserved.
+
+## 8. Build Plan
+
+The build plan involves creating the necessary BigQuery assets to replicate the functionality of `h_alis_parser.ksh`.
+
+1.  **Stage Input Files to Cloud Storage:**
+    -   All template files (potential STDIN for the original script).
+    -   All files that could be referenced by `INCLUDE` directives.
+    -   Any files containing META blocks or definitions.
+    -   *(Language: Shell/gsutil)*
+
+2.  **Create BigQuery Staging Tables from Cloud Storage:**
+    -   `project.dataset.template_lines` (from template files).
+    -   `project.dataset.include_map` (from included files).
+    -   `project.dataset.meta_blocks` (from files containing meta blocks, potentially requiring initial parsing).
+    -   `project.dataset.list_values` (from extracted list definitions).
+    -   `project.dataset.scalar_values` (from extracted scalar definitions).
+    -   *(Language: BigQuery DDL / External Tables / Load Jobs)*
+
+3.  **Develop BigQuery SQL UDFs:**
+    -   `project.dataset.get_node(input_text STRING, node_name STRING)`: To extract content within named XML-like nodes.
+    -   `project.dataset.expand_list_block(block_text STRING, list_name STRING, elements ARRAY<STRING>)`: To handle the logic of `parser_fillist`.
+    -   `project.dataset.parse_timestamp_expression(expression STRING, sysdate_str STRING)`: (If needed for complex timestamp logic not directly covered by native BigQuery functions).
+    -   *(Language: BigQuery SQL / JavaScript for UDFs)*
+
+4.  **Develop BigQuery Stored Procedure `parser_main`:**
+    -   This will encapsulate the main logic of the `parser`, `parser_filmeta`, and `parser_filfile` functions.
+    -   Initialize temporary tables (`work_lines`, `scalar_map`, `list_map`, `expanded_lines`).
+    -   Implement a `LOOP` with a convergence check and maximum iteration limit.
+    -   Inside the loop:
+        -   Perform scalar placeholder replacements using `REGEXP_REPLACE`.
+        -   Implement list expansion logic, potentially calling `project.dataset.expand_list_block`.
+        -   Handle `INCLUDE` directives by integrating content from `project.dataset.include_map`.
+        -   Implement timestamp processing using native functions or `project.dataset.parse_timestamp_expression`.
+        -   Detect `LISTDEF` and dynamic variable definitions, updating internal state.
+        -   Manage the `noprint` and `parseignore` logic.
+    -   Final `SELECT` statement to output the `parsed_text`.
+    -   *(Language: BigQuery SQL (Procedural))*
+
+5.  **Develop any necessary Python preprocessing scripts (Cloud Function/Dataflow/Cloud Run):**
+    -   If the dynamic `eval` or complex `sed`/`awk` generation proves too cumbersome for direct SQL translation, small Python scripts might be needed to pre-process certain configurations or generate intermediate SQL. This is a last resort to address "Unresolved / Risks."
+    -   *(Language: Python)*
+
+6.  **Orchestration Setup:**
+    -   Configure Cloud Composer DAGs or Workflows to execute the BigQuery stored procedure(s) and manage the data flow from Cloud Storage to BigQuery and back, if necessary.
+    -   Define parameters for `template_id`, `block_name`, etc.
+    -   *(Language: Python (Airflow DAGs) / YAML (Workflows))*
