@@ -1,0 +1,1 @@
+ERROR: tests skipped for vobs/dw_source/isdwh/allgemein/is/util/bin/h_alis_parser.ksh — design unavailable.
