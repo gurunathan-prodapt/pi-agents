@@ -1,0 +1,1 @@
+ERROR: tests skipped for BERT_V_TA_ACC_REF — design unavailable.
