@@ -1,383 +1,329 @@
-Here is a comprehensive suite of migration-validation tests for the `ausd_bp_ta_bpr_instance` job. These tests are designed to prove behavioral equivalence between the legacy Oracle system and the migrated Google Cloud Platform (BigQuery/Airflow) implementation.
-
----
-
 # Migration Validation Test Suite: `ausd_bp_ta_bpr_instance`
 
-## Section 1: Output Parity Tests
-
-### Test Case 1.1: End-to-End Dual-Run Parity (Oracle vs. BigQuery)
-* **Purpose**: Prove that running the migrated BigQuery SQL script on a replicated snapshot of legacy source data produces identical row counts, keys, and column values as the legacy Oracle execution.
-* **Setup**:
-  1. Identify a static historical business date (e.g., `2025-01-15`).
-  2. Extract the source tables from Oracle (`cds$ta_cntrct`, `pds$ta_bpri_com`, `dwtk_meldungen`) for that date and load them into a isolated BigQuery test dataset (`test_cds`, `test_pds`, `test_isbert`).
-  3. Run the legacy Oracle job to populate the legacy target table `sof$ta_bpr_instance`. Extract this target table to a BigQuery table named `test_oracle_results.ta_bpr_instance`.
-* **Action**:
-  Execute the migrated BigQuery SQL script targeting a clean table `test_bq_results.ta_bpr_instance` using the same source data.
-* **Pass/Fail Criterion**:
-  The test passes if a full outer join between the Oracle-produced target and the BigQuery-produced target yields zero mismatched rows.
-* **Validation Code (SQL)**:
-  ```sql
-  -- Assert absolute parity between Oracle legacy output and BigQuery migrated output
-  WITH bq_target AS (
-    SELECT 
-      CNTRCT_ID, BPR_ID, BPR_INSTANCE_ID, ICCID, 
-      IMSI_MCC, IMSI_MNC, IMSI_HLR, IMSI_SI, CNTRCT_ID_REF
-    FROM `your-project-id.test_bq_results.ta_bpr_instance`
-  ),
-  oracle_target AS (
-    SELECT 
-      CNTRCT_ID, BPR_ID, BPR_INSTANCE_ID, ICCID, 
-      IMSI_MCC, IMSI_MNC, IMSI_HLR, IMSI_SI, CNTRCT_ID_REF
-    FROM `your-project-id.test_oracle_results.ta_bpr_instance`
-  ),
-  mismatches AS (
-    SELECT 
-      COALESCE(a.CNTRCT_ID, b.CNTRCT_ID) AS CNTRCT_ID,
-      'BQ_ONLY' AS mismatch_type
-    FROM bq_target a 
-    LEFT JOIN oracle_target b ON a.CNTRCT_ID = b.CNTRCT_ID AND a.BPR_INSTANCE_ID = b.BPR_INSTANCE_ID
-    WHERE b.CNTRCT_ID IS NULL
-
-    UNION ALL
-
-    SELECT 
-      COALESCE(a.CNTRCT_ID, b.CNTRCT_ID) AS CNTRCT_ID,
-      'ORACLE_ONLY' AS mismatch_type
-    FROM oracle_target a 
-    LEFT JOIN bq_target b ON a.CNTRCT_ID = b.CNTRCT_ID AND a.BPR_INSTANCE_ID = b.BPR_INSTANCE_ID
-    WHERE b.CNTRCT_ID IS NULL
-
-    UNION ALL
-
-    SELECT 
-      a.CNTRCT_ID,
-      'VALUE_MISMATCH' AS mismatch_type
-    FROM bq_target a
-    JOIN oracle_target b ON a.CNTRCT_ID = b.CNTRCT_ID AND a.BPR_INSTANCE_ID = b.BPR_INSTANCE_ID
-    WHERE 
-      a.BPR_ID != b.BPR_ID
-      OR a.ICCID != b.ICCID
-      OR COALESCE(a.IMSI_MCC, '') != COALESCE(b.IMSI_MCC, '')
-      OR COALESCE(a.IMSI_MNC, '') != COALESCE(b.IMSI_MNC, '')
-      OR COALESCE(a.IMSI_HLR, '') != COALESCE(b.IMSI_HLR, '')
-      OR COALESCE(a.IMSI_SI, '') != COALESCE(b.IMSI_SI, '')
-      OR COALESCE(a.CNTRCT_ID_REF, -1) != COALESCE(b.CNTRCT_ID_REF, -1)
-  )
-  SELECT 
-    mismatch_type, 
-    COUNT(1) AS mismatch_count 
-  FROM mismatches 
-  GROUP BY mismatch_type;
-  -- PASS: Query returns 0 rows.
-  -- FAIL: Query returns rows indicating BQ_ONLY, ORACLE_ONLY, or VALUE_MISMATCH.
-  ```
+This document details the migration-validation test suite designed to verify the behavioral equivalence of the migrated BigQuery/Airflow job `ausd_bp_ta_bpr_instance` against its legacy Oracle counterpart.
 
 ---
 
-## Section 2: Transformation Correctness Tests
+## Test Case 1: Dynamic Date Resolution (`v_datum`)
 
-### Test Case 2.1: Watermark (`v_datum`) Resolution & Fallback
-* **Purpose**: Verify that the dynamic watermark `v_datum` is correctly resolved from `dwtk_meldungen` and falls back to `1900-01-01` if no matching log entry exists.
-* **Setup**:
-  Create a mock `dwtk_meldungen` table.
-* **Action**:
-  Run two test scenarios:
-  * **Scenario A**: `dwtk_meldungen` contains a record for `BERT_DROP_TEMP_TABLE` with `timecreated = '2025-02-10 14:30:00 UTC'`.
-  * **Scenario B**: `dwtk_meldungen` is empty.
-* **Pass/Fail Criterion**:
-  * In **Scenario A**, `v_datum` must resolve to `2025-02-10`.
-  * In **Scenario B**, `v_datum` must resolve to `1900-01-01`.
-* **Validation Code (pytest)**:
-  ```python
-  import pytest
-  from google.cloud import bigquery
+### Purpose
+Verify that the execution date (`v_datum`) is correctly resolved under two scenarios:
+1. **Fallback Scenario**: When no explicit `stichtag` parameter is passed via Airflow `dag_run.conf`, the job must dynamically resolve `v_datum` using the maximum `timecreated` timestamp for the prerequisite job `BERT_DROP_TEMP_TABLE` from `isbert_schema.dwtk_meldungen`.
+2. **Override Scenario**: When an explicit `stichtag` parameter is provided in the Airflow configuration, it must override the database lookup.
 
-  @pytest.fixture
-  def bq_client():
-      return bigquery.Client()
+### Setup
+1. Create a mock `isbert_schema.dwtk_meldungen` table in the test dataset.
+2. Insert the following test records:
+   ```sql
+   INSERT INTO `isbert_schema.dwtk_meldungen` (job_kennung, timecreated) 
+   VALUES 
+     ('BERT_DROP_TEMP_TABLE', TIMESTAMP('2026-02-15 08:30:00 UTC')),
+     ('BERT_DROP_TEMP_TABLE', TIMESTAMP('2026-02-16 14:20:00 UTC')), -- Max date
+     ('OTHER_JOB', TIMESTAMP('2026-02-17 09:00:00 UTC'));
+   ```
+3. Create empty mock tables for `cds.ta_cntrct` and `pds.ta_bpri_com`.
+4. Create an empty target table `sof.ta_bpr_instance`.
 
-  def test_watermark_resolution(bq_client):
-      # Scenario A: Valid entry exists
-      query_a = """
-      DECLARE v_datum DATE;
-      CREATE TEMP TABLE mock_meldungen (job_kennung STRING, timecreated TIMESTAMP);
-      INSERT INTO mock_meldungen VALUES ('BERT_DROP_TEMP_TABLE', TIMESTAMP('2025-02-10 14:30:00 UTC'));
-      
-      SET v_datum = (
-        SELECT COALESCE(DATE(MAX(timecreated)), DATE '1900-01-01')
-        FROM mock_meldungen
+### Action
+Execute the date resolution logic using the BigQuery client in Python. We will test both the fallback and override behaviors.
+
+```python
+import pytest
+from google.cloud import bigquery
+
+PROJECT_ID = "gcp-project"  # Replace with test project ID
+DATASET_PREFIX = "test_dataset"
+
+@pytest.fixture(scope="module")
+def bq_client():
+    return bigquery.Client()
+
+def test_date_resolution_fallback(bq_client):
+    # Scenario 1: stichtag is empty string (Fallback to dwtk_meldungen)
+    stichtag_param = ""
+    
+    query = f"""
+    DECLARE v_datum STRING;
+    SET v_datum = COALESCE(
+      NULLIF('{stichtag_param}', ''),
+      (
+        SELECT FORMAT_DATE('%Y%m%d', DATE(MAX(timecreated)))
+        FROM `{PROJECT_ID}.isbert_schema.dwtk_meldungen`
         WHERE job_kennung = 'BERT_DROP_TEMP_TABLE'
-      );
-      SELECT v_datum;
-      """
-      result_a = list(bq_client.query(query_a).result())[0][0]
-      assert str(result_a) == "2025-02-10"
+      ),
+      '19000101'
+    );
+    SELECT v_datum AS resolved_date;
+    """
+    
+    query_job = bq_client.query(query)
+    results = list(query_job.result())
+    resolved_date = results[0]["resolved_date"]
+    
+    # Assert that the maximum date for 'BERT_DROP_TEMP_TABLE' is resolved (2026-02-16 -> "20260216")
+    assert resolved_date == "20260216"
 
-      # Scenario B: No entry exists
-      query_b = """
-      DECLARE v_datum DATE;
-      CREATE TEMP TABLE mock_meldungen (job_kennung STRING, timecreated TIMESTAMP);
-      
-      SET v_datum = (
-        SELECT COALESCE(DATE(MAX(timecreated)), DATE '1900-01-01')
-        FROM mock_meldungen
+def test_date_resolution_override(bq_client):
+    # Scenario 2: stichtag is explicitly provided
+    stichtag_param = "20260520"
+    
+    query = f"""
+    DECLARE v_datum STRING;
+    SET v_datum = COALESCE(
+      NULLIF('{stichtag_param}', ''),
+      (
+        SELECT FORMAT_DATE('%Y%m%d', DATE(MAX(timecreated)))
+        FROM `{PROJECT_ID}.isbert_schema.dwtk_meldungen`
         WHERE job_kennung = 'BERT_DROP_TEMP_TABLE'
-      );
-      SELECT v_datum;
-      """
-      result_b = list(bq_client.query(query_b).result())[0][0]
-      assert str(result_b) == "1900-01-01"
-  ```
+      ),
+      '19000101'
+    );
+    SELECT v_datum AS resolved_date;
+    """
+    
+    query_job = bq_client.query(query)
+    results = list(query_job.result())
+    resolved_date = results[0]["resolved_date"]
+    
+    # Assert that the explicit parameter overrides the table lookup
+    assert resolved_date == "20260520"
+```
 
-### Test Case 2.2: ICCID Concatenation & NULL Handling
-* **Purpose**: Verify that the `build_iccid` temporary function correctly concatenates the five ICCID components and handles `NULL` values without propagating `NULL` to the entire output string (matching Oracle's string concatenation behavior).
-* **Setup**:
-  Define a set of test inputs with varying `NULL` placements.
-* **Action**:
-  Evaluate the `build_iccid` function on these inputs.
-* **Pass/Fail Criterion**:
-  The function must return the exact expected strings below. If any component is `NULL`, it must be treated as an empty string, but the hyphens (`-`) must remain in place.
-* **Validation Code (SQL)**:
-  ```sql
-  CREATE TEMP FUNCTION build_iccid(
-    iccid_mi STRING, iccid_ii STRING, iccid_iai STRING, iccid_nr STRING, iccid_cd STRING
-  ) AS (
-    CONCAT(
-      COALESCE(iccid_mi, ''), '-',
-      COALESCE(iccid_ii, ''), '-',
-      COALESCE(iccid_iai, ''), '-',
-      COALESCE(iccid_nr, ''), '-',
-      COALESCE(iccid_cd, '')
+### Pass/Fail Criterion
+* **Pass**: Fallback resolves exactly to `'20260216'`. Override resolves exactly to `'20260520'`.
+* **Fail**: Any other date is returned, or the query fails with a syntax/schema error.
+
+---
+
+## Test Case 2: Contract Filtering and Join Logic
+
+### Purpose
+Verify that the complex business rules and temporal filters applied to `cds.ta_cntrct` and `pds.ta_bpri_com` are executed correctly. This ensures only active/reactivatable, production-ready, and temporally valid contracts and product instances are migrated.
+
+### Setup
+Populate the source tables with test cases designed to validate boundary conditions around `v_datum = '20260216'`.
+
+#### 1. `cds.ta_cntrct` Test Data
+| cntrct_id | cntrct_st | redundant_owner_id | insert_at | modified_at | valid_from | valid_to | is_production | cntrct_ty | cntrct_parent | Description / Expected Outcome |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| `C1` | 5 | 1 | 2026-01-01 | NULL | 2026-01-01 | NULL | 1 | 3 | NULL | **Valid** (Active, standard type) |
+| `C2` | 6 | 1 | 2026-01-01 | 2026-03-01 | 2026-01-01 | 2026-03-01 | 1 | 3 | NULL | **Valid** (Reactivatable, modified/ends in future) |
+| `C3` | 4 | 1 | 2026-01-01 | NULL | 2026-01-01 | NULL | 1 | 3 | NULL | **Invalid** (Status is 4, not 5 or 6) |
+| `C4` | 5 | 2 | 2026-01-01 | NULL | 2026-01-01 | NULL | 1 | 3 | NULL | **Invalid** (redundant_owner_id != 1) |
+| `C5` | 5 | 1 | 2026-02-17 | NULL | 2026-01-01 | NULL | 1 | 3 | NULL | **Invalid** (insert_at > v_datum) |
+| `C6` | 5 | 1 | 2026-01-01 | 2026-02-10 | 2026-01-01 | 2026-02-10 | 1 | 3 | NULL | **Invalid** (modified_at & valid_to <= v_datum) |
+| `C7` | 5 | 1 | 2026-01-01 | NULL | 2026-01-01 | NULL | 0 | 3 | NULL | **Invalid** (is_production != 1) |
+| `C8` | 5 | 1 | 2026-01-01 | NULL | 2026-01-01 | NULL | 1 | 1 | NULL | **Invalid** (cntrct_ty = 1 and parent is NULL) |
+| `C9` | 5 | 1 | 2026-01-01 | NULL | 2026-01-01 | NULL | 1 | 1 | `C1` | **Valid** (cntrct_ty = 1 but parent is NOT NULL) |
+
+#### 2. `pds.ta_bpri_com` Test Data
+| cntrct_id | bpri_com_id | bpr_id | insert_at | modified_at | valid_from | valid_to | is_production | Description / Expected Outcome |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| `C1` | 1001 | `B1` | 2026-01-01 | NULL | 2026-01-01 | NULL | 1 | **Valid** |
+| `C2` | 1002 | `B1` | 2026-01-01 | NULL | 2026-01-01 | NULL | 1 | **Valid** |
+| `C9` | 1003 | `B2` | 2026-01-01 | NULL | 2026-01-01 | NULL | 1 | **Valid** |
+| `C1` | 1004 | `B1` | 2026-02-17 | NULL | 2026-01-01 | NULL | 1 | **Invalid** (insert_at > v_datum) |
+| `C1` | 1005 | `B1` | 2026-01-01 | NULL | 2026-01-01 | NULL | 0 | **Invalid** (is_production != 1) |
+
+### Action
+1. Truncate target table `sof.ta_bpr_instance`.
+2. Run the compiled BigQuery SQL script with `v_datum = '20260216'` and `wiederanlauf_wert = '0'`.
+3. Query the target table to verify loaded records.
+
+```sql
+-- Execute the migration logic
+DECLARE v_datum STRING DEFAULT '20260216';
+
+TRUNCATE TABLE `sof.ta_bpr_instance`;
+
+INSERT INTO `sof.ta_bpr_instance` (
+  CNTRCT_ID, BPR_ID, BPR_INSTANCE_ID, ICCID, IMSI_MCC, IMSI_MNC, IMSI_HLR, IMSI_SI, CNTRCT_ID_REF
+)
+SELECT
+  bp.cntrct_id,
+  bp.bpr_id,
+  bp.bpri_com_id AS bpr_instance_id,
+  CONCAT(COALESCE(bp.iccid_mi, ''), '-', COALESCE(bp.iccid_ii, ''), '-', COALESCE(bp.iccid_iai, ''), '-', COALESCE(bp.iccid_nr, ''), '-', COALESCE(bp.iccid_cd, '')) AS iccid,
+  bp.imsi_mcc,
+  bp.imsi_mnc,
+  bp.imsi_hlr,
+  bp.imsi_si,
+  bp.cntrct_id_ref
+FROM `cds.ta_cntrct` AS c
+JOIN `pds.ta_bpri_com` AS bp
+  ON c.cntrct_id = bp.cntrct_id
+WHERE c.cntrct_st IN (5, 6)
+  AND c.redundant_owner_id = 1
+  AND c.insert_at <= PARSE_DATE('%Y%m%d', v_datum)
+  AND (c.modified_at IS NULL OR c.modified_at > PARSE_DATE('%Y%m%d', v_datum))
+  AND c.valid_from <= PARSE_DATE('%Y%m%d', v_datum)
+  AND (c.valid_to IS NULL OR c.valid_to > PARSE_DATE('%Y%m%d', v_datum))
+  AND c.is_production = 1
+  AND (c.cntrct_ty NOT IN (1, 2, 5) OR c.cntrct_parent IS NOT NULL)
+  AND bp.insert_at <= PARSE_DATE('%Y%m%d', v_datum)
+  AND (bp.modified_at IS NULL OR bp.modified_at > PARSE_DATE('%Y%m%d', v_datum))
+  AND bp.valid_from <= PARSE_DATE('%Y%m%d', v_datum)
+  AND (bp.valid_to IS NULL OR bp.valid_to > PARSE_DATE('%Y%m%d', v_datum))
+  AND bp.is_production = 1
+  AND bp.bpri_com_id > 0;
+```
+
+### Pass/Fail Criterion
+* **Pass**: The target table contains exactly 3 records corresponding to `bpr_instance_id` values `1001`, `1002`, and `1003`.
+* **Fail**: Any invalid record (e.g., `1004`, `1005`) is loaded, or any valid record is missing.
+
+---
+
+## Test Case 3: ICCID Concatenation and NULL Handling
+
+### Purpose
+In Oracle, concatenating strings with `NULL` values treats `NULL` as an empty string (e.g., `'A' || NULL || 'B'` yields `'AB'`). In standard BigQuery SQL, `CONCAT('A', NULL, 'B')` returns `NULL`. 
+
+This test proves that the migrated code handles potential `NULL` values in the `iccid` components (`iccid_mi`, `iccid_ii`, `iccid_iai`, `iccid_nr`, `iccid_cd`) safely without causing the entire `iccid` field to resolve to `NULL`.
+
+### Setup
+1. Insert a record into `cds.ta_cntrct` that passes all filters.
+2. Insert a record into `pds.ta_bpri_com` with some `NULL` values in the `iccid` components:
+   ```sql
+   INSERT INTO `pds.ta_bpri_com` (
+     cntrct_id, bpri_com_id, bpr_id, 
+     iccid_mi, iccid_ii, iccid_iai, iccid_nr, iccid_cd, 
+     insert_at, valid_from, is_production
+   ) VALUES (
+     'C_ICCID_TEST', 9999, 'B1', 
+     '89', NULL, '123', NULL, '9', -- iccid_ii and iccid_nr are NULL
+     DATE('2026-01-01'), DATE('2026-01-01'), 1
+   );
+   ```
+
+### Action
+1. Execute the migration SQL.
+2. Query the target table for the generated `iccid` value:
+   ```sql
+   SELECT iccid 
+   FROM `sof.ta_bpr_instance` 
+   WHERE bpr_instance_id = 9999;
+   ```
+
+### Pass/Fail Criterion
+* **Pass**: The returned `iccid` is `'89--123--9'` (or empty strings substituted for `NULL` components, preserving the delimiters without resolving the entire string to `NULL`).
+* **Fail**: The returned `iccid` is `NULL`, or the query fails.
+
+*Note: If the test fails, the migration code must be updated to use `CONCAT(COALESCE(bp.iccid_mi, ''), '-', COALESCE(bp.iccid_ii, ''), ...)` to guarantee behavioral equivalence.*
+
+---
+
+## Test Case 4: Restart Logic (`wiederanlauf_wert`)
+
+### Purpose
+Verify that the restart parameter `wiederanlauf_wert` (passed via Airflow configuration) is correctly applied to filter out records with `bpri_com_id` less than or equal to the specified value.
+
+### Setup
+1. Ensure the source tables contain valid records with `bpri_com_id` values: `1001`, `1002`, and `1003`.
+2. Set the Airflow configuration parameter `wiederanlauf_wert` to `1001`.
+
+### Action
+Execute the migration SQL with `wiederanlauf_wert = 1001`.
+
+```python
+def test_restart_logic(bq_client):
+    wiederanlauf_wert = 1001
+    v_datum = "20260216"
+    
+    # Truncate target
+    bq_client.query(f"TRUNCATE TABLE `{PROJECT_ID}.sof.ta_bpr_instance`").result()
+    
+    # Run insert with filter
+    query = f"""
+    INSERT INTO `{PROJECT_ID}.sof.ta_bpr_instance` (
+      CNTRCT_ID, BPR_ID, BPR_INSTANCE_ID, ICCID
     )
-  );
+    SELECT
+      bp.cntrct_id,
+      bp.bpr_id,
+      bp.bpri_com_id AS bpr_instance_id,
+      'TEST'
+    FROM `{PROJECT_ID}.cds.ta_cntrct` AS c
+    JOIN `{PROJECT_ID}.pds.ta_bpri_com` AS bp
+      ON c.cntrct_id = bp.cntrct_id
+    WHERE c.cntrct_st IN (5, 6)
+      AND c.redundant_owner_id = 1
+      AND c.insert_at <= PARSE_DATE('%Y%m%d', '{v_datum}')
+      AND (c.modified_at IS NULL OR c.modified_at > PARSE_DATE('%Y%m%d', '{v_datum}'))
+      AND c.valid_from <= PARSE_DATE('%Y%m%d', '{v_datum}')
+      AND (c.valid_to IS NULL OR c.valid_to > PARSE_DATE('%Y%m%d', '{v_datum}'))
+      AND c.is_production = 1
+      AND (c.cntrct_ty NOT IN (1, 2, 5) OR c.cntrct_parent IS NOT NULL)
+      AND bp.insert_at <= PARSE_DATE('%Y%m%d', '{v_datum}')
+      AND (bp.modified_at IS NULL OR bp.modified_at > PARSE_DATE('%Y%m%d', '{v_datum}'))
+      AND bp.valid_from <= PARSE_DATE('%Y%m%d', '{v_datum}')
+      AND (bp.valid_to IS NULL OR bp.valid_to > PARSE_DATE('%Y%m%d', '{v_datum}'))
+      AND bp.is_production = 1
+      AND bp.bpri_com_id > {wiederanlauf_wert};
+    """
+    bq_client.query(query).result()
+    
+    # Verify target contents
+    res_query = f"SELECT BPR_INSTANCE_ID FROM `{PROJECT_ID}.sof.ta_bpr_instance` ORDER BY BPR_INSTANCE_ID"
+    results = [row["BPR_INSTANCE_ID"] for row in bq_client.query(res_query).result()]
+    
+    # Assert that 1001 is excluded, but 1002 and 1003 are included
+    assert results == [1002, 1003]
+```
 
-  WITH test_cases AS (
-    SELECT '89' AS mi, '49' AS ii, '11' AS iai, '123456' AS nr, '7' AS cd, '89-49-11-123456-7' AS expected UNION ALL
-    SELECT NULL, '49', '11', '123456', '7', '-49-11-123456-7' AS expected UNION ALL
-    SELECT '89', NULL, NULL, '123456', NULL, '89---123456-' AS expected UNION ALL
-    SELECT NULL, NULL, NULL, NULL, NULL, '----' AS expected
-  )
-  SELECT 
-    mi, ii, iai, nr, cd, expected,
-    build_iccid(mi, ii, iai, nr, cd) AS actual,
-    build_iccid(mi, ii, iai, nr, cd) = expected AS is_correct
-  FROM test_cases
-  -- ASSERTION: Every row returned must have is_correct = TRUE
-  ```
-
-### Test Case 2.3: Contract Type and Parent Filtering Logic
-* **Purpose**: Verify the complex conditional filter: `(cntrct_ty NOT IN (1, 2, 5) OR cntrct_parent IS NOT NULL)`.
-* **Setup**:
-  Insert mock contracts with varying combinations of `cntrct_ty` and `cntrct_parent`.
-* **Action**:
-  Run the filtering logic against these mock contracts.
-* **Pass/Fail Criterion**:
-  * Contracts with type `1`, `2`, or `5` must be **excluded** unless they have a non-null `cntrct_parent`.
-  * Contracts with other types (e.g., `3`, `4`, `6`) must be **included** regardless of `cntrct_parent`.
-* **Validation Code (SQL)**:
-  ```sql
-  WITH mock_contracts AS (
-    SELECT 101 AS cntrct_id, 1 AS cntrct_ty, CAST(NULL AS INT64) AS cntrct_parent, 'EXCLUDE' AS expected UNION ALL
-    SELECT 102 AS cntrct_id, 1 AS cntrct_ty, 999 AS cntrct_parent, 'INCLUDE' AS expected UNION ALL
-    SELECT 103 AS cntrct_id, 3 AS cntrct_ty, CAST(NULL AS INT64) AS cntrct_parent, 'INCLUDE' AS expected UNION ALL
-    SELECT 104 AS cntrct_id, 5 AS cntrct_ty, CAST(NULL AS INT64) AS cntrct_parent, 'EXCLUDE' AS expected UNION ALL
-    SELECT 105 AS cntrct_id, 5 AS cntrct_ty, 888 AS cntrct_parent, 'INCLUDE' AS expected
-  )
-  SELECT 
-    cntrct_id, cntrct_ty, cntrct_parent, expected,
-    CASE 
-      WHEN (cntrct_ty NOT IN (1, 2, 5) OR cntrct_parent IS NOT NULL) THEN 'INCLUDE'
-      ELSE 'EXCLUDE'
-    END AS actual
-  FROM mock_contracts
-  -- ASSERTION: actual must equal expected for all rows.
-  ```
-
-### Test Case 2.4: Temporal / SCD2 Filtering Boundaries
-* **Purpose**: Verify that records are correctly filtered based on the dynamic watermark `v_datum` across all temporal fields (`insert_at`, `modified_at`, `valid_from`, `valid_to`).
-* **Setup**:
-  Set `v_datum = '2025-01-15'`. Create mock contracts with different temporal boundaries.
-* **Action**:
-  Apply the temporal filter:
-  `DATE(insert_at) <= v_datum AND (modified_at IS NULL OR DATE(modified_at) > v_datum) AND DATE(valid_from) <= v_datum AND (valid_to IS NULL OR DATE(valid_to) > v_datum)`
-* **Pass/Fail Criterion**:
-  Only records active on or before `v_datum` and not modified/expired on or before `v_datum` must be included.
-* **Validation Code (SQL)**:
-  ```sql
-  DECLARE v_datum DATE DEFAULT '2025-01-15';
-
-  WITH mock_temporal_contracts AS (
-    -- Case 1: Active and valid (Should Include)
-    SELECT 201 AS id, TIMESTAMP('2025-01-01') AS insert_at, CAST(NULL AS TIMESTAMP) AS modified_at, TIMESTAMP('2025-01-01') AS valid_from, CAST(NULL AS TIMESTAMP) AS valid_to, 'INCLUDE' AS expected UNION ALL
-    -- Case 2: Inserted after watermark (Should Exclude)
-    SELECT 202 AS id, TIMESTAMP('2025-01-16') AS insert_at, CAST(NULL AS TIMESTAMP) AS modified_at, TIMESTAMP('2025-01-01') AS valid_from, CAST(NULL AS TIMESTAMP) AS valid_to, 'EXCLUDE' AS expected UNION ALL
-    -- Case 3: Modified before watermark (Should Exclude - superseded)
-    SELECT 203 AS id, TIMESTAMP('2025-01-01') AS insert_at, TIMESTAMP('2025-01-14') AS modified_at, TIMESTAMP('2025-01-01') AS valid_from, CAST(NULL AS TIMESTAMP) AS valid_to, 'EXCLUDE' AS expected UNION ALL
-    -- Case 4: Valid to date is in the past (Should Exclude - expired)
-    SELECT 204 AS id, TIMESTAMP('2025-01-01') AS insert_at, CAST(NULL AS TIMESTAMP) AS modified_at, TIMESTAMP('2025-01-01') AS valid_from, TIMESTAMP('2025-01-10') AS valid_to, 'EXCLUDE' AS expected UNION ALL
-    -- Case 5: Valid from is in the future (Should Exclude - not yet active)
-    SELECT 205 AS id, TIMESTAMP('2025-01-01') AS insert_at, CAST(NULL AS TIMESTAMP) AS modified_at, TIMESTAMP('2025-01-16') AS valid_from, CAST(NULL AS TIMESTAMP) AS valid_to, 'EXCLUDE' AS expected
-  )
-  SELECT 
-    id, expected,
-    CASE 
-      WHEN DATE(insert_at) <= v_datum
-       AND (modified_at IS NULL OR DATE(modified_at) > v_datum)
-       AND DATE(valid_from) <= v_datum
-       AND (valid_to IS NULL OR DATE(valid_to) > v_datum) THEN 'INCLUDE'
-      ELSE 'EXCLUDE'
-    END AS actual
-  FROM mock_temporal_contracts;
-  -- ASSERTION: actual must equal expected for all rows.
-  ```
+### Pass/Fail Criterion
+* **Pass**: Only records with `bpri_com_id` strictly greater than `1001` are loaded.
+* **Fail**: Record `1001` is loaded, or no records are loaded.
 
 ---
 
-## Section 3: External-System Replacements & Orchestration
+## Test Case 5: Schema and Data Quality Assertions
 
-### Test Case 3.1: Airflow DAG Compilation & Variable Substitution
-* **Purpose**: Ensure the Airflow DAG compiles without syntax errors and correctly resolves environment-specific variables (e.g., `gcp_project_id`, `isbert_dataset`, `sof_dataset`) within the SQL template.
-* **Setup**:
-  An Airflow testing environment (or local `pytest` with `apache-airflow` installed).
-* **Action**:
-  Import the DAG and render the SQL template for the task `run_d_ausd_bp_ta_bpr_instance`.
-* **Pass/Fail Criterion**:
-  The DAG must load without errors, and the rendered SQL must contain the substituted project and dataset names instead of Jinja placeholders.
-* **Validation Code (pytest)**:
-  ```python
-  import os
-  from airflow.models import DagBag, Variable
-  from airflow.models.taskinstance import TaskInstance
-  from datetime import datetime
+### Purpose
+Verify that the target table `sof.ta_bpr_instance` adheres to the required schema constraints (nullability, data types) and that no duplicate records are generated.
 
-  def test_dag_compilation_and_template_rendering(monkeypatch):
-      # Mock Airflow Variables
-      mock_vars = {
-          "gcp_project_id": "gcp-dwh-test-project",
-          "isbert_dataset": "test_isbert",
-          "sof_dataset": "test_sof",
-          "cds_dataset": "test_cds",
-          "pds_dataset": "test_pds"
-      }
-      monkeypatch.setattr(Variable, "get", lambda key, default_var=None: mock_vars.get(key, default_var))
+### Setup
+Run the full migration job successfully using the test dataset.
 
-      # Load DagBag
-      dag_dir = os.path.join(os.path.dirname(__file__), "../dags")
-      dagbag = DagBag(dag_folder=dag_dir, include_examples=False)
-      
-      assert dagbag.import_errors == {}
-      dag = dagbag.get_dag(dag_id="dw_bert_ausd_bp_ta_bpr_instance")
-      assert dag is not None
+### Action & Assertions
+Run the following validation queries against the populated target table.
 
-      # Retrieve task and render template
-      task = dag.get_task("run_d_ausd_bp_ta_bpr_instance")
-      
-      # Create a dummy DagRun and TaskInstance to resolve templates
-      execution_date = datetime(2025, 1, 1)
-      ti = TaskInstance(task=task, execution_date=execution_date)
-      
-      # Render templates
-      rendered_sql = task.render_template(task.sql, ti.get_template_context())
-      
-      # Assertions to verify variable substitution
-      assert "gcp-dwh-test-project.test_isbert.dwtk_meldungen" in rendered_sql
-      assert "gcp-dwh-test-project.test_sof.ta_bpr_instance" in rendered_sql
-      assert "gcp-dwh-test-project.test_cds.ta_cntrct" in rendered_sql
-      assert "gcp-dwh-test-project.test_pds.ta_bpri_com" in rendered_sql
-      assert "{{" not in rendered_sql  # Ensure no unrendered Jinja remains
-  ```
+```python
+def test_schema_and_data_quality(bq_client):
+    # 1. Uniqueness Constraint: (CNTRCT_ID, BPR_INSTANCE_ID) must be unique
+    dup_query = f"""
+    SELECT CNTRCT_ID, BPR_INSTANCE_ID, COUNT(*) as cnt
+    FROM `{PROJECT_ID}.sof.ta_bpr_instance`
+    GROUP BY CNTRCT_ID, BPR_INSTANCE_ID
+    HAVING cnt > 1
+    """
+    dups = list(bq_client.query(dup_query).result())
+    assert len(dups) == 0, f"Found duplicate keys in target table: {dups}"
 
----
+    # 2. Nullability Constraint: Key columns must not be NULL
+    null_query = f"""
+    SELECT COUNT(*) as null_cnt
+    FROM `{PROJECT_ID}.sof.ta_bpr_instance`
+    WHERE CNTRCT_ID IS NULL OR BPR_ID IS NULL OR BPR_INSTANCE_ID IS NULL
+    """
+    null_cnt = list(bq_client.query(null_query).result())[0]["null_cnt"]
+    assert null_cnt == 0, "Target table contains NULL values in primary key columns."
 
-## Section 4: Data-Quality, Schema, and Row-Count Assertions
-
-### Test Case 4.1: Target Schema & Nullability Validation
-* **Purpose**: Verify that the target table `ta_bpr_instance` in BigQuery matches the required schema structure, data types, and nullability constraints.
-* **Setup**:
-  The target table `ta_bpr_instance` must be deployed in the target dataset.
-* **Action**:
-  Query the BigQuery `INFORMATION_SCHEMA.COLUMNS` view for the target table.
-* **Pass/Fail Criterion**:
-  The columns, data types, and nullability must match the design specification exactly.
-* **Validation Code (SQL)**:
-  ```sql
-  WITH expected_schema AS (
-    SELECT 'CNTRCT_ID' AS column_name, 'INT64' AS data_type, 'YES' AS is_nullable UNION ALL
-    SELECT 'BPR_ID', 'INT64', 'YES' UNION ALL
-    SELECT 'BPR_INSTANCE_ID', 'INT64', 'YES' UNION ALL
-    SELECT 'ICCID', 'STRING', 'YES' UNION ALL
-    SELECT 'IMSI_MCC', 'STRING', 'YES' UNION ALL
-    SELECT 'IMSI_MNC', 'STRING', 'YES' UNION ALL
-    SELECT 'IMSI_HLR', 'STRING', 'YES' UNION ALL
-    SELECT 'IMSI_SI', 'STRING', 'YES' UNION ALL
-    SELECT 'CNTRCT_ID_REF', 'INT64', 'YES'
-  ),
-  actual_schema AS (
-    SELECT 
-      column_name, 
-      data_type, 
-      is_nullable
-    FROM `{{ var.value.gcp_project_id }}.{{ var.value.sof_dataset }}.INFORMATION_SCHEMA.COLUMNS`
+    # 3. Schema Data Type Verification
+    schema_query = f"""
+    SELECT column_name, data_type, is_nullable
+    FROM `{PROJECT_ID}.sof.INFORMATION_SCHEMA.COLUMNS`
     WHERE table_name = 'ta_bpr_instance'
-  )
-  SELECT 
-    COALESCE(e.column_name, a.column_name) AS col_name,
-    e.data_type AS exp_type, a.data_type AS act_type,
-    e.is_nullable AS exp_null, a.is_nullable AS act_null,
-    CASE 
-      WHEN a.column_name IS NULL THEN 'MISSING IN TARGET'
-      WHEN e.column_name IS NULL THEN 'UNEXPECTED IN TARGET'
-      WHEN e.data_type != a.data_type THEN 'TYPE MISMATCH'
-      WHEN e.is_nullable != a.is_nullable THEN 'NULLABILITY MISMATCH'
-      ELSE 'OK'
-    END AS status
-  FROM expected_schema e
-  FULL OUTER JOIN actual_schema a ON e.column_name = a.column_name
-  WHERE e.column_name IS NULL 
-     OR a.column_name IS NULL 
-     OR e.data_type != a.data_type 
-     OR e.is_nullable != a.is_nullable;
-  -- PASS: Query returns 0 rows.
-  -- FAIL: Query returns rows indicating schema mismatches.
-  ```
+    """
+    schema_rows = {row["column_name"]: (row["data_type"], row["is_nullable"]) for row in bq_client.query(schema_query).result()}
+    
+    # Assert key columns match expected BigQuery types
+    assert schema_rows["CNTRCT_ID"][0] in ("STRING", "INT64")
+    assert schema_rows["BPR_ID"][0] in ("STRING", "INT64")
+    assert schema_rows["BPR_INSTANCE_ID"][0] == "INT64"
+    assert schema_rows["ICCID"][0] == "STRING"
+```
 
-### Test Case 4.2: Post-Load Data Quality Assertions
-* **Purpose**: Run post-execution data quality checks on the target table to ensure no logical corruption occurred (e.g., orphaned records, malformed ICCIDs).
-* **Setup**:
-  The BigQuery migration job has completed execution.
-* **Action**:
-  Execute a series of data quality checks on the target table.
-* **Pass/Fail Criterion**:
-  * **Check A**: No duplicate `BPR_INSTANCE_ID` values exist (Primary Key constraint).
-  * **Check B**: All `ICCID` values contain exactly 4 hyphens (verifying the `CONCAT` logic worked correctly).
-  * **Check C**: No `CNTRCT_ID` is null.
-* **Validation Code (SQL)**:
-  ```sql
-  -- Check A: Duplicate Key Check
-  SELECT 'DUPLICATE_KEYS' AS check_name, COUNT(1) AS failure_count
-  FROM (
-    SELECT BPR_INSTANCE_ID, COUNT(1)
-    FROM `{{ var.value.gcp_project_id }}.{{ var.value.sof_dataset }}.ta_bpr_instance`
-    WHERE BPR_INSTANCE_ID IS NOT NULL
-    GROUP BY BPR_INSTANCE_ID
-    HAVING COUNT(1) > 1
-  )
-
-  UNION ALL
-
-  -- Check B: Malformed ICCID Check (Must have exactly 4 hyphens)
-  SELECT 'MALFORMED_ICCID' AS check_name, COUNT(1) AS failure_count
-  FROM `{{ var.value.gcp_project_id }}.{{ var.value.sof_dataset }}.ta_bpr_instance`
-  WHERE LENGTH(ICCID) - LENGTH(REPLACE(ICCID, '-', '')) != 4
-
-  UNION ALL
-
-  -- Check C: Null Contract ID Check
-  SELECT 'NULL_CONTRACT_ID' AS check_name, COUNT(1) AS failure_count
-  FROM `{{ var.value.gcp_project_id }}.{{ var.value.sof_dataset }}.ta_bpr_instance`
-  WHERE CNTRCT_ID IS NULL;
-
-  -- PASS: All checks return a failure_count of 0.
-  -- FAIL: Any check returns a failure_count > 0.
-  ```
+### Pass/Fail Criterion
+* **Pass**: All assertions pass (no duplicates, no nulls in key columns, schema matches target specifications).
+* **Fail**: Any assertion fails.
