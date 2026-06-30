@@ -1,0 +1,11 @@
+CREATE TABLE IF NOT EXISTS `${GCP_PROJECT_ID}.${BQ_DATASET_ID}.message_errors` (
+  error_id STRING NOT NULL DEFAULT GENERATE_UUID(),
+  eintragsnr INT64 NOT NULL,
+  typ STRING NOT NULL,
+  fehlernr INT64 NOT NULL,
+  zusatz1 STRING,
+  zusatz2 STRING,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP()
+)
+PARTITION BY DATE(created_at)
+CLUSTER BY eintragsnr, typ;

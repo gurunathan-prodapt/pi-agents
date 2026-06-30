@@ -1,0 +1,6 @@
+CREATE OR REPLACE PROCEDURE `${GCP_PROJECT_ID}.${BQ_DATASET_ID}.DWMSG_ErmittleNr`(
+  OUT p_EintragsNr INT64
+)
+BEGIN
+  CALL `${GCP_PROJECT_ID}.${BQ_DATASET_ID}.sp_next_sequence_value`('DWMSG', p_EintragsNr);
+END;
