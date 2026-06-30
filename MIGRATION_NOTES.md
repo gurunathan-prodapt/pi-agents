@@ -1,62 +1,64 @@
 # Migration Notes: `ausd_bp_ta_bpr_instance`
 
-This document provides the technical details, design decisions, manual setup steps, validation procedures, and rollback strategies for the migrated `ausd_bp_ta_bpr_instance` pipeline.
+This document provides the comprehensive migration notes for transitioning the legacy UC4 job `DW.BERT_AUSD_BP_TA_BPR_INSTANCE` and its associated KornShell wrappers and Oracle SQL*Plus scripts to Google Cloud BigQuery and Apache Airflow (Cloud Composer).
 
 ---
 
 ## 1. Summary
 
-The legacy batch job `ausd_bp_ta_bpr_instance` has been migrated from an on-premises environment to the **Google Cloud Platform (GCP)**. 
+The legacy process executes an Oracle SQL script that queries remote tables over a database link (`@pcrs1`), filters records based on dynamic dates retrieved from a tracking/logging table, and loads the formatted base product instances into a target staging table (`sof$ta_bpr_instance`).
 
-*   **Legacy Platform**: UC4/Automic Scheduler, KornShell (KSH) wrapper scripts (`r_ausd_bp_ta_bpr_instance.ksh`, `k_ausd_bp_ta_bpr_instance.ksh`), and Oracle SQL\*Plus executing dynamic DML against an Oracle database via DB Link (`@pcrs1`).
-*   **Target Platform**: **Google Cloud Composer (Apache Airflow)** for orchestration and **BigQuery** for serverless data warehousing and processing.
-*   **Business Objective**: Prepares and filters instantiated basis products (`ta_bpr_instance`) based on active contract states and dynamic watermarks. This data is consumed downstream by BERT scoring models and reporting engines.
+This process has been migrated from an on-premises Oracle/UC4/KornShell environment to **Google Cloud Platform (GCP)**. 
+* **Orchestration:** Migrated from UC4 and KornShell wrappers (`r_ausd_bp_ta_bpr_instance.ksh`, `k_ausd_bp_ta_bpr_instance.ksh`) to an **Apache Airflow DAG** running on Cloud Composer.
+* **Data Warehouse / Compute:** Migrated from Oracle SQL*Plus to **Google BigQuery SQL**.
+* **Data Sources:** Remote database link tables (`cds$ta_cntrct@pcrs1` and `pds$ta_bpri_com@pcrs1`) are assumed to be replicated into BigQuery datasets (`cds` and `pds`) prior to running this job.
 
 ---
 
 ## 2. Generated Artifacts
 
-The migration process consolidated multiple legacy shell scripts and SQL files into two primary, maintainable artifacts:
+The migration process generated the following files, which must be deployed to your Cloud Composer environment:
 
-| Target Relative Path | Target Language | Role / Description |
+| Target File Path | Target Language | Role |
 | :--- | :--- | :--- |
-| `dags/dag_ausd_bp_ta_bpr_instance.py` | Python (Airflow DAG) | Orchestrates the pipeline. It defines the DAG, sets the execution schedule, loads environment variables, and triggers the BigQuery execution task. |
-| `sql/d_ausd_bp_ta_bpr_instance.sql` | BigQuery Standard SQL | Contains the core business logic. It dynamically resolves the watermark date (`v_datum`), truncates the target table, and performs an optimized insert-select operation using Common Table Expressions (CTEs) and Temporary User Defined Functions (UDFs). |
+| `dags/ausd_bp_ta_bpr_instance_dag.py` | Python (Airflow DAG) | Orchestrates the job execution. It defines the DAG, sets up execution parameters, and calls the BigQuery operator. |
+| `gcs/sql/d_ausd_bp_ta_bpr_instance.sql` | Google BigQuery SQL | Contains the core business logic, including dynamic date resolution, target table truncation, and the `INSERT-SELECT` statement. |
 
 ---
 
 ## 3. Key Design Decisions
 
-### 3.1. Elimination of Shell Scripting (KSH)
-*   **Decision**: Completely remove the KornShell wrapper scripts (`r_...ksh` and `k_...ksh`).
-*   **Reasoning**: Legacy shell scripts were primarily used for environment setup, parameter validation, and calling SQL\*Plus. In GCP, Apache Airflow natively handles orchestration, parameter passing, and task execution. Removing the shell layer reduces infrastructure complexity, eliminates the need for containerized shell execution environments, and simplifies logging.
+### Consolidation of Shell Wrappers
+The legacy architecture used two shell scripts (`r_...` and `k_...`) to handle environment setup, parameter parsing, date arithmetic, and logging. In the target architecture, these wrappers are consolidated into a single Airflow DAG. Parameter parsing (e.g., `stichtag`, `wiederanlauf_wert`) is handled natively via Airflow's `dag_run.conf` context.
 
-### 3.2. Dynamic Watermarking via BigQuery Scripting
-*   **Decision**: Implement dynamic SQL scripting (`DECLARE`, `SET`) directly inside the BigQuery SQL file to resolve `v_datum`.
-*   **Reasoning**: The legacy script dynamically queried `dwtk_meldungen` to find the watermark timestamp of the `BERT_DROP_TEMP_TABLE` job. By using BigQuery scripting, we keep this logic atomic and self-contained within the SQL layer. Airflow does not need to run a pre-query to pass the date as a parameter, minimizing round-trips and keeping the DAG clean.
+### Dynamic Date Resolution (`v_datum`) inside BigQuery
+In the legacy Oracle script, `v_datum` was resolved dynamically by querying the tracking table `isbert_schema.dwtk_meldungen`. To maintain atomic execution and minimize Airflow task overhead, this logic was moved directly into the BigQuery SQL script using standard SQL scripting (`DECLARE` and `SET`). 
+* If a `stichtag` parameter is passed via the Airflow configuration, it is used directly.
+* If no parameter is passed, the script dynamically queries `isbert_schema.dwtk_meldungen` for the last successful run of `BERT_DROP_TEMP_TABLE`.
+* If both are missing, it defaults to `'19000101'`.
 
-### 3.3. Safe String Concatenation (UDF)
-*   **Decision**: Created a temporary SQL function `build_iccid` to handle the concatenation of the five ICCID fields.
-*   **Reasoning**: In Oracle, concatenating a null value with a string ignores the null (e.g., `'A' || NULL || 'B'` results in `'AB'`). In BigQuery Standard SQL, `CONCAT` returns `NULL` if any argument is `NULL`. The temporary function wraps each component in a `COALESCE(..., '')` to guarantee functional parity and prevent entire ICCID strings from evaluating to `NULL`.
+### Removal of Oracle-Specific Optimizer Hints
+Oracle-specific hints such as `/*+ DRIVING_SITE(c) ORDERED ... */` were stripped out during translation. BigQuery's query engine dynamically optimizes execution plans and handles distributed joins automatically, making these hints obsolete.
 
-### 3.4. Environment Parameterization via Jinja
-*   **Decision**: Use Airflow variables and Jinja templating (`{{ var.value.gcp_project_id }}`) for all dataset and project references.
-*   **Reasoning**: This ensures that the exact same SQL and DAG code can be promoted through DEV, QA, and PROD environments without manual modifications.
+### Parameterization of Project IDs
+To support seamless promotion across environments (Dev, Test, Prod), all dataset references in the SQL script are parameterized using the Airflow variable `GCP_PROJECT_ID` (e.g., `{{ var.value.get("GCP_PROJECT_ID", "gcp-project") }}`).
 
 ---
 
 ## 4. Manual Steps Before Go-Live
 
-Before enabling the Airflow DAG in production, the following setup steps must be completed:
+Before deploying and running the migrated DAG, the following manual setup steps must be completed in the target GCP environment:
 
-### 4.1. Schema and Dataset Verification
-Ensure that the following BigQuery datasets exist in your target GCP project:
-*   `isbert_schema` (or the configured name for tracking tables)
-*   `sof` (target dataset)
-*   `cds` (source contract dataset)
-*   `pds` (source product instance dataset)
+### 1. Schema & Dataset Creation
+Ensure that the following BigQuery datasets exist in your target project and region (e.g., `EU`):
+* `sof` (Target dataset containing `ta_bpr_instance`)
+* `cds` (Source dataset containing `ta_cntrct`)
+* `pds` (Source dataset containing `ta_bpri_com`)
+* `isbert_schema` (Control dataset containing `dwtk_meldungen`)
 
-Verify that the target table `sof.ta_bpr_instance` exists with the correct schema:
+### 2. Target Table DDL
+If not already created by an external schema migration tool, initialize the target table `sof.ta_bpr_instance` using the following schema:
+
 ```sql
 CREATE TABLE IF NOT EXISTS `your_project.sof.ta_bpr_instance` (
   CNTRCT_ID INT64,
@@ -71,92 +73,83 @@ CREATE TABLE IF NOT EXISTS `your_project.sof.ta_bpr_instance` (
 );
 ```
 
-### 4.2. IAM & Permissions
-The service account running the Cloud Composer workers must have the following IAM roles:
-*   **BigQuery Data Editor** (`roles/bigquery.dataEditor`) on the target dataset (`sof`).
-*   **BigQuery Data Viewer** (`roles/bigquery.dataViewer`) on the source datasets (`cds`, `pds`, `isbert_schema`).
-*   **BigQuery Job User** (`roles/bigquery.jobUser`) at the project level to execute queries.
+### 3. IAM & Permissions
+The Cloud Composer service account (e.g., `service-XXX@gcp-sa-composer.iam.gserviceaccount.com`) must have the following roles:
+* **BigQuery Data Editor** on the `sof` dataset.
+* **BigQuery Data Viewer** on the `cds`, `pds`, and `isbert_schema` datasets.
+* **BigQuery Job User** on the project level.
+* **Storage Object Viewer** on the GCS bucket containing the SQL scripts.
 
-### 4.3. Airflow Variables Configuration
-Configure the following Airflow Variables in the Composer environment (Admin -> Variables):
+### 4. Airflow Variables & Connections
+* **Airflow Variable:** Create an Airflow variable named `GCP_PROJECT_ID` containing your target Google Cloud Project ID.
+* **Airflow Connection:** Ensure the connection `google_cloud_default` is configured and has appropriate access to your GCP project.
 
-| Variable Key | Example Value | Description |
-| :--- | :--- | :--- |
-| `gcp_project_id` | `gcp-dwh-prod` | The target GCP Project ID. |
-| `isbert_dataset` | `isbert_schema` | Dataset containing `dwtk_meldungen`. |
-| `sof_dataset` | `sof` | Dataset containing `ta_bpr_instance`. |
-| `cds_dataset` | `cds` | Dataset containing `ta_cntrct`. |
-| `pds_dataset` | `pds` | Dataset containing `ta_bpri_com`. |
-
-### 4.4. Connection Strings
-Ensure the Airflow connection `google_cloud_default` is properly configured and points to the correct GCP environment.
-
-### 4.5. Upstream Replication Verification
-The legacy DB Link (`@pcrs1`) has been replaced by pre-replicated tables in BigQuery (`cds.ta_cntrct` and `pds.ta_bpri_com`). **You must verify that the replication pipelines for these tables are running successfully and up-to-date before enabling this DAG.**
-
-### 4.6. Scheduling Coordination
-*   Deactivate the legacy UC4 job `AUSD_BP_TA_BPR_INSTANCE` to prevent concurrent writes.
-*   Unpause the migrated Airflow DAG `dw_bert_ausd_bp_ta_bpr_instance`.
+### 5. Scheduling & Upstream Dependencies
+The DAG is configured with `schedule_interval=None`. It should either be:
+1. Triggered via an upstream Airflow DAG representing the prerequisite job (`BERT_DROP_TEMP_TABLE`) using a `TriggerDagRunOperator`.
+2. Integrated into an external enterprise orchestrator via the Airflow REST API.
 
 ---
 
 ## 5. Known Gaps & Unresolved References
 
-1.  **Upstream Replication Dependency**: This pipeline assumes that `cds.ta_cntrct` and `pds.ta_bpri_com` are already replicated from the source database. If the replication pipeline lags, this job will process stale data.
-2.  **Timezone Alignment**: The legacy Oracle database and UC4 scheduler operated on Central European Time (CET/CEST). BigQuery natively stores and processes timestamps in UTC. While `DATE()` conversions have been applied, minor discrepancies could occur around timezone boundaries if the upstream replication does not normalize timestamps to UTC.
-3.  **B4 Redesign Candidate**: The tracking table `dwtk_meldungen` is a legacy pattern. In a future phase, this pull-based watermark check should be replaced by native Airflow execution date partitioning (`{{ ds }}`) once the upstream systems are fully modernized.
+### 1. Null Handling in String Concatenation (Critical)
+* **Legacy Behavior:** Oracle's concatenation operator (`||`) treats `NULL` values as empty strings (e.g., `'A' || NULL || 'B'` results in `'AB'`).
+* **BigQuery Behavior:** BigQuery's `CONCAT` function returns `NULL` if *any* of its arguments are `NULL`.
+* **Gap:** The migrated SQL uses:
+  ```sql
+  CONCAT(bp.iccid_mi, '-', bp.iccid_ii, '-', bp.iccid_iai, '-', bp.iccid_nr, '-', bp.iccid_cd)
+  ```
+  If any of these `iccid` components are `NULL` in the source data, the entire `iccid` field will result in `NULL`.
+* **Recommended Redesign (B4):** Wrap each component in a `COALESCE` statement to match Oracle's behavior:
+  ```sql
+  CONCAT(
+    COALESCE(bp.iccid_mi, ''), '-',
+    COALESCE(bp.iccid_ii, ''), '-',
+    COALESCE(bp.iccid_iai, ''), '-',
+    COALESCE(bp.iccid_nr, ''), '-',
+    COALESCE(bp.iccid_cd, '')
+  )
+  ```
+
+### 2. Prerequisite Tracking Table (`dwtk_meldungen`)
+The dynamic date resolution relies on `isbert_schema.dwtk_meldungen` being populated. If the upstream job `BERT_DROP_TEMP_TABLE` has not yet been migrated to BigQuery, this table will not contain the required success timestamp.
+* **Mitigation:** Until the upstream job is migrated, you must manually pass the `stichtag` parameter when triggering the DAG, or manually insert a dummy tracking record into `isbert_schema.dwtk_meldungen`.
 
 ---
 
 ## 6. Validation
 
-To validate the migration in the QA/UAT environment, perform the following steps:
+To validate the migration, perform the following steps:
 
-### 6.1. Execution Test
-1.  Go to the Airflow UI.
-2.  Locate the DAG `dw_bert_ausd_bp_ta_bpr_instance`.
-3.  Trigger the DAG manually.
-4.  Verify that the task `run_d_ausd_bp_ta_bpr_instance` completes with a `success` status.
+### Execution Test
+1. Upload `ausd_bp_ta_bpr_instance_dag.py` to your Composer DAGs folder.
+2. Upload `d_ausd_bp_ta_bpr_instance.sql` to the `/gcs/sql/` directory in your Composer bucket.
+3. Trigger the DAG manually via the Airflow UI with the following JSON configuration:
+   ```json
+   {
+     "stichtag": "20260101",
+     "wiederanlauf_wert": "0"
+   }
+   ```
 
-### 6.2. Data Parity Validation
-Run the following validation query in BigQuery and compare the results against the legacy Oracle database for the same watermark date:
-
-```sql
--- 1. Row Count Validation
-SELECT COUNT(1) FROM `your_project.sof.ta_bpr_instance`;
-
--- 2. Sample Check for Null Concatenation Prevention
-SELECT ICCID 
-FROM `your_project.sof.ta_bpr_instance` 
-WHERE ICCID LIKE '%-%-%-%-%' 
-LIMIT 10;
-
--- 3. Check for unexpected NULLs in business keys
-SELECT COUNT(1) 
-FROM `your_project.sof.ta_bpr_instance` 
-WHERE CNTRCT_ID IS NULL OR BPR_ID IS NULL;
-```
-
-**Definition of "Passing"**:
-*   The DAG runs to completion without errors.
-*   The row count in BigQuery matches the legacy Oracle table row count within a 0% tolerance (assuming identical source data states).
-*   The `ICCID` format matches the legacy pattern exactly, with no unexpected `NULL` values resulting from concatenation.
+### Verification of "Passing" Status
+The run is considered successful if:
+1. The Airflow DAG run completes with a `SUCCESS` status.
+2. The BigQuery job logs show that the `TRUNCATE` and `INSERT` statements executed without errors.
+3. A row count comparison between the legacy Oracle table `sof$ta_bpr_instance` and the BigQuery table `sof.ta_bpr_instance` for the same `stichtag` yields identical results.
+4. Spot-check the `iccid` column to ensure formatting matches the legacy output (taking note of the NULL-handling gap described in Section 5).
 
 ---
 
 ## 7. Rollback Procedure
 
-If critical issues or data discrepancies are discovered post-go-live, execute the following rollback steps:
+If a critical failure occurs post-go-live, execute the following rollback steps:
 
-1.  **Pause the Airflow DAG**:
-    Go to the Airflow UI and toggle the switch for `dw_bert_ausd_bp_ta_bpr_instance` to **Off**.
-2.  **Re-enable Legacy Scheduler**:
-    Re-activate the legacy UC4 job `AUSD_BP_TA_BPR_INSTANCE`.
-3.  **Data Restoration (Optional)**:
-    If downstream systems consumed corrupted data from BigQuery, you can restore the target table to its state prior to the DAG run using BigQuery's time-travel feature:
-    ```sql
-    -- Restore table to its state 1 hour ago
-    CREATE OR REPLACE TABLE `your_project.sof.ta_bpr_instance`
-    AS SELECT * FROM `your_project.sof.ta_bpr_instance`
-    FOR SYSTEM_TIME AS OF TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 1 HOUR);
-    ```
+1. **Pause the Airflow DAG:** Disable the `ausd_bp_ta_bpr_instance` DAG in the Cloud Composer UI to prevent further executions.
+2. **Redirect Downstream Consumers:** Point any downstream processes or reporting tools back to the legacy Oracle database instance/table (`sof$ta_bpr_instance`).
+3. **Re-enable Legacy UC4 Job:** Reactivate the legacy UC4 job `DW.BERT_AUSD_BP_TA_BPR_INSTANCE` to resume processing on-premises.
+4. **Data Cleanup (Optional):** If required, purge any partially loaded data in BigQuery by running:
+   ```sql
+   TRUNCATE TABLE `your_project.sof.ta_bpr_instance`;
+   ```
