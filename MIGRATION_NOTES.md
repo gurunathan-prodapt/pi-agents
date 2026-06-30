@@ -1,182 +1,210 @@
-# MIGRATION NOTES
-
-**Source Component:** `vobs/dw_source/isrpt/isbert/SQL/aktuell/allgemein/is/util/bin/f_alis_msgerr.ksh`  
-**Target Platform:** Google BigQuery / Cloud Orchestration (Cloud Composer / Airflow)
-
----
+# Migration Notes: `f_alis_msgerr.ksh` Utility Library Migration to BigQuery
 
 ## 1. Summary
 
-The legacy KornShell (KSH) utility library `f_alis_msgerr.ksh` (historically sourced as `dwmsg.ksh`) has been migrated to a cloud-native architecture on **Google Cloud Platform (GCP)**. 
+The legacy KornShell utility library `f_alis_msgerr.ksh` has been migrated to **Google BigQuery**. 
 
-### What Was Migrated
-* **Legacy Shell Functions:** Shell-based wrappers (`DWMSG_ErmittleNr`, `DWMSG_ErzeugeEintrag`, `DWMSG_MeldeFehler`, etc.) that historically executed Oracle PL/SQL procedures via `sqlplus` command-line interfaces.
-* **Database Logic:** Oracle PL/SQL package `BERT_MELDUNG` routines, which managed execution tracking, unique run ID generation, error logging, and status updates.
-* **File-Based Logging:** Local file path generation and tracking historically pointing to `$DW_DIR_PROT`.
+In the legacy Oracle-based environment, this library provided standardized error handling, database-backed logging, and status tracking by wrapping dynamic `sqlplus` calls to the Oracle stored procedure package `BERT_MELDUNG`. 
 
-### Target Platform Architecture
-* **Database Layer:** Google BigQuery Stored Procedures and structured audit tables.
-* **Orchestration Layer:** Cloud Composer (Apache Airflow) utilizing a custom Python helper module (`dwmsg.py`) to interface with BigQuery logging procedures and manage execution state.
-* **Storage Layer:** Google Cloud Storage (GCS) for centralized, durable log file storage.
+To align with modern cloud-native patterns on Google Cloud Platform (GCP), the utility functions have been redesigned as **BigQuery Stored Procedures**. Execution states, logging headers, and error details are now persisted directly in partitioned and clustered BigQuery tables, while shell-level execution states and traps are shifted to modern orchestration layers (such as Cloud Composer/Apache Airflow or BigQuery Scripting).
 
 ---
 
 ## 2. Generated Artifacts
 
-The migration process has produced three core artifacts, each serving a distinct role in the target architecture:
+The migration produces the following database tables and stored procedures within the target BigQuery dataset (recommended: `is_reporting_ds`):
 
-| # | Target File Path | Language | Role / Description |
-|---|---|---|---|
-| **1** | `gcp/bigquery/ddl/DWMSG_Tables.sql` | SQL (DDL) | **Schema Definition:** Creates the centralized audit logging tables (`message_table`, `message_error_table`, `message_sequence_table`, `message_timing_table`) in BigQuery. Includes table partitioning by date and clustering to optimize query performance and cost. |
-| **2** | `gcp/bigquery/procedures/DWMSG_Procedures.sql` | SQL (Stored Proc) | **Business Logic:** Implements BigQuery stored procedures that replace the legacy Oracle `BERT_MELDUNG` package and KSH helper functions. Handles transactional sequence generation, status updates, and error registration. |
-| **3** | `gcp/orchestration/utils/dwmsg.py` | Python | **Orchestration Helper:** A Python module for Cloud Composer (Airflow) DAGs. It provides helper functions to dynamically construct SQL calls to the BigQuery procedures, generate GCS log paths, and handle task-level error trapping. |
+### DDL Tables
+*   **`tables/message_entry_sequence.sql`**
+    *   *Role*: Emulates an Oracle sequence. It stores and increments the transaction key (`next_value`) for tracking job runs.
+*   **`tables/message_table.sql`**
+    *   *Role*: Replaces the core legacy tracking table. Stores execution headers, job names, log file paths, execution statuses (`OPEN`, `OK`, `ABBRUCH`), and stichtag metadata.
+*   **`tables/message_errors.sql`**
+    *   *Role*: Stores detailed error records, warnings, and fatal exceptions linked to a specific execution header.
+
+### Internal Helper Procedures
+*   **`procedures/sp_ensure_sequence_row.sql`**
+    *   *Role*: Ensures that the sequence tracking row exists for a given control key, initializing it if missing.
+*   **`procedures/sp_next_sequence_value.sql`**
+    *   *Role*: Atomically increments and retrieves the next sequential ID from `message_entry_sequence`.
+*   **`procedures/sp_update_message_status.sql`**
+    *   *Role*: Updates the status field and timestamp of a specific run in `message_table`.
+*   **`procedures/sp_insert_message_error.sql`**
+    *   *Role*: Inserts a detailed error log entry into `message_errors`.
+*   **`procedures/sp_set_message_additional_info.sql`**
+    *   *Role*: Updates metadata fields (`stichtag` and `zusatzinfos`) in `message_table`.
+
+### Public Interface Procedures (Direct Legacy Replacements)
+*   **`procedures/DWMSG_ErmittleNr.sql`**
+    *   *Role*: Replaces `DWMSG_ErmittleNr()`. Retrieves a unique numeric transaction ID.
+*   **`procedures/DWMSG_ErzeugeEintrag.sql`**
+    *   *Role*: Replaces `DWMSG_ErzeugeEintrag()`. Creates an initial execution record with status `OPEN`.
+*   **`procedures/DWMSG_MeldeFehler.sql`**
+    *   *Role*: Replaces `DWMSG_MeldeFehler()`. Appends explicit error logs (Fatal, Error, Warning) to the run.
+*   **`procedures/DWMSG_SetzeStatusOK.sql`**
+    *   *Role*: Replaces `DWMSG_SetzeStatusOK()`. Transitions the job status to `OK`.
+*   **`procedures/DWMSG_SetzeStatusAbbruch.sql`**
+    *   *Role*: Replaces `DWMSG_SetzeStatusAbbruch()`. Transitions the job status to `ABBRUCH`.
+*   **`procedures/DWMSG_Fehlerbehandlung.sql`**
+    *   *Role*: Replaces `DWMSG_Fehlerbehandlung()`. Orchestrates the rollback state, logs the caught error code, and marks the status as `ABBRUCH`.
+*   **`procedures/DWMSG_Logdateiname.sql`**
+    *   *Role*: Replaces `DWMSG_Logdateiname()`. Generates a standardized Cloud Storage log path (`gs://<gcp-project>-prot/...`) instead of a local Unix path.
+*   **`procedures/DWMSG_SetzeStichtagInfo.sql`**
+    *   *Role*: Replaces `DWMSG_SetzeStichtagInfo()`. Parses and updates the reporting date (`stichtag`) using strict format strings.
+*   **`procedures/DWMSG_AppendTimingInfos.sql`**
+    *   *Role*: Replaces `DWMSG_AppendTimingInfos()`. Appends runtime execution timestamps to the job's metadata.
 
 ---
 
 ## 3. Key Design Decisions
 
-### 3.1 Shift from Shell/SQL*Plus to Native BigQuery Scripting
-* **Decision:** Completely eliminate KSH shell wrappers, local temporary files (`/tmp/ErmittleNr_*.lst`), and `sqlplus` subprocess execution.
-* **Reasoning:** Running shell scripts on VM instances to execute database queries is an anti-pattern in modern cloud data warehouses. Moving the logic directly into BigQuery stored procedures reduces execution latency, removes VM maintenance overhead, and leverages native IAM security.
+### Stored Procedures over Shell Wrappers
+*   *Decision*: Migrate the core logic into BigQuery Stored Procedures rather than maintaining complex shell scripts executing `bq query` commands.
+*   *Reasoning*: This encapsulates the logging schema and transaction logic within the database layer, reducing network roundtrips and ensuring consistency across different calling applications (e.g., Airflow, Cloud Functions, or legacy shell wrappers).
 
-### 3.2 Transactional Sequence Generation in BigQuery
-* **Decision:** Implemented an explicit transaction block (`BEGIN TRANSACTION ... COMMIT TRANSACTION`) on a dedicated sequence table (`message_sequence_table`) to mimic Oracle sequence behavior.
-* **Trade-off:** BigQuery is designed for analytical workloads (OLAP) rather than high-frequency transactional updates (OLTP). Under extremely high concurrency, updating a single row in `message_sequence_table` may introduce lock contention. 
-* **Alternative Considered:** Using `GENERATE_UUID()` was considered to avoid locking. However, sequential integer IDs were retained to maintain backward compatibility with downstream legacy reporting systems that require numeric sorting.
+### Sequence Emulation
+*   *Decision*: Emulate Oracle sequences using a single-row tracking table (`message_entry_sequence`) updated via a `MERGE` and `UPDATE` transaction block.
+*   *Trade-off*: BigQuery is an analytical database and does not natively support auto-incrementing sequences. While this emulation maintains strict integer-based sequential IDs, it introduces a potential serialization bottleneck if hundreds of jobs attempt to request an ID simultaneously.
 
-### 3.3 Partitioning and Clustering Strategy
-* **Decision:** Partitioned `message_table`, `message_error_table`, and `message_timing_table` by `DATE(created_at)` and clustered them by `entry_nr`.
-* **Reasoning:** Audit tables grow continuously. Partitioning ensures that queries analyzing recent runs do not scan historical data, keeping BigQuery query costs low. Clustering by `entry_nr` ensures rapid lookups when retrieving logs for a specific job run.
-
-### 3.4 Cloud Storage (GCS) for Log Paths
-* **Decision:** Replaced local file system paths (`$DW_DIR_PROT`) with GCS URIs (`gs://${protocol_gcs_bucket}/...`).
-* **Reasoning:** Cloud Composer workers are ephemeral. Writing logs to local disk would result in data loss upon worker scale-down. GCS provides durable, centralized, and highly available log storage.
+### Cloud Storage Log Paths
+*   *Decision*: Replace local Unix log directories (`/vobs/.../prot/`) with Google Cloud Storage URIs (`gs://${GCP_PROJECT_ID}-prot/`).
+*   *Reasoning*: Local disk storage is ephemeral in cloud execution environments (like GKE or Cloud Run). Cloud Storage provides durable, centralized, and secure log retention.
 
 ---
 
 ## 4. Manual Steps Before Go-Live
 
-The following steps must be executed manually in the target environment before deploying any ETL jobs that depend on the migrated logging framework:
+### 1. Schema and Dataset Creation
+Ensure the target BigQuery dataset exists in your project. If not, create it:
+```bash
+bq mk --dataset --location=EU ${GCP_PROJECT_ID}:${BQ_DATASET_ID}
+```
 
-### 4.1 Schema and Dataset Creation
-1. Create the target BigQuery dataset (e.g., `dw_audit_logging`) in your designated GCP project and region.
-2. Execute the DDL script `gcp/bigquery/ddl/DWMSG_Tables.sql` to initialize the tables and seed the sequence table:
-   ```bash
-   bq query --use_legacy_sql=false < gcp/bigquery/ddl/DWMSG_Tables.sql
-   ```
+### 2. IAM & Permissions
+The service account executing the migrated jobs (e.g., Cloud Composer worker service account) must have the following IAM roles:
+*   `roles/bigquery.dataEditor` (to write to logging tables)
+*   `roles/bigquery.jobUser` (to run stored procedures)
+*   `roles/storage.objectCreator` (to write log files to the GCS bucket)
 
-### 4.2 Deploy Stored Procedures
-1. Deploy the stored procedures to the newly created dataset:
-   ```bash
-   bq query --use_legacy_sql=false < gcp/bigquery/procedures/DWMSG_Procedures.sql
-   ```
+### 3. Cloud Storage Bucket Creation
+Create the GCS bucket designated for execution logs:
+```bash
+gcloud storage buckets create gs://${GCP_PROJECT_ID}-prot --location=EU
+```
 
-### 4.3 IAM & Permissions
-Ensure that the Service Account used by Cloud Composer / Airflow has the following IAM roles:
-* **BigQuery Data Editor** (`roles/bigquery.dataEditor`) on the audit dataset.
-* **BigQuery Job User** (`roles/bigquery.jobUser`) on the project level.
-* **Storage Object Creator** (`roles/storage.objectCreator`) on the GCS protocol log bucket.
-
-### 4.4 Environment Variables & Airflow Connections
-Define the following variables in your Airflow environment (or via Airflow Variables):
-* `GCP_PROJECT_ID`: The active GCP project ID.
-* `AUDIT_DATASET`: The name of the BigQuery logging dataset (e.g., `dw_audit_logging`).
-* `PROTOCOL_GCS_BUCKET`: The GCS bucket name for logs (e.g., `gs://dw-prod-protocol-logs`).
-* `GCP_CONN_ID`: The Airflow connection ID for Google Cloud (typically `google_cloud_default`).
+### 4. Deployment Order
+Deploy the generated SQL files in the following strict order to resolve dependencies:
+1.  **Tables**:
+    *   `tables/message_entry_sequence.sql`
+    *   `tables/message_table.sql`
+    *   `tables/message_errors.sql`
+2.  **Internal Helper Procedures**:
+    *   `procedures/sp_ensure_sequence_row.sql`
+    *   `procedures/sp_next_sequence_value.sql`
+    *   `procedures/sp_update_message_status.sql`
+    *   `procedures/sp_insert_message_error.sql`
+    *   `procedures/sp_set_message_additional_info.sql`
+3.  **Public Interface Procedures**:
+    *   `procedures/DWMSG_ErmittleNr.sql`
+    *   `procedures/DWMSG_ErzeugeEintrag.sql`
+    *   `procedures/DWMSG_MeldeFehler.sql`
+    *   `procedures/DWMSG_SetzeStatusOK.sql`
+    *   `procedures/DWMSG_SetzeStatusAbbruch.sql`
+    *   `procedures/DWMSG_Fehlerbehandlung.sql`
+    *   `procedures/DWMSG_Logdateiname.sql`
+    *   `procedures/DWMSG_SetzeStichtagInfo.sql`
+    *   `procedures/DWMSG_AppendTimingInfos.sql`
 
 ---
 
 ## 5. Known Gaps & Unresolved References
 
-### 5.1 Concurrency Bottlenecks (Redesign Item B4)
-* **Gap:** The transactional update on `message_sequence_table` is synchronous. If hundreds of parallel Airflow tasks request an entry number simultaneously, some tasks may experience retries or timeouts due to BigQuery transaction limits.
-* **Follow-up Action:** For high-concurrency environments, it is highly recommended to transition downstream systems to accept UUIDs. The Python utility can be updated to bypass `DWMSG_ErmittleNr` and generate UUIDs directly:
-  ```python
-  import uuid
-  entry_nr = uuid.uuid4().int >> 64 # Safe 64-bit integer representation
-  ```
+### 1. Concurrency Bottleneck on Sequence Table (Redesign Item B4)
+*   *Description*: The sequence emulation table (`message_entry_sequence`) requires row-level locks during updates. High-concurrency environments will experience execution delays.
+*   *Follow-up / Redesign*: It is highly recommended to transition downstream systems to accept UUIDs (`GENERATE_UUID()`) instead of sequential integers. This would allow the complete removal of the sequence table and the `DWMSG_ErmittleNr` bottleneck.
 
-### 5.2 Mail and Robomon Notifications
-* **Gap:** The legacy KSH script contained comments regarding automated alerting via mail or "Robomon" upon failure. These alerting mechanisms are not implemented within the BigQuery stored procedures.
-* **Follow-up Action:** Alerting must be handled at the orchestration layer. Configure Airflow DAGs with `on_failure_callback` functions to send Slack, PagerDuty, or Email notifications when a task fails.
+### 2. Shell Trap Integration
+*   *Description*: The legacy shell script relied on `trap 'DWMSG_Fehlerbehandlung' ERR` to catch runtime failures. BigQuery stored procedures cannot catch external shell or orchestration failures.
+*   *Follow-up*: Downstream orchestration (e.g., Airflow DAGs) must be configured to catch task failures and explicitly invoke `DWMSG_Fehlerbehandlung` via an `on_failure_callback` or a teardown task.
 
-### 5.3 Legacy Shell Script Sourcing
-* **Gap:** Any legacy shell scripts still running on on-premises VMs or Compute Engine instances that attempt to source (`. f_alis_msgerr.ksh`) will fail.
-* **Follow-up Action:** These legacy scripts must be refactored to call the BigQuery API via the `bq` CLI tool or migrated entirely into Cloud Composer DAGs.
+### 3. Date Format Mapping
+*   *Description*: Oracle and BigQuery use different date formatting tokens (e.g., Oracle `YYYY-MM-DD HH24:MI:SS` vs. BigQuery `%Y-%m-%d %H:%M:%S`).
+*   *Follow-up*: Any downstream job calling `DWMSG_SetzeStichtagInfo` or `DWMSG_AppendTimingInfos` must pass BigQuery-compatible format strings.
 
 ---
 
 ## 6. Validation
 
-To validate the migration, execute the following test suite to verify database state transitions and orchestration helper logic.
+To validate the deployment, run the following verification script in the BigQuery Console. It simulates a complete job execution lifecycle.
 
-### 6.1 Database-Level Validation (SQL Test Script)
-Execute the following SQL block in the BigQuery console to simulate a complete job lifecycle:
-
+### Test Script
 ```sql
-DECLARE v_entry_nr INT64;
-DECLARE v_log_file STRING;
+DECLARE v_eintrags_nr INT64;
+DECLARE v_log_datei STRING;
 
--- 1. Get unique entry number
-CALL `dw_audit_logging.DWMSG_ErmittleNr`(v_entry_nr);
-SELECT FORMAT('Generated Entry Number: %d', v_entry_nr) AS test_step_1;
+-- 1. Retrieve a unique transaction ID
+CALL `${GCP_PROJECT_ID}.${BQ_DATASET_ID}.DWMSG_ErmittleNr`(v_eintrags_nr);
+SELECT v_eintrags_nr AS debug_eintrags_nr;
 
 -- 2. Generate log filename
-CALL `dw_audit_logging.DWMSG_Logdateiname`('TEST_JOB', v_entry_nr, v_log_file);
-SELECT FORMAT('Generated Log Path: %s', v_log_file) AS test_step_2;
+CALL `${GCP_PROJECT_ID}.${BQ_DATASET_ID}.DWMSG_Logdateiname`('TEST_JOB', v_eintrags_nr, v_log_datei);
+SELECT v_log_datei AS debug_log_datei;
 
--- 3. Create entry
-CALL `dw_audit_logging.DWMSG_ErzeugeEintrag`(v_entry_nr, 'TEST_JOB', 'validation_script.sql', v_log_file);
+-- 3. Create execution entry
+CALL `${GCP_PROJECT_ID}.${BQ_DATASET_ID}.DWMSG_ErzeugeEintrag`(v_eintrags_nr, 'TEST_JOB', 'validation_script.sql', v_log_datei);
 
--- 4. Append timing info
-CALL `dw_audit_logging.DWMSG_AppendTimingInfos`(v_entry_nr, 'Step 1 completed', '%Y-%m-%d %H:%M:%S');
+-- 4. Add metadata and timing info
+CALL `${GCP_PROJECT_ID}.${BQ_DATASET_ID}.DWMSG_SetzeStichtagInfo`(v_eintrags_nr, '2023-10-31', '%Y-%m-%d');
+CALL `${GCP_PROJECT_ID}.${BQ_DATASET_ID}.DWMSG_AppendTimingInfos`(v_eintrags_nr, 'Step 1 completed at', '%Y-%m-%d %H:%M:%S');
 
--- 5. Simulate an error
-CALL `dw_audit_logging.DWMSG_MeldeFehler`(v_entry_nr, 'E', 5001, 'Validation Test Error', 'Context Info');
+-- 5. Log a warning
+CALL `${GCP_PROJECT_ID}.${BQ_DATASET_ID}.DWMSG_MeldeFehler`(v_eintrags_nr, 'W', 100, 'Non-fatal warning message', NULL);
 
 -- 6. Set status to OK
-CALL `dw_audit_logging.DWMSG_SetzeStatusOK`(v_entry_nr);
-
--- 7. Verify results
-SELECT * FROM `dw_audit_logging.message_table` WHERE entry_nr = v_entry_nr;
-SELECT * FROM `dw_audit_logging.message_error_table` WHERE entry_nr = v_entry_nr;
-SELECT * FROM `dw_audit_logging.message_timing_table` WHERE entry_nr = v_entry_nr;
+CALL `${GCP_PROJECT_ID}.${BQ_DATASET_ID}.DWMSG_SetzeStatusOK`(v_eintrags_nr);
 ```
 
-### 6.2 Definition of "Passing"
-The validation is successful if:
-1. `v_entry_nr` is a positive integer incremented by exactly `1` from the previous run.
-2. `message_table` contains a row for the generated `entry_nr` with `status = 'OK'`.
-3. `message_error_table` contains the simulated error record with `fehler_nr = 5001`.
-4. `message_timing_table` contains the timing text appended with the correct timestamp format.
-5. No query errors or transaction conflicts are thrown during execution.
+### What "Passing" Means
+1.  The test script executes with **zero errors**.
+2.  Querying the tracking tables returns the expected records:
+    ```sql
+    SELECT * FROM `${GCP_PROJECT_ID}.${BQ_DATASET_ID}.message_table` WHERE eintragsnr = v_eintrags_nr;
+    -- Expected: status = 'OK', jobkennung = 'TEST_JOB', stichtag = '2023-10-31'
+    
+    SELECT * FROM `${GCP_PROJECT_ID}.${BQ_DATASET_ID}.message_errors` WHERE eintragsnr = v_eintrags_nr;
+    -- Expected: One row with typ = 'W', fehlernr = 100, zusatz1 = 'Non-fatal warning message'
+    ```
 
 ---
 
 ## 7. Rollback Procedure
 
-In the event of a critical failure in the target environment, follow these steps to roll back to the legacy Oracle/KSH infrastructure:
+In the event of an issue during deployment or validation, execute the following steps to roll back the changes:
 
-### Step 1: Revert Orchestration Layer
-* Disable the migrated Cloud Composer DAGs.
-* Re-enable the legacy cron jobs or scheduling tool (e.g., UC4, Automic) that executed the KSH scripts on the legacy application servers.
+1.  **Drop Stored Procedures**:
+    ```sql
+    DROP PROCEDURE IF EXISTS `${GCP_PROJECT_ID}.${BQ_DATASET_ID}.DWMSG_AppendTimingInfos`;
+    DROP PROCEDURE IF EXISTS `${GCP_PROJECT_ID}.${BQ_DATASET_ID}.DWMSG_SetzeStichtagInfo`;
+    DROP PROCEDURE IF EXISTS `${GCP_PROJECT_ID}.${BQ_DATASET_ID}.DWMSG_Logdateiname`;
+    DROP PROCEDURE IF EXISTS `${GCP_PROJECT_ID}.${BQ_DATASET_ID}.DWMSG_Fehlerbehandlung`;
+    DROP PROCEDURE IF EXISTS `${GCP_PROJECT_ID}.${BQ_DATASET_ID}.DWMSG_SetzeStatusAbbruch`;
+    DROP PROCEDURE IF EXISTS `${GCP_PROJECT_ID}.${BQ_DATASET_ID}.DWMSG_SetzeStatusOK`;
+    DROP PROCEDURE IF EXISTS `${GCP_PROJECT_ID}.${BQ_DATASET_ID}.DWMSG_MeldeFehler`;
+    DROP PROCEDURE IF EXISTS `${GCP_PROJECT_ID}.${BQ_DATASET_ID}.DWMSG_ErzeugeEintrag`;
+    DROP PROCEDURE IF EXISTS `${GCP_PROJECT_ID}.${BQ_DATASET_ID}.DWMSG_ErmittleNr`;
+    DROP PROCEDURE IF EXISTS `${GCP_PROJECT_ID}.${BQ_DATASET_ID}.sp_set_message_additional_info`;
+    DROP PROCEDURE IF EXISTS `${GCP_PROJECT_ID}.${BQ_DATASET_ID}.sp_insert_message_error`;
+    DROP PROCEDURE IF EXISTS `${GCP_PROJECT_ID}.${BQ_DATASET_ID}.sp_update_message_status`;
+    DROP PROCEDURE IF EXISTS `${GCP_PROJECT_ID}.${BQ_DATASET_ID}.sp_next_sequence_value`;
+    DROP PROCEDURE IF EXISTS `${GCP_PROJECT_ID}.${BQ_DATASET_ID}.sp_ensure_sequence_row`;
+    ```
 
-### Step 2: Restore Environment Variables
-* Ensure the legacy environment variables are active on the application servers:
-  ```bash
-  export DW_DIR_ROOT=/vobs/dw_source/isrpt/isbert/SQL/aktuell
-  export DW_DIR_PROT=/path/to/legacy/protocols
-  export DW_ORAUSER=username/password@oracle_db
-  ```
+2.  **Drop Tables** (Warning: This will delete logged execution history. Only run if a complete schema reset is required):
+    ```sql
+    DROP TABLE IF EXISTS `${GCP_PROJECT_ID}.${BQ_DATASET_ID}.message_errors`;
+    DROP TABLE IF EXISTS `${GCP_PROJECT_ID}.${BQ_DATASET_ID}.message_table`;
+    DROP TABLE IF EXISTS `${GCP_PROJECT_ID}.${BQ_DATASET_ID}.message_entry_sequence`;
+    ```
 
-### Step 3: Verify Oracle DB Connectivity
-* Verify that the legacy Oracle database is accepting connections and that the `BERT_MELDUNG` package is compiled and valid:
-  ```bash
-  sqlplus $DW_ORAUSER @d_al_is_ermittlenr.sql
-  ```
-
-### Step 4: Archive BigQuery Audit Data
-* To prevent data loss from runs executed on GCP during the migration window, export the BigQuery audit tables to GCS and load them into the legacy Oracle database if necessary:
-  ```bash
-  bq extract --destination_format=CSV 'dw_audit_logging.message_table' gs://dw-prod-protocol-logs/rollback/message_table_export.csv
-  ```
+3.  **Revert Orchestration**:
+    Point downstream orchestration tasks back to the legacy shell-based execution path (`f_alis_msgerr.ksh`) and the Oracle database environment.
