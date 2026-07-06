@@ -1,0 +1,53 @@
+config {
+  type: "table",
+  schema: "isbert_schema",
+  name: "sof_ta_rn_vertrag",
+  description: "Processed base product contracts containing aggregated telephone, fax, data, and MultiSIM phone numbers.",
+  tags: ["bert_stammdaten"],
+  bigquery: {
+    partitionBy: "RANGE_BUCKET(cntrct_id, GENERATE_ARRAY(0, 100000000, 100000))"
+  }
+}
+
+SELECT
+  cntrct_id,
+  MAX(TN_multi_single) AS TN_multi_single,
+  MAX(TN_TEL_msisdn) AS TN_TEL_msisdn,
+  MAX(TN_TEL_status) AS TN_TEL_status,
+  MAX(TN_TEL_valid_to) AS TN_TEL_valid_to,
+  MAX(TN_FAX_msisdn) AS TN_FAX_msisdn,
+  MAX(TN_FAX_status) AS TN_FAX_status,
+  MAX(TN_FAX_valid_to) AS TN_FAX_valid_to,
+  MAX(TN_DAT_msisdn) AS TN_DAT_msisdn,
+  MAX(TN_DAT_status) AS TN_DAT_status,
+  MAX(TN_DAT_valid_to) AS TN_DAT_valid_to,
+  MAX(TC_multi_single) AS TC_multi_single,
+  MAX(TC_TEL_msisdn) AS TC_TEL_msisdn,
+  MAX(TC_TEL_status) AS TC_TEL_status,
+  MAX(TC_TEL_valid_to) AS TC_TEL_valid_to,
+  MAX(TC_FAX_msisdn) AS TC_FAX_msisdn,
+  MAX(TC_FAX_status) AS TC_FAX_status,
+  MAX(TC_FAX_valid_to) AS TC_FAX_valid_to,
+  MAX(TC_DAT_msisdn) AS TC_DAT_msisdn,
+  MAX(TC_DAT_status) AS TC_DAT_status,
+  MAX(TC_DAT_valid_to) AS TC_DAT_valid_to,
+  MAX(TB_multi_single) AS TB_multi_single,
+  MAX(TB_TEL_msisdn) AS TB_TEL_msisdn,
+  MAX(TB_TEL_status) AS TB_TEL_status,
+  MAX(TB_TEL_valid_to) AS TB_TEL_valid_to,
+  MAX(TB_FAX_msisdn) AS TB_FAX_msisdn,
+  MAX(TB_FAX_status) AS TB_FAX_status,
+  MAX(TB_FAX_valid_to) AS TB_FAX_valid_to,
+  MAX(TB_DAT_msisdn) AS TB_DAT_msisdn,
+  MAX(TB_DAT_status) AS TB_DAT_status,
+  MAX(TB_DAT_valid_to) AS TB_DAT_valid_to,
+  MAX(MS_RN_1_msisdn) AS MS_RN_1_msisdn,
+  MAX(MS_RN_1_status) AS MS_RN_1_status,
+  MAX(MS_RN_1_valid_to) AS MS_RN_1_valid_to,
+  MAX(MS_RN_2_msisdn) AS MS_RN_2_msisdn,
+  MAX(MS_RN_2_status) AS MS_RN_2_status,
+  MAX(MS_RN_2_valid_to) AS MS_RN_2_valid_to
+FROM
+  ${ref("sof_ta_rn_einzeln")}
+GROUP BY
+  cntrct_id;
