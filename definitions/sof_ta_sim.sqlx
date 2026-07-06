@@ -1,0 +1,27 @@
+config {
+  type: "table",
+  name: "sof_ta_sim",
+  schema: "isbert_schema",
+  dependencies: ["dwtk_meldungen", "rma_ta_sim", "rma_ta_sim_card_type"]
+}
+
+WITH v_datum_cte AS (
+  SELECT COALESCE(FORMAT_DATE('%Y%m%d', DATE(MAX(m.timecreated))), '19000101') AS v_datum
+  FROM ${ref("dwtk_meldungen")} m
+  WHERE m.job_kennung = 'BERT_DROP_TEMP_TABLE'
+)
+
+SELECT
+  CONCAT(sim.iccid_mi, '-', sim.iccid_ii, '-', sim.iccid_iai, '-', sim.iccid_nr, '-', sim.iccid_cd) AS iccid,
+  sim.sim_card_type_id,
+  card.card_type_name
+FROM ${ref("rma_ta_sim")} sim
+JOIN ${ref("rma_ta_sim_card_type")} card
+  ON card.sim_card_type_id = sim.sim_card_type_id
+CROSS JOIN v_datum_cte
+WHERE DATE(sim.insert_at) <= PARSE_DATE('%Y%m%d', v_datum_cte.v_datum)
+  AND (sim.modified_at IS NULL OR DATE(sim.modified_at) > PARSE_DATE('%Y%m%d', v_datum_cte.v_datum))
+  AND DATE(sim.valid_from) <= PARSE_DATE('%Y%m%d', v_datum_cte.v_datum)
+  AND (sim.valid_to IS NULL OR DATE(sim.valid_to) > PARSE_DATE('%Y%m%d', v_datum_cte.v_datum))
+  AND DATE(card.insert_at) <= PARSE_DATE('%Y%m%d', v_datum_cte.v_datum)
+  AND (card.modified_at IS NULL OR DATE(card.modified_at) > PARSE_DATE('%Y%m%d', v_datum_cte.v_datum))

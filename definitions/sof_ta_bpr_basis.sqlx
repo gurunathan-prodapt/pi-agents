@@ -1,0 +1,31 @@
+config {
+  type: "table",
+  name: "sof_ta_bpr_basis",
+  schema: "isbert_schema",
+  dependencies: ["sof_ta_sim", "sof_ta_bpr_basis_his"]
+}
+
+SELECT
+  bp.cntrct_id,
+  bp.bpr_id,
+  bp.bpri_com_id AS bpr_instance_id,
+  bp.iccid,
+  bp.imsi_mcc,
+  bp.imsi_mnc,
+  bp.imsi_hlr,
+  bp.imsi_si,
+  COALESCE(bp.valid_to, DATE '4712-12-31') AS valid_to,
+  bp.slave_number,
+  bp.e_id,
+  sim.card_type_name
+FROM (
+  SELECT
+    bp1.*,
+    MAX(COALESCE(bp1.valid_to, DATE '4712-12-31')) OVER (
+      PARTITION BY bp1.cntrct_id, bp1.bpr_id
+    ) AS max_valid_to
+  FROM ${ref("sof_ta_bpr_basis_his")} bp1
+) bp
+LEFT JOIN ${ref("sof_ta_sim")} sim
+  ON bp.iccid = sim.iccid
+WHERE COALESCE(bp.valid_to, DATE '4712-12-31') = bp.max_valid_to
