@@ -1,229 +1,295 @@
-Here is the comprehensive migration-validation test suite for the `DW.BERT_P_ADRESSEN` job, designed to prove behavioral equivalence between the legacy Oracle PL/SQL implementation and the migrated BigQuery/Airflow implementation.
+# Migration Validation Test Suite: DW.BERT_P_VERTRAG_JP
+
+This document defines the production-ready QA test suite to validate the migration of the **DW.BERT_P_VERTRAG_JP** workflow from its legacy Oracle/UC4 environment to Google Cloud BigQuery and Apache Airflow.
 
 ---
 
-# Test Suite: DW.BERT_P_ADRESSEN Migration Validation
+## Test Suite Overview
 
-## 1. Output Parity Tests
+The validation strategy utilizes a **dual-run parallel execution model** and **targeted synthetic assertions** to guarantee behavioral equivalence.
 
-### Test Case 1.1: End-to-End Row Count and Hash Parity
-* **Purpose**: Verify that running the BigQuery SQL script against a static snapshot of source data produces identical row counts and data hashes in all target tables compared to the legacy Oracle execution.
+```
+                                  ┌───────────────────────────┐
+                                  │   Legacy Oracle Source    │
+                                  └─────────────┬─────────────┘
+                                                │
+                        ┌───────────────────────┴───────────────────────┐
+                        ▼                                               ▼
+          [ 1. Parallel Run Validation ]                 [ 2. Synthetic Edge Cases ]
+          Compare production outputs of                  Inject extreme values, NULLs,
+          legacy vs. migrated pipelines.                 and boundary dates to verify logic.
+                        │                                               │
+                        └───────────────────────┬───────────────────────┘
+                                                ▼
+                                  ┌───────────────────────────┐
+                                  │  Pass/Fail Consolidation  │
+                                  └───────────────────────────┘
+```
+
+---
+
+## Section 1: Output Parity & Parallel Run Validation
+
+### Test Case 1.1: Production Data Mirroring & Row-Count Parity
+* **Purpose**: Verify that the migrated BigQuery staging tables contain the exact same record counts as the legacy Oracle tables under identical snapshot dates (`v_datum`).
 * **Setup**:
-  1. Populate the source tables (`cds.ta_bp_ref`, `cds.ta_inv_definition`, `glv.ta_country`, `glv.ta_description`, `bpd.ta_reachability`, `bpd.ta_business_partner`) in both Oracle and BigQuery with an identical test dataset of 10,000 records, including edge cases (NULLs, historical versions, non-production flags).
-  2. Populate `isbert_schema.dwtk_meldungen` in both environments with a record where `job_kennung = 'BERT_DROP_TEMP_TABLE'` and `timecreated = TIMESTAMP('2026-04-21 12:00:00')`.
-* **Action**:
-  1. Execute the legacy Oracle SQL script `d_ausd_adressen.sql` using SQL*Plus.
-  2. Execute the migrated BigQuery SQL script `sql/d_ausd_adressen.sql`.
-* **Pass/Fail Criterion**: All target tables must match exactly on row count and MD5/SHA256 column-concatenated hashes.
+  1. Identify a historical execution date (e.g., `2026-04-21`).
+  2. Ensure the legacy Oracle tables in the `@pcrs1` source and local schemas are frozen for that snapshot.
+  3. Ensure the BigQuery mirror dataset (`prod_carmen_mirror`) contains the identical replicated snapshot.
+  4. Set the watermark table `dwtk_meldungen` in BigQuery to match the legacy run date:
+     ```sql
+     INSERT INTO `prod-bert-dwh.prod_staging.dwtk_meldungen` (job_kennung, timecreated)
+     VALUES ('BERT_DROP_TEMP_TABLE', TIMESTAMP('2026-04-21 00:00:00 UTC'));
+     ```
+* **Action**: Execute the Airflow DAG `DW.BERT_P_VERTRAG_JP` in the staging/dry-run environment.
+* **Pass/Fail Criterion**: The row counts of the target tables in Oracle and BigQuery must match exactly.
 
 ```python
-# pytest/test_parity.py
 import pytest
 from google.cloud import bigquery
 import cx_Oracle
 
-TARGET_TABLES = [
-    "ta_bp_ref_gp", "ta_bp_ref_re", "ta_bp_ref_ev", "ta_bp_ref_dn",
-    "ta_e_reach_gp", "ta_e_reach_re", "ta_e_reach_ev", "ta_e_reach_dn",
-    "ta_e_business_gp", "ta_e_business_re", "ta_e_business_ev", "ta_e_business_dn",
-    "ta_e_regulierer"
-]
+@pytest.fixture
+def bq_client():
+    return bigquery.Client()
 
-@pytest.mark.parametrize("table", TARGET_TABLES)
-def test_table_parity(table):
-    # 1. Get Oracle Row Count and Hash
-    oracle_conn = cx_Oracle.connect("user/pwd@host:port/service")
-    cursor = oracle_conn.cursor()
-    
-    # Simple checksum query for Oracle (concatenating key columns)
-    oracle_query = f"""
-        SELECT COUNT(*), 
-               COALESCE(SUM(STANDARD_HASH(TO_CHAR(BP_ID) || TO_CHAR(REACHABILITY_ID), 'MD5')), '0') 
-        FROM sof${table}
-    """
-    if table == "ta_e_regulierer":
-        oracle_query = f"""
-            SELECT COUNT(*), 
-                   COALESCE(SUM(STANDARD_HASH(TO_CHAR(INV_DEF_MOPREF_ID) || TO_CHAR(MOP_BP_ID), 'MD5')), '0') 
-            FROM sof${table}
-        """
-    cursor.execute(oracle_query)
-    ora_count, ora_hash = cursor.fetchone()
+@pytest.fixture
+def oracle_cursor():
+    # Credentials retrieved from secure vault
+    connection = cx_Oracle.connect("user/password@oracle_host:1521/service_name")
+    cursor = connection.cursor()
+    yield cursor
     cursor.close()
-    oracle_conn.close()
+    connection.close()
 
-    # 2. Get BigQuery Row Count and Hash
-    bq_client = bigquery.Client()
-    bq_table = f"gcp_project_id.sof.{table}"
+def test_row_count_parity(bq_client, oracle_cursor):
+    # Mapping of target tables (Oracle vs BigQuery)
+    tables_to_test = {
+        "sof$ta_acc_ref": "prod_staging.sof_ta_acc_ref",
+        "sof$ta_action_assoc": "prod_staging.sof_ta_action_assoc",
+        "sof$ta_apn_ve": "prod_staging.sof_ta_apn_ve",
+        "sof$ta_barrier": "prod_staging.sof_ta_barrier",
+        "sof$ta_barrier_zusgf": "prod_staging.sof_ta_barrier_zusgf",
+        "sof$ta_bp_ref": "prod_staging.sof_ta_bp_ref",
+        "sof$ta_cntrct_crs": "prod_staging.sof_ta_cntrct_crs",
+        "sof$ta_cntrct_valid": "prod_staging.sof_ta_cntrct_valid",
+        "sof$ta_discount": "prod_staging.sof_ta_discount",
+        "sof$ta_discount_rr": "prod_staging.sof_ta_discount_rr",
+        "sof$ta_disc_zusgf": "prod_staging.sof_ta_disc_zusgf",
+        "sof$ta_inv_acc": "prod_staging.sof_ta_inv_acc",
+        "sof$ta_inv_assign": "prod_staging.sof_ta_inv_assign",
+        "sof$ta_inv_def": "prod_staging.sof_ta_inv_def",
+        "sof$ta_period": "prod_staging.sof_ta_period",
+        "sof$ta_vvl_dwh": "prod_staging.sof_ta_vvl_dwh",
+        "sof$ta_vvl_upgrade": "prod_staging.sof_ta_vvl_upgrade"
+    }
     
-    bq_query = f"""
-        SELECT COUNT(*), 
-               COALESCE(SUM(CAST(FARM_FINGERPRINT(CONCAT(CAST(BP_ID AS STRING), '_', CAST(REACHABILITY_ID AS STRING))) AS BIGNUMERIC)), 0) 
-        FROM `{bq_table}`
-    """
-    if table == "ta_e_regulierer":
-        bq_query = f"""
-            SELECT COUNT(*), 
-                   COALESCE(SUM(CAST(FARM_FINGERPRINT(CONCAT(CAST(INV_DEF_MOPREF_ID AS STRING), '_', CAST(MOP_BP_ID AS STRING))) AS BIGNUMERIC)), 0) 
-            FROM `{bq_table}`
-        """
-    
-    query_job = bq_client.query(bq_query)
-    bq_results = list(query_job.result())
-    bq_count, bq_hash = bq_results[0][0], bq_results[0][1]
+    for oracle_table, bq_table in tables_to_test.items():
+        # Query Oracle Row Count
+        oracle_cursor.execute(f"SELECT COUNT(*) FROM {oracle_table}")
+        oracle_count = oracle_cursor.fetchone()[0]
+        
+        # Query BigQuery Row Count
+        bq_query = f"SELECT COUNT(*) FROM `prod-bert-dwh.{bq_table}`"
+        bq_job = bq_client.query(bq_query)
+        bq_count = list(bq_job.result())[0][0]
+        
+        assert oracle_count == bq_count, f"Row count mismatch for {oracle_table} vs {bq_table}. Oracle: {oracle_count}, BQ: {bq_count}"
+```
 
-    # Assertions
-    assert bq_count == ora_count, f"Row count mismatch for table {table}: Oracle={ora_count}, BQ={bq_count}"
-    # Note: Hash values will differ structurally between Oracle STANDARD_HASH and BQ FARM_FINGERPRINT, 
-    # but this test asserts that both environments are internally consistent and stable.
+### Test Case 1.2: Full Schema and Data Fingerprint Parity
+* **Purpose**: Ensure that not only row counts, but the actual data values (fingerprints/checksums) are identical across all columns.
+* **Setup**: Same as Test Case 1.1.
+* **Action**: Execute a MD5/SHA256 hashing query over key columns on both systems and compare the aggregated checksums.
+* **Pass/Fail Criterion**: The aggregated hash of the dataset must match exactly between Oracle and BigQuery.
+
+```sql
+-- BigQuery Checksum Verification Query for sof_ta_acc_ref
+SELECT BIT_XOR(FARM_FINGERPRINT(CONCAT(
+  COALESCE(CAST(acc_ref_id AS STRING), 'NULL'), '||',
+  COALESCE(account_reference, 'NULL')
+))) AS bq_hash
+FROM `prod-bert-dwh.prod_staging.sof_ta_acc_ref`;
+
+-- Oracle Checksum Verification Query for sof$ta_acc_ref
+SELECT LOWER(RAWTOHEX(DBMS_OBFUSCATION_TOOLKIT.md5(input => 
+  UTL_RAW.CAST_TO_RAW(XMLSERIALIZE(CONTENT XMLAGG(XMLELEMENT(x, 
+    COALESCE(TO_CHAR(acc_ref_id), 'NULL') || '||' || 
+    COALESCE(account_reference, 'NULL')
+  ) ORDER BY acc_ref_id) AS CLOB))
+))) AS oracle_hash
+FROM sof$ta_acc_ref;
 ```
 
 ---
 
-## 2. Transformation Correctness Tests
+## Section 2: Transformation Correctness & Edge Cases
 
-### Test Case 2.1: Temporal Filtering Logic (`d_datum` Boundaries)
-* **Purpose**: Verify that the temporal filters (`insert_at <= d_datum`, `modified_at > d_datum`, `valid_from <= d_datum`, `valid_to > d_datum`) correctly include or exclude records based on the calculated `d_datum`.
+### Test Case 2.1: Temporal Filtering Logic (Watermark `v_datum` Boundaries)
+* **Purpose**: Validate that the temporal filters (`insert_at <= v_datum`, `modified_at > v_datum`, `valid_from <= v_datum`, `valid_to > v_datum`) correctly include and exclude records at the exact boundary limits.
 * **Setup**:
-  1. Set `d_datum` to `2026-04-21` via `dwtk_meldungen`.
-  2. Insert 5 test records into `cds.ta_bp_ref` with `bp_ref_ty = 4` and `address_ref_ty = 6` (Step 02a target):
-     * **Record A (Valid Active)**: `insert_at = '2026-04-20'`, `modified_at = NULL`, `valid_from = '2026-04-20'`, `valid_to = NULL`
-     * **Record B (Future Insert)**: `insert_at = '2026-04-22'`, `modified_at = NULL`, `valid_from = '2026-04-20'`, `valid_to = NULL`
-     * **Record C (Historically Modified)**: `insert_at = '2026-04-20'`, `modified_at = '2026-04-20'`, `valid_from = '2026-04-20'`, `valid_to = NULL`
-     * **Record D (Future Valid From)**: `insert_at = '2026-04-20'`, `modified_at = NULL`, `valid_from = '2026-04-22'`, `valid_to = NULL`
-     * **Record E (Expired Valid To)**: `insert_at = '2026-04-20'`, `modified_at = NULL`, `valid_from = '2026-04-20'`, `valid_to = '2026-04-20'`
-* **Action**: Run Step 02a of the BigQuery script.
-* **Pass/Fail Criterion**: Only **Record A** is inserted into `sof.ta_bp_ref_gp`.
+  1. Set `v_datum` to `'20260420'`.
+  2. Insert synthetic records into `cds_ta_acc_ref` with timestamps exactly on, before, and after the boundary:
+     * **Record A (Should Include)**: `insert_at = '2026-04-20 00:00:00'`, `valid_from = '2026-04-20 00:00:00'`, `modified_at = NULL`, `valid_to = NULL`, `is_production = 1`.
+     * **Record B (Should Exclude - Inserted After)**: `insert_at = '2026-04-21 00:00:00'`, `valid_from = '2026-04-20 00:00:00'`, `modified_at = NULL`, `valid_to = NULL`, `is_production = 1`.
+     * **Record C (Should Exclude - Modified Before)**: `insert_at = '2026-04-19 00:00:00'`, `valid_from = '2026-04-19 00:00:00'`, `modified_at = '2026-04-20 00:00:00'`, `valid_to = NULL`, `is_production = 1`.
+* **Action**: Run the `d_ausd_v_ta_acc_ref.sql` script.
+* **Pass/Fail Criterion**: Only **Record A** is present in `sof_ta_acc_ref`. Records B and C are excluded.
 
 ```sql
--- SQL Assertion Test
-DECLARE actual_count INT64;
-
--- Run Step 02a logic here...
-
-SET actual_count = (SELECT COUNT(*) FROM `gcp_project_id.sof.ta_bp_ref_gp`);
-ASSERT actual_count = 1;
-```
-
-### Test Case 2.2: Step 02b Union-All Logic (Redundant Invoice Recipients)
-* **Purpose**: Verify that Step 02b correctly merges active invoice recipients from `cds.ta_bp_ref` with redundant invoice recipients from `cds.ta_inv_definition` where `rdndant_invrec = 0`.
-* **Setup**:
-  1. Insert 1 valid record into `cds.ta_bp_ref` matching the Step 02b criteria (`bp_ref_ty = 1`, `address_ref_ty = 5`).
-  2. Insert 1 valid record into `cds.ta_inv_definition` with `rdndant_invrec = 0`.
-  3. Insert 1 invalid record into `cds.ta_inv_definition` with `rdndant_invrec = 1`.
-* **Action**: Run Step 02b of the BigQuery script.
-* **Pass/Fail Criterion**: `sof.ta_bp_ref_re` contains exactly 2 records. The record originating from `cds.ta_inv_definition` must have `cntrct_cp2_id IS NULL`, `bpr_inst_evnrec_id IS NULL`, and `bpr_inst_srvusr_id IS NULL`.
-
-```sql
--- SQL Assertion Test
-ASSERT (
-  SELECT COUNT(*) FROM `gcp_project_id.sof.ta_bp_ref_re`
-) = 2;
-
+-- Assertions for Test Case 2.1
 ASSERT (
   SELECT COUNT(*) 
-  FROM `gcp_project_id.sof.ta_bp_ref_re` 
-  WHERE cntrct_cp2_id IS NULL 
-    AND bpr_inst_evnrec_id IS NULL 
-    AND bpr_inst_srvusr_id IS NULL
+  FROM `prod-bert-dwh.prod_staging.sof_ta_acc_ref` 
+  WHERE acc_ref_id IN (A_id, B_id, C_id)
 ) = 1;
-```
 
-### Test Case 2.3: Left Join and Substring Logic (`LAND_SD` derivation)
-* **Purpose**: Verify that `LAND_SD` is correctly derived as the first 3 characters of the country's short description, and that the left join preserves records even if no country description exists.
-* **Setup**:
-  1. Insert a record into `sof.ta_bp_ref_gp` with `bp_id = 100`, `reachability_id = 1`.
-  2. Insert a corresponding record into `sof.ta_reachability` with `bp_id = 100`, `reachability_id = 1`, and `country_code = 'DEU'`.
-  3. Insert a corresponding record into `sof.ta_laender_kng` with `country_code = 'DEU'` and `short_description = 'DEUTSCHLAND'`.
-  4. Insert a second record into `sof.ta_bp_ref_gp` with `bp_id = 200`, `reachability_id = 2`.
-  5. Insert a corresponding record into `sof.ta_reachability` with `bp_id = 200`, `reachability_id = 2`, and `country_code = 'XYZ'` (no matching country code in `ta_laender_kng`).
-* **Action**: Run Step 03f of the BigQuery script.
-* **Pass/Fail Criterion**: 
-  1. The record for `bp_id = 100` has `LAND_SD = 'DEU'`.
-  2. The record for `bp_id = 200` is preserved in the target table with `LAND_SD IS NULL`.
-
-```sql
--- SQL Assertion Test
-ASSERT (
-  SELECT LAND_SD FROM `gcp_project_id.sof.ta_e_reach_gp` WHERE BP_ID = 100
-) = 'DEU';
-
-ASSERT (
-  SELECT LAND_SD FROM `gcp_project_id.sof.ta_e_reach_gp` WHERE BP_ID = 200
-) IS NULL;
-```
-
----
-
-## 3. External-System Replacement Tests
-
-### Test Case 3.1: Dynamic Parameter Resolution (`v_datum`)
-* **Purpose**: Verify that the dynamic date parameter (`v_datum`) is correctly resolved from the metadata table `isbert_schema.dwtk_meldungen` and falls back to `'19000101'` if no matching record is found.
-* **Setup**:
-  1. **Scenario A**: Populate `isbert_schema.dwtk_meldungen` with a record where `job_kennung = 'BERT_DROP_TEMP_TABLE'` and `timecreated = '2026-04-21 18:00:00'`.
-  2. **Scenario B**: Truncate `isbert_schema.dwtk_meldungen`.
-* **Action**: Execute the variable declaration block of the BigQuery script for both scenarios.
-* **Pass/Fail Criterion**:
-  * In Scenario A, `v_datum` must resolve to `'20260421'`.
-  * In Scenario B, `v_datum` must resolve to `'19000101'`.
-
-```sql
--- SQL Assertion Test for Scenario A
-DECLARE v_datum STRING;
-SET v_datum = (
-  SELECT COALESCE(FORMAT_DATE('%Y%m%d', MAX(DATE(m.timecreated))), '19000101')
-  FROM `gcp_project_id.isbert_schema.dwtk_meldungen` m
-  WHERE m.job_kennung = 'BERT_DROP_TEMP_TABLE'
+ASSERT EXISTS (
+  SELECT 1 
+  FROM `prod-bert-dwh.prod_staging.sof_ta_acc_ref` 
+  WHERE acc_ref_id = A_id
 );
-ASSERT v_datum = '20260421';
 ```
 
-### Test Case 3.2: Airflow DAG Execution and Connection Test
-* **Purpose**: Verify that the Airflow DAG successfully authenticates to Google Cloud, parses the SQL file template, and triggers the BigQuery job.
+### Test Case 2.2: Pipelined Function Replacement (Barrier Aggregation)
+* **Purpose**: Verify that the BigQuery analytical `STRING_AGG` replacement for the legacy Oracle pipelined function `concat_barriers` produces identical concatenated strings, handles spaces, and strips out 'Rufnummern' correctly.
 * **Setup**:
-  1. Deploy the DAG `dw_bert_p_adressen_dag.py` and the SQL script `sql/d_ausd_adressen.sql` to the Airflow environment.
-  2. Configure the Airflow connection `google_cloud_default` with appropriate IAM permissions (BigQuery Job User, BigQuery Data Editor).
-* **Action**: Trigger the DAG manually via the Airflow UI or CLI.
-* **Pass/Fail Criterion**: The DAG runs successfully, and the task `run_dw_bert_p_adressen_sql` transitions to the `SUCCESS` state.
+  1. Insert synthetic records into `sof_ta_barrier` for a single contract (`cntrct_id = 99999`):
+     * Row 1: `sperrart = 'Rufnummern Sperre'`, `sperrgrund = 'Kundenwunsch'`, `ist_stillegung = 1`, `sperr_beginn = '2026-01-01'`, `sperr_ende = NULL`, `barrier_reason_cv = 2`.
+     * Row 2: `sperrart = 'Inland Abgehend'`, `sperrgrund = 'Betreiberinterne Sperre'`, `ist_stillegung = 0`, `sperr_beginn = '2026-02-01'`, `sperr_ende = '2026-03-01'`, `barrier_reason_cv = 3`.
+* **Action**: Run the `d_ausd_v_ta_barrier_zusgf.sql` script.
+* **Pass/Fail Criterion**:
+  * `sperrart_alle` must equal `'InlandAbgehend,Sperre'` (spaces and 'Rufnummern' removed, sorted alphabetically).
+  * `sperrgrund_alle` must equal `'Betreiberinterne Sperre,Kundenwunsch'` (sorted alphabetically).
+  * `stilllegungszeitraum_alle` must equal `'ab 01.01.2026'` (Row 2 is ignored for stilllegung because `ist_stillegung = 0`).
+  * `sperrgrund_zusgf` must equal `2` (the minimum of the mapped reason codes, or prioritized reason).
+
+```sql
+-- Assertions for Test Case 2.2
+SELECT
+  ASSERT_EQUALS(sperrart_alle, 'InlandAbgehend,Sperre'),
+  ASSERT_EQUALS(sperrgrund_alle, 'Betreiberinterne Sperre,Kundenwunsch'),
+  ASSERT_EQUALS(stilllegungszeitraum_alle, 'ab 01.01.2026'),
+  ASSERT_EQUALS(sperrgrund_zusgf, 2)
+FROM `prod-bert-dwh.prod_staging.sof_ta_barrier_zusgf`
+WHERE cntrct_id = 99999;
+```
+
+### Test Case 2.3: Pipelined Function Replacement (Discount Aggregation)
+* **Purpose**: Verify that `d_ausd_v_ta_disc_zusgf.sql` correctly aggregates multiple discounts for a contract version into a single sorted, comma-separated string.
+* **Setup**:
+  1. Insert synthetic records into `sof_ta_discount` for `cntrct_id = 88888`, `cntrct_obj_version = 1`:
+     * Row 1: `rabatt = 'RV-Rabatt'`, `rabatthoehe = '15'`.
+     * Row 2: `rabatt = 'Sondernachlass'`, `rabatthoehe = '5'`.
+* **Action**: Run the `d_ausd_v_ta_disc_zusgf.sql` script.
+* **Pass/Fail Criterion**: `rabatt_alle` must equal `'RV-Rabatt (15%), Sondernachlass (5%)'`.
+
+```sql
+-- Assertions for Test Case 2.3
+SELECT
+  ASSERT_EQUALS(rabatt_alle, 'RV-Rabatt (15%), Sondernachlass (5%)')
+FROM `prod-bert-dwh.prod_staging.sof_ta_disc_zusgf`
+WHERE cntrct_id = 88888 AND cntrct_obj_version = 1;
+```
+
+### Test Case 2.4: NULL Handling in Outer Joins (`d_ausd_v_ta_inv_def`)
+* **Purpose**: Verify that the refactored `LEFT OUTER JOIN` logic in `d_ausd_v_ta_inv_def.sql` correctly handles cases where optional configuration tables (`cds_ta_inv_cont_config` and `cds_ta_care_description`) do not have matching records.
+* **Setup**:
+  1. Insert a record into `cds_ta_inv_definition` with `inv_cont_config_id = NULL`.
+* **Action**: Run the `d_ausd_v_ta_inv_def.sql` script.
+* **Pass/Fail Criterion**: The record must be successfully loaded into `sof_ta_inv_def` with `rechn_inh_konfig_text` set to `NULL` (no record dropped due to inner join behavior).
+
+```sql
+-- Assertions for Test Case 2.4
+ASSERT EXISTS (
+  SELECT 1 
+  FROM `prod-bert-dwh.prod_staging.sof_ta_inv_def` 
+  WHERE inv_definition_id = synthetic_id_with_null_config 
+    AND rechn_inh_konfig_text IS NULL
+);
+```
 
 ---
 
-## 4. Data-Quality and Schema Assertion Tests
+## Section 3: External-System Replacements
 
-### Test Case 4.1: Target Table Truncation and Idempotency
-* **Purpose**: Verify that the script is fully idempotent and that Step 01 successfully truncates all target tables before insertion, preventing duplicate key violations on restarts.
-* **Setup**: Populate all 22 target tables in the `sof` schema with dummy records.
-* **Action**: Run Step 01 (Truncate target/temp tables) of the BigQuery script.
-* **Pass/Fail Criterion**: Every target table listed in Step 01 contains exactly 0 rows.
+### Test Case 3.1: Airflow Watermark Extraction (`dwtk_meldungen`)
+* **Purpose**: Verify that the Airflow DAG correctly reads the dynamic watermark parameter from the staging metadata table and applies it across all downstream tasks.
+* **Setup**:
+  1. Clear the staging dataset.
+  2. Insert a specific watermark timestamp into `dwtk_meldungen`:
+     ```sql
+     INSERT INTO `prod-bert-dwh.prod_staging.dwtk_meldungen` (job_kennung, timecreated)
+     VALUES ('BERT_DROP_TEMP_TABLE', TIMESTAMP('2026-05-10 14:30:00 UTC'));
+     ```
+* **Action**: Trigger the Airflow DAG `DW.BERT_P_VERTRAG_JP`.
+* **Pass/Fail Criterion**: All tables filtered by `v_datum` must only contain records inserted/modified on or before `'20260510'`.
 
 ```python
-# pytest/test_dq.py
-def test_target_truncation():
-    bq_client = bigquery.Client()
-    for table in TARGET_TABLES:
-        bq_table = f"gcp_project_id.sof.{table}"
-        query_job = bq_client.query(f"SELECT COUNT(*) FROM `{bq_table}`")
-        count = list(query_job.result())[0][0]
-        assert count == 0, f"Table {table} was not truncated successfully."
+def test_watermark_propagation(bq_client):
+    # Query target table to ensure no records exist past the watermark date
+    query = """
+    SELECT COUNT(*) 
+    FROM `prod-bert-dwh.prod_staging.sof_ta_acc_ref` 
+    WHERE acc_ref_id IN (
+        SELECT acc_ref_id 
+        FROM `prod-bert-dwh.prod_carmen_mirror.cds_ta_acc_ref` 
+        WHERE FORMAT_TIMESTAMP('%Y%m%d', insert_at) > '20260510'
+    )
+    """
+    query_job = bq_client.query(query)
+    violating_records = list(query_job.result())[0][0]
+    assert violating_records == 0, f"Found {violating_records} records violating the watermark boundary."
 ```
 
-### Test Case 4.2: Schema and Nullability Constraints
-* **Purpose**: Verify that the target tables in BigQuery conform to the expected schema definitions and do not contain unexpected NULL values in primary key columns (`BP_ID`, `REACHABILITY_ID`).
-* **Setup**: Run the complete BigQuery migration script to populate the target tables.
-* **Action**: Query the BigQuery Information Schema and check for NULL values in key columns.
-* **Pass/Fail Criterion**: No records in the target tables have a `NULL` value for `BP_ID` or `REACHABILITY_ID` (except where explicitly allowed by design, such as `cntrct_cp2_id` in Step 02b).
+---
+
+## Section 4: Data Quality & Schema Assertions
+
+### Test Case 4.1: Column Type and Nullability Constraints
+* **Purpose**: Ensure that the target BigQuery tables conform to the expected schema definitions, and that key identifier columns do not contain unexpected `NULL` values.
+* **Setup**: Run the full Airflow DAG to populate all staging tables.
+* **Action**: Execute schema validation queries against the BigQuery Information Schema.
+* **Pass/Fail Criterion**: All key columns must match the target schema specifications, and primary/foreign keys must be non-nullable.
 
 ```sql
--- SQL Assertion Test
-ASSERT (
-  SELECT COUNT(*) 
-  FROM `gcp_project_id.sof.ta_e_reach_gp` 
-  WHERE BP_ID IS NULL OR REACHABILITY_ID IS NULL
-) = 0;
+-- Assert that primary keys do not contain NULL values
+ASSERT NOT EXISTS (
+  SELECT 1 FROM `prod-bert-dwh.prod_staging.sof_ta_acc_ref` WHERE acc_ref_id IS NULL
+);
 
+ASSERT NOT EXISTS (
+  SELECT 1 FROM `prod-bert-dwh.prod_staging.sof_ta_cntrct_crs` WHERE cntrct_id IS NULL
+);
+
+-- Assert that data types are correctly mapped (e.g., rabatthoehe is STRING in sof_ta_discount)
 ASSERT (
-  SELECT COUNT(*) 
-  FROM `gcp_project_id.sof.ta_e_business_gp` 
-  WHERE BP_ID IS NULL
-) = 0;
+  SELECT data_type 
+  FROM `prod-bert-dwh.prod_staging.INFORMATION_SCHEMA.COLUMNS`
+  WHERE table_name = 'sof_ta_discount' AND column_name = 'rabatthoehe'
+) = 'STRING';
+```
+
+### Test Case 4.2: Airflow DAG Structural Integrity
+* **Purpose**: Ensure that the Airflow DAG structure matches the legacy UC4 dependency graph exactly, with no missing tasks or incorrect execution paths.
+* **Setup**: Load the DAG file `bert_p_vertrag_jp_dag.py` into the Airflow Bag.
+* **Action**: Programmatically inspect the DAG structure using the Airflow CLI / Python API.
+* **Pass/Fail Criterion**: The DAG must load without import errors, and the task dependencies must match the topological order defined in the design document.
+
+```python
+from airflow.models import DagBag
+
+def test_dag_imports_and_dependencies():
+    dagbag = DagBag(dag_folder='/home/gurunathan_t/migrated_composer/dags', include_examples=False)
+    assert len(dagbag.import_errors) == 0, f"DAG import failures: {dagbag.import_errors}"
+    
+    dag = dagbag.get_dag(dag_id='DW.BERT_P_VERTRAG_JP')
+    assert dag is not None
+    
+    # Verify key task dependencies
+    barrier_task = dag.get_task('d_ausd_v_ta_barrier')
+    barrier_zusgf_task = dag.get_task('d_ausd_v_ta_barrier_zusgf')
+    
+    assert barrier_zusgf_task in barrier_task.downstream_list
+    assert barrier_task in barrier_zusgf_task.upstream_list
 ```
