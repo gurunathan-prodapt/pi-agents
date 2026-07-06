@@ -1,0 +1,40 @@
+CREATE OR REPLACE TABLE `{{ var.value.gcp_project }}.{{ var.value.env_prefix }}_staging.sof_ta_vvl_dwh` AS
+SELECT
+  stichtag,
+  vertrags_id,
+  dwh_vertrag_id,
+  vo_kenn,
+  rahmenvertrag,
+  dwh_tarifgr_id,
+  aenderung_am,
+  vvl_aendgrund_id,
+  vvl_crd_alt,
+  vvl_ersteperiode_alt,
+  vvl_folgeperiode_alt,
+  vertragsbindedatum_alt,
+  vvl_crd_neu,
+  vvl_ersteperiode_neu,
+  vvl_folgeperiode_neu,
+  vertragsbindedatum_neu,
+  vertragsbeginn,
+  ladedatum,
+  vo_kenn_bearb,
+  vb_kenn_bearb,
+  vb_kenn,
+  kd_segment_id,
+  vt_segment_id,
+  rd_segment_id,
+  ads_user_id,
+  cks_objekt_id,
+  kkm_kampagne_id,
+  cks_artikel_ausgegeben,
+  cks_bearb_kenn,
+  ve_kamp_anrtyp_id,
+  kkm_kontakt_id,
+  vorgang_id,
+  import_status_flag,
+  dwh_tarif_id
+FROM `{{ var.value.gcp_project }}.{{ var.value.env_prefix }}_dwh.dwh_ta_f_vvl_ereignisse` vvl
+WHERE
+  vvl.vvl_aendgrund_id IN (-3, 6, 7, 12, 13, 14, 15, 16, 17, 22, 80)
+  OR vvl.vvl_aendgrund_id BETWEEN 24 AND 60;
