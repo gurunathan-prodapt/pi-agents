@@ -1,9 +1,9 @@
 # Reviewer Approved
 
-**Job:** `DW.BERT_P_ADRESSEN`
+**Job:** `DW.BERT_P_VERTRAG_JP`
 
 The automated reviewer evaluated the design and build output and approved it for commit.
 
 ## Review Summary
 
-Output looks correct. The design accurately captures the source context and maps it to BigQuery and Airflow. The build output implements the requested SQL transformations and provides a functional Airflow DAG. While reading the SQL file at DAG parse time is slightly unconventional for Airflow, it is syntactically valid and acceptable for this migration stage.
+The migration design and build output are excellent. The complex Oracle PL/SQL pipelined table functions for string aggregation have been correctly refactored into native BigQuery SQL using STRING_AGG. The DAG accurately reflects the dependencies of the UC4 workflow, and the build output correctly implements the design, even fixing a minor 'OR REPLACE TABLE' typo from the design document.
