@@ -1,0 +1,25 @@
+DECLARE v_carmen STRING DEFAULT '@pcrs1';
+DECLARE v_datum STRING;
+
+SET v_datum = (
+  SELECT IFNULL(FORMAT_DATE('%Y%m%d', DATE(MAX(m.timecreated))), '19000101')
+  FROM `gcp-prod-dwh-project.isbert_schema_prod.dwtk_meldungen` m
+  WHERE m.job_kennung = 'BERT_DROP_TEMP_TABLE'
+);
+
+-- Step01: truncate target table
+TRUNCATE TABLE `gcp-prod-dwh-project.sof_dataset.sof$ta_msisdn_his`;
+
+-- Step02: insert valid MSISDN records
+INSERT INTO `gcp-prod-dwh-project.sof_dataset.sof$ta_msisdn_his`
+  (BPRI_COM_ID, MSISDN, CALLNUMBER_ROLE_ID, VALID_TO)
+SELECT
+  cn1.bpri_com_id,
+  CONCAT(CAST(cn1.cc AS STRING), CAST(cn1.ndc AS STRING), CAST(cn1.sn AS STRING)) AS msisdn,
+  cn1.callnumber_role_id,
+  cn1.valid_to
+FROM `gcp-prod-dwh-project.isbert_schema_prod.pds$ta_callnumber` cn1
+WHERE cn1.insert_at <= PARSE_DATE('%Y%m%d', v_datum)
+  AND (cn1.modified_at IS NULL OR cn1.modified_at > PARSE_DATE('%Y%m%d', v_datum))
+  AND cn1.valid_from <= PARSE_DATE('%Y%m%d', v_datum)
+  AND cn1.is_production = 1;
