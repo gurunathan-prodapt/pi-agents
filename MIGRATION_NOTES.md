@@ -1,127 +1,147 @@
-# Migration Notes: DW.BERT_AUSD_BP_TA_MSISDN_HIS
+# MIGRATION_NOTES.md — DW.BERT_AUSD_BP_TA_MSISDN_HIS
 
-This document provides comprehensive migration notes for transitioning the legacy Automic (UC4) job `DW.BERT_AUSD_BP_TA_MSISDN_HIS` and its associated KornShell wrapper scripts to Google Cloud Platform (GCP).
+This document provides comprehensive migration notes for transitioning the historical tracking of MSISDNs associated with basic product tariff agreements from the legacy Oracle and UC4 environment to Google Cloud.
 
 ---
 
 ## 1. Summary
 
-The legacy batch job `DW.BERT_AUSD_BP_TA_MSISDN_HIS` has been migrated from an on-premises Oracle and Automic (UC4) environment to a modern, cloud-native architecture on **Google Cloud Platform (GCP)**.
+The legacy data pipeline `DW.BERT_AUSD_BP_TA_MSISDN_HIS` has been migrated from an on-premises Oracle database and Automic UC4 orchestration environment to a modern, cloud-native architecture on Google Cloud Platform (GCP).
 
-*   **Source Platform:** Automic UC4 Orchestrator, KornShell Wrapper scripts (`r_...ksh` / `k_...ksh`), and Oracle PL/SQL / DML executing over an Oracle Database Link (`@pcrs1` / `@carmen`).
-*   **Target Platform:** **Google Cloud Composer (Airflow)** for orchestration and **Google BigQuery** for data warehousing and transformation.
-*   **Migration Pattern:** The legacy shell control scripts and Oracle SQL logic have been consolidated into a BigQuery-native SQL workflow. The database link dependency has been eliminated by querying native BigQuery tables populated by upstream ingestion pipelines.
+*   **Source Platform**: Oracle Database, Automic UC4 Scheduler, KornShell (KSH) wrapper scripts (`r_ausd_bp_ta_msisdn_his.ksh`, `k_ausd_bp_ta_msisdn_his.ksh`), and PL/SQL (`d_ausd_bp_ta_msisdn_his.sql`).
+*   **Target Platform**: Google Cloud Platform (GCP)
+    *   **Orchestration**: Cloud Composer (Apache Airflow 2.x DAG)
+    *   **Data Warehouse & Compute**: BigQuery (Standard SQL Scripting)
+    *   **Configuration Management**: JSON-based environment configuration
+    *   **Optional Transformation Layer**: Dataform (SQLX) for declarative modeling
 
 ---
 
 ## 2. Generated Artifacts
 
-The migration process generated the following key artifacts:
+The migration process has consolidated five legacy files into three clean, maintainable target assets:
 
-| File Path | Role | Description |
+| Target Path | Target Language | Role / Description |
 | :--- | :--- | :--- |
-| `dataform/definitions/sof_ta_msisdn_his.sqlx` | **Dataform SQLX Script** | Defines the BigQuery transformation logic, including watermark resolution, target table truncation, and incremental-like history population. |
-| `dags/dw_bert_ausd_bp_ta_msisdn_his_dag.py` | **Cloud Composer DAG** | Airflow DAG that schedules and executes the BigQuery multi-statement query using the `BigQueryInsertJobOperator`. |
+| `definitions/d_ausd_bp_ta_msisdn_his.sqlx` | Dataform / BigQuery SQL | Core transformation logic. Declares variables, calculates the dynamic watermark date (`v_datum`), truncates the target table, and inserts active production MSISDNs. |
+| `dags/dw_bert_ausd_bp_ta_msisdn_his.py` | Python (Airflow DAG) | Orchestrates the pipeline execution. Replaces UC4 scheduling and KSH wrapper scripts. Uses `BigQueryInsertJobOperator` to execute the SQL logic. |
+| `config/env_config.json` | JSON | Externalizes environment variables, table names, and scheduling parameters to ensure environment parity (Dev/Test/Prod). |
 
 ---
 
 ## 3. Key Design Decisions
 
-### 3.1 BigQuery-Native Execution
-*   **Decision:** Consolidate KornShell wrapper logic (date calculation, parameter parsing) directly into BigQuery SQL using scripting variables (`DECLARE`, `SET`).
-*   **Reasoning:** Eliminates the need for intermediate compute resources (such as GCE VMs or Kubernetes Pods) to run shell scripts. Running logic directly inside BigQuery reduces operational overhead, simplifies the architecture, and lowers execution costs.
+### 3.1 Consolidation of Shell Wrappers into Airflow
+The legacy KornShell scripts (`r_*.ksh` and `k_*.ksh`) were primarily responsible for environment initialization (`.dw_init`), parameter parsing, logging, and error handling. 
+*   **Decision**: These wrappers were completely retired. Their orchestration, parameter injection, and error-handling responsibilities have been absorbed directly by the Airflow DAG and its native logging/alerting mechanisms. This reduces operational complexity and eliminates the overhead of maintaining virtual machines or containers just to run shell wrappers.
 
-### 3.2 Elimination of Database Links
-*   **Decision:** Replace the Oracle DB Link (`@pcrs1`) with a direct reference to the BigQuery table `pds.ta_callnumber`.
-*   **Reasoning:** DB links are highly coupled and perform poorly over WANs. In GCP, upstream ingestion pipelines are expected to sync the source data into the `pds` dataset prior to this job's execution, allowing for high-performance, localized BigQuery joins.
+### 3.2 Explicit Type Casting during Concatenation
+In the legacy Oracle PL/SQL script, the MSISDN was constructed using string concatenation: `cn1.cc||cn1.ndc||cn1.sn`.
+*   **Decision**: In BigQuery, concatenating non-string types or handling potential `NULL` values can lead to unexpected results or query failures. The migrated SQL explicitly casts each component to `STRING` inside a `CONCAT()` function: `CONCAT(CAST(cn1.cc AS STRING), CAST(cn1.ndc AS STRING), CAST(cn1.sn AS STRING))`.
 
-### 3.3 Handling of Oracle Optimizer Hints
-*   **Decision:** The Oracle optimizer hint `/*+ full(cn1) parallel(cn1,4) */` was completely omitted.
-*   **Reasoning:** BigQuery is a serverless, columnar data warehouse that automatically manages query execution plans and scales compute resources dynamically. Manual parallelization hints are obsolete.
+### 3.3 Removal of Optimizer Hints
+The legacy Oracle script contained performance hints: `/*+ full(cn1) parallel(cn1,4) */`.
+*   **Decision**: These hints were stripped out. BigQuery is a serverless, columnar data warehouse that automatically manages query execution plans, scaling, and parallelism. Manual execution hints are obsolete and unsupported in BigQuery Standard SQL.
+
+### 3.4 Dynamic Watermark Calculation
+The pipeline relies on a dynamic date watermark (`v_datum`) derived from `dwtk_meldungen`.
+*   **Decision**: This logic is kept inside the BigQuery SQL script using `DECLARE` and `SET` statements. This ensures that the watermark is calculated atomically within the same database session as the transaction, minimizing latency and avoiding round-trips between Airflow and BigQuery.
 
 ---
 
 ## 4. Manual Steps Before Go-Live
 
-Before deploying and enabling this job in production, the following manual setup steps must be completed:
+To ensure a successful deployment to the production environment, the following manual setup steps must be completed:
 
 ### 4.1 Schema & Dataset Creation
-Ensure the following BigQuery datasets and tables exist in your target GCP project:
-1.  **Datasets:**
-    *   `isbert_schema`
-    *   `pds`
-    *   `sof`
-2.  **Tables:**
-    *   `isbert_schema.dwtk_meldungen` (Must contain historical watermark records with `job_kennung = 'BERT_DROP_TEMP_TABLE'`).
-    *   `pds.ta_callnumber` (Must be populated by the upstream ingestion pipeline).
-    *   `sof.ta_msisdn_his` (Target table; must match the schema of the legacy `sof$ta_msisdn_his` table).
+Ensure that the target BigQuery datasets exist in the target project (`gcp-prod-dwh-project`) and region (e.g., `EU`):
+1.  **Source Dataset**: `isbert_schema_prod`
+2.  **Target Dataset**: `sof_dataset`
+3.  **Target Table**: Create the target table `sof$ta_msisdn_his` if it does not already exist, matching the schema of the legacy table:
+    ```sql
+    CREATE TABLE IF NOT EXISTS `gcp-prod-dwh-project.sof_dataset.sof$ta_msisdn_his` (
+      BPRI_COM_ID STRING, -- Match source type (e.g., INT64 or STRING)
+      MSISDN STRING,
+      CALLNUMBER_ROLE_ID INT64,
+      VALID_TO DATE
+    );
+    ```
 
 ### 4.2 IAM & Permissions
-The Cloud Composer service account must be granted the following IAM roles in the target GCP project:
-*   `roles/bigquery.jobUser` (To run BigQuery jobs).
-*   `roles/bigquery.dataEditor` on the `sof` dataset (To truncate and insert into the target table).
-*   `roles/bigquery.dataViewer` on the `isbert_schema` and `pds` datasets (To read source and watermark tables).
+The service account running the Cloud Composer worker nodes (or the specific Airflow connection `google_cloud_default`) must be granted the following IAM roles:
+*   `roles/bigquery.jobUser` on the GCP project.
+*   `roles/bigquery.dataViewer` on the source dataset `isbert_schema_prod`.
+*   `roles/bigquery.dataEditor` on the target dataset `sof_dataset`.
 
-### 4.3 Airflow Variables
-Define the following Airflow Variable in your Cloud Composer environment:
-*   `gcp_project_id`: The ID of the GCP project where your BigQuery datasets reside.
+### 4.3 Connection Strings & Secrets
+*   Verify that the Airflow connection `google_cloud_default` is configured correctly in Cloud Composer.
+*   If executing in a non-production environment, update the Airflow Environment Variable `BQ_LOCATION` (e.g., `US` or `EU`) and `GCP_CONN_ID` if a custom connection is used.
 
-### 4.4 Scheduling & Dependencies
-*   Deactivate the legacy Automic (UC4) job `DW.BERT_AUSD_BP_TA_MSISDN_HIS` to prevent concurrent writes.
-*   Ensure that the upstream ingestion pipeline for `pds.ta_callnumber` is scheduled to complete *before* this Airflow DAG starts.
+### 4.4 Upstream Data Replication (Critical)
+The legacy script queried `pds$ta_callnumber@pcrs1` via an Oracle DB Link. 
+*   **Action**: Confirm that the replication pipeline (e.g., Datastream, Fivetran, or an equivalent ELT process) is actively syncing the upstream table `pds$ta_callnumber` from the source system into `gcp-prod-dwh-project.isbert_schema_prod.pds$ta_callnumber` before enabling this DAG.
+
+### 4.5 Scheduling & Airflow Variables
+1.  Upload `dw_bert_ausd_bp_ta_msisdn_his.py` to the Composer DAGs folder (`gs://<composer-bucket>/dags/`).
+2.  Upload `env_config.json` to the configuration directory or import its values into the Airflow Variable store if configuration management is centralized.
+3.  Keep the DAG turned **OFF** (paused) in the Airflow UI until the validation phase is complete.
 
 ---
 
 ## 5. Known Gaps & Unresolved References
 
-*   **Upstream Ingestion Dependency:** This migration assumes that an independent ingestion process continuously replicates `pds$ta_callnumber` from the source Oracle database (`@pcrs1`) to BigQuery (`pds.ta_callnumber`). If this ingestion pipeline is not yet operational, this job will process stale data.
-*   **Watermark Synchronization:** The job relies on `isbert_schema.dwtk_meldungen` containing a valid timestamp for `job_kennung = 'BERT_DROP_TEMP_TABLE'`. Ensure that the process updating this watermark table has also been migrated to GCP and runs successfully.
+*   **Database Link (`@pcrs1`)**: The legacy DB link reference has been hardcoded to point to the local BigQuery dataset `isbert_schema_prod`. This assumes that the table `pds$ta_callnumber` is fully replicated and up-to-date. Any latency in the replication pipeline will directly affect the accuracy of the historical MSISDN capture.
+*   **Redesign (B4) Items**: 
+    *   *Table Partitioning/Clustering*: The target table `sof$ta_msisdn_his` is currently truncated and fully reloaded. If this table grows significantly over time, consider redesigning it to use ingestion-time partitioning or clustering on `BPRI_COM_ID` to optimize downstream query costs.
+    *   *Dataform Integration*: While a `.sqlx` file has been prepared, the Airflow DAG currently executes the raw SQL string. Transitioning the execution entirely to Dataform (via the `DataformCreateCompilationResultOperator` and `DataformWriteActionOperator`) is recommended for long-term schema and dependency management.
 
 ---
 
 ## 6. Validation
 
-To validate the migration, execute the following testing steps:
+To validate the migration and verify that the target table is populated correctly:
 
 ### 6.1 Dry-Run Validation
-Run a dry-run of the SQL query in the BigQuery console to verify syntax and estimate bytes scanned:
+Run a dry-run of the SQL script in the BigQuery Console to verify syntax and estimate bytes scanned:
 ```sql
-DECLARE v_job_name STRING DEFAULT 'BERT_DROP_TEMP_TABLE';
-DECLARE v_default_date STRING DEFAULT '19000101';
+-- Run in BigQuery Console to validate syntax
+DECLARE v_carmen STRING DEFAULT '@pcrs1';
 DECLARE v_datum STRING;
-DECLARE v_process_date DATE;
-
-SET v_datum = (
-  SELECT IFNULL(FORMAT_DATE('%Y%m%d', MAX(DATE(m.timecreated))), v_default_date)
-  FROM `your_project_id.isbert_schema.dwtk_meldungen` m
-  WHERE m.job_kennung = v_job_name
-);
--- Verify that v_datum resolves to the expected historical date.
-SELECT v_datum;
+SET v_datum = '20260421'; -- Mocked date
 ```
 
 ### 6.2 DAG Execution Test
-1.  Upload `dw_bert_ausd_bp_ta_msisdn_his_dag.py` to the Airflow DAGs folder.
-2.  Trigger the DAG manually from the Airflow UI.
-3.  Verify that the task `execute_msisdn_history_update` completes with a `SUCCESS` status.
+1.  In the Airflow UI, unpause the DAG `dw_bert_ausd_bp_ta_msisdn_his`.
+2.  Trigger a manual run of the DAG.
+3.  Monitor the task `execute_msisdn_his_logic` and ensure it completes successfully.
+4.  Check the Airflow task logs to verify that the query executed without errors.
 
 ### 6.3 Data Reconciliation (Passing Criteria)
-Compare the output of the BigQuery target table with the legacy Oracle table for a given watermark date:
-*   **Row Count Check:** Run `SELECT COUNT(*) FROM sof.ta_msisdn_his` in both environments. The counts must match exactly.
-*   **Data Integrity Check:** Run a checksum or sample comparison on key columns (`bpri_com_id`, `msisdn`, `valid_to`) to ensure concatenation and date logic match the legacy output.
+Run the following reconciliation queries on both the legacy Oracle database and BigQuery to verify data integrity:
+
+*   **Row Count Validation**:
+    ```sql
+    -- BigQuery
+    SELECT COUNT(*) FROM `gcp-prod-dwh-project.sof_dataset.sof$ta_msisdn_his`;
+    
+    -- Oracle
+    SELECT COUNT(*) FROM sof$ta_msisdn_his;
+    ```
+    *The row counts must match exactly (assuming identical source watermark states).*
+
+*   **Null Value Check**:
+    ```sql
+    SELECT COUNT(*) FROM `gcp-prod-dwh-project.sof_dataset.sof$ta_msisdn_his` WHERE MSISDN IS NULL;
+    ```
+    *This count must be `0`.*
 
 ---
 
 ## 7. Rollback Procedure
 
-If critical issues are discovered post-go-live, follow these steps to roll back to the legacy environment:
+If critical issues are discovered in production post-go-live, execute the following steps to roll back to the legacy system:
 
-1.  **Pause the Airflow DAG:**
-    *   Go to the Cloud Composer Airflow UI.
-    *   Locate `dw_bert_ausd_bp_ta_msisdn_his` and toggle the switch to **Off** (Paused).
-2.  **Re-enable Legacy Scheduling:**
-    *   Log into the Automic (UC4) interface.
-    *   Re-activate the job definition `DW.BERT_AUSD_BP_TA_MSISDN_HIS`.
-3.  **Verify Legacy Execution:**
-    *   Manually trigger the legacy UC4 job for the missed processing window.
-    *   Verify that the Oracle table `sof$ta_msisdn_his` is successfully populated.
+1.  **Pause the Airflow DAG**: Go to the Airflow UI and pause the DAG `dw_bert_ausd_bp_ta_msisdn_his` to prevent further scheduled executions.
+2.  **Re-enable Legacy Scheduler**: Reactivate the UC4 job `DW.BERT_AUSD_BP_TA_MSISDN_HIS` in the Automic scheduler.
+3.  **Verify Legacy Execution**: Manually trigger the legacy UC4 job and verify that it successfully connects to the Oracle database, processes the data, and updates the legacy target table.
+4.  **Document the Incident**: Log the failure details, including error messages from Airflow/BigQuery, and assign them to the data engineering team for remediation before attempting another go-live.
