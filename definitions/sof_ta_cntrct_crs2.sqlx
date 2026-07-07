@@ -1,0 +1,51 @@
+config {
+  type: "table",
+  schema: "isbert_schema",
+  name: "sof_ta_cntrct_crs2",
+  description: "Update and resolve child contracts excluding frame contract parents.",
+  columns: {
+    cntrct_id: "Unique identifier of the contract",
+    obj_version: "Version of the contract object",
+    contract_number: "Human-readable contract number",
+    cntrct_template_id: "Template code",
+    cntrct_validity_id: "Validity ID",
+    valid_from: "Start of validity timestamp",
+    com_per_ext_rea_cv: "External reason variable",
+    billcycle_id: "Associated billing cycle",
+    vo_code: "Sales unit / VO Code",
+    cntrct_start_date: "Date on which the contract started",
+    cntrct_st: "Contract Status code",
+    cntrct_parent: "ID reference to parent contract",
+    cntrct_ty: "Contract Type category (e.g. 10 = RV Frame Contract)",
+    cost_centre: "Assigned Cost Centre",
+    cost_centre_user: "Assigned Cost Centre User ID",
+    commitment_reference_date: "Reference timestamp for commitments",
+    order_number: "Order/0B Number",
+    rv_num: "Resolved Parent/Frame Contract (RV) Number"
+  }
+}
+
+select
+  c.cntrct_id,
+  c.obj_version,
+  c.contract_number,
+  c.cntrct_template_id,
+  c.cntrct_validity_id,
+  c.valid_from,
+  c.com_per_ext_rea_cv,
+  c.billcycle_id,
+  c.vo_code,
+  c.cntrct_start_date,
+  c.cntrct_st,
+  c.cntrct_parent,
+  c.cntrct_ty,
+  c.cost_centre,
+  c.cost_centre_user,
+  c.commitment_reference_date,
+  c.order_number,
+  cr.contract_number as rv_num
+from ${ref("sof_ta_cntrct_crs")} c
+left join ${ref("sof_ta_cntrct_crs")} cr
+  on c.cntrct_parent = cr.cntrct_id
+ and cr.cntrct_ty = 10
+where c.cntrct_ty != 10;
