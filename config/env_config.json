@@ -1,0 +1,18 @@
+{
+  "gcp_project": "gcp-prod-dwh-project",
+  "source_dataset": "isbert_schema_prod",
+  "target_dataset": "sof_dataset",
+  "watermark_source_table": "dwtk_meldungen",
+  "watermark_job_kennung": "BERT_DROP_TEMP_TABLE",
+  "source_callnumber_table": "pds$ta_callnumber",
+  "target_msisdn_his_table": "sof$ta_msisdn_his",
+  "db_link_alias": "@pcrs1",
+  "default_watermark": "19000101",
+  "dag_id": "dw_bert_ausd_bp_ta_msisdn_his",
+  "schedule": "0 2 * * *",
+  "email_on_failure": true,
+  "email_on_retry": false,
+  "retries": 1,
+  "retry_delay_minutes": 5,
+  "tags": ["migration", "bigquery", "msisdn", "historical"]
+}
