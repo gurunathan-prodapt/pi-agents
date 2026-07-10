@@ -1,0 +1,46 @@
+config {
+  type: "table",
+  schema: "bert_core",
+  description: "Target Core Business Partner table"
+}
+
+SELECT
+  rg.cntrct_cp2_id AS cntrct_id,
+  rg.for_the_attention_of AS namenszusatz,
+  rg.address_attachment AS adresszusatz,
+  COALESCE(rg.corp_unit, bp.organisation_name) AS firmenname,
+  CASE
+    WHEN rg.surname_s IS NULL THEN bp.title
+    ELSE ''
+  END AS akad_titel,
+  COALESCE(rg.surname_s, bp.surname) AS nachname,
+  COALESCE(rg.first_name_g, bp.first_name) AS vorname,
+  rg.land_sd AS land,
+  rg.zip_code AS plz,
+  rg.city AS wohnort,
+  CASE
+    WHEN rg.street IS NULL THEN
+      CASE
+        WHEN rg.pobox IS NULL THEN ''
+        ELSE CONCAT('Postfach ', CAST(rg.pobox AS STRING))
+      END
+    ELSE CONCAT(rg.street, ' ', CAST(rg.house_nr AS STRING))
+  END AS strasse,
+  CASE
+    WHEN pr.segment_id = 11 THEN 'SP'
+    WHEN pr.segment_id = 12 THEN 'RV'
+    WHEN pr.segment_id = 13 THEN 'MA'
+    WHEN pr.segment_id = 14 THEN 'SO'
+    WHEN pr.segment_id = 15 THEN 'VJ'
+    WHEN pr.segment_id = 16 THEN 'IN'
+    ELSE CAST(pr.segment_id AS STRING)
+  END AS kunde_segment_id,
+  0 AS prem_segment_id,
+  bp.tm_customerid AS tm_kundennummer,
+  bp.sales_tax_freed AS mwst_kennzeichen,
+  rg.address_attachment_org AS organisationseinheit
+FROM `${dataform.projectConfig.vars.gcp_project_id}.bert_staging_sof.sof$ta_e_reach_gp` rg
+JOIN `${dataform.projectConfig.vars.gcp_project_id}.bert_staging_sof.sof$ta_e_business_gp` bp
+  ON rg.bp_id = bp.bp_id
+LEFT JOIN ${ref("sof$ta_segm_prem")} pr
+  ON rg.bp_id = pr.bp_id

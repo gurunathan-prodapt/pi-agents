@@ -1,0 +1,20 @@
+config {
+  type: "table",
+  schema: "bert_staging_sof",
+  description: "Staging unified instances"
+}
+
+SELECT
+  bp.cntrct_id,
+  bp.bpr_id,
+  bp.bpri_com_id AS bpr_instance_id,
+  bp.cntrct_id_ref,
+  COALESCE(bp.valid_to, DATE '4712-12-31') AS valid_to
+FROM (
+  SELECT
+    bp1.*,
+    MAX(COALESCE(bp1.valid_to, DATE '4712-12-31'))
+      OVER (PARTITION BY bp1.cntrct_id, bp1.bpr_id) AS max_valid_to
+  FROM ${ref("sof$ta_bpr_dn_evn_his")} bp1
+) bp
+WHERE COALESCE(bp.valid_to, DATE '4712-12-31') = bp.max_valid_to

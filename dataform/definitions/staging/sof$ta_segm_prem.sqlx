@@ -1,0 +1,11 @@
+config {
+  type: "table",
+  schema: "bert_staging_sof",
+  description: "Staging Segment Premium table transformation"
+}
+
+SELECT
+  bp_id,
+  segment_id
+FROM
+  `${dataform.projectConfig.vars.gcp_project_id}.bert_staging_bpd.bpd$ta_bp_valueseg_assoc`
