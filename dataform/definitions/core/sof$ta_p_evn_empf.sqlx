@@ -1,0 +1,35 @@
+config {
+  type: "table",
+  schema: "bert_core",
+  description: "Target Core EVN Recipients table"
+}
+
+SELECT
+  bi.cntrct_id AS cntrct_id,
+  ev.for_the_attention_of AS namenszusatz,
+  ev.address_attachment AS adresszusatz,
+  COALESCE(ev.corp_unit, bp.organisation_name) AS firmenname,
+  CASE
+    WHEN ev.surname_s IS NULL THEN bp.title
+    ELSE ''
+  END AS akad_titel,
+  COALESCE(ev.surname_s, bp.surname) AS nachname,
+  COALESCE(ev.first_name_g, bp.first_name) AS vorname,
+  ev.land_sd AS land,
+  ev.zip_code AS plz,
+  ev.city AS wohnort,
+  CASE
+    WHEN ev.street IS NULL THEN
+      CASE
+        WHEN ev.pobox IS NULL THEN ''
+        ELSE CONCAT('Postfach ', CAST(ev.pobox AS STRING))
+      END
+    ELSE CONCAT(ev.street, ' ', CAST(ev.house_nr AS STRING))
+  END AS strasse,
+  ev.address_attachment_org AS organisationseinheit,
+  bp.sales_tax_freed AS mwst_kennzeichen
+FROM `${dataform.projectConfig.vars.gcp_project_id}.bert_staging_sof.sof$ta_e_reach_ev` ev
+JOIN `${dataform.projectConfig.vars.gcp_project_id}.bert_staging_sof.sof$ta_e_business_ev` bp
+  ON ev.bp_id = bp.bp_id
+JOIN ${ref("sof$ta_bpr_dn_evn")} bi
+  ON ev.bpr_inst_evnrec_id = bi.bpr_instance_id

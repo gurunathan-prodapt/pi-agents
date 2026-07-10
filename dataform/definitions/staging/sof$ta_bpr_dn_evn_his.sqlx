@@ -1,0 +1,29 @@
+config {
+  type: "table",
+  schema: "bert_staging_sof",
+  description: "Staging historical instances"
+}
+
+WITH params AS (
+  SELECT
+    COALESCE(FORMAT_DATE('%Y%m%d', MAX(DATE(m.timecreated))), '19000101') AS v_datum
+  FROM `${dataform.projectConfig.vars.gcp_project_id}.isbert_schema.dwtk_meldungen` m
+  WHERE m.job_kennung = 'BERT_DROP_TEMP_TABLE'
+)
+
+SELECT
+  bp.cntrct_id,
+  bp.bpr_id,
+  bp.bpri_com_id,
+  bp.cntrct_id_ref,
+  bp.valid_from,
+  bp.valid_to,
+  bp.modified_at,
+  bp.insert_at
+FROM `${dataform.projectConfig.vars.gcp_project_id}.bert_staging_pds.pds$ta_bpri_com` bp
+CROSS JOIN params p
+WHERE bp.bpr_id IN (31, 2759, 2800, 2835, 2836, 2837, 2839, 2840, 3056)
+  AND DATE(bp.insert_at) <= PARSE_DATE('%Y%m%d', p.v_datum)
+  AND (bp.modified_at IS NULL OR DATE(bp.modified_at) > PARSE_DATE('%Y%m%d', p.v_datum))
+  AND DATE(bp.valid_from) <= PARSE_DATE('%Y%m%d', p.v_datum)
+  AND bp.is_production = 1

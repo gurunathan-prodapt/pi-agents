@@ -1,0 +1,35 @@
+config {
+  type: "table",
+  schema: "bert_core",
+  description: "Target Core Service Users table"
+}
+
+SELECT
+  bi.cntrct_id AS cntrct_id,
+  dn.for_the_attention_of AS namenszusatz,
+  dn.address_attachment AS adresszusatz,
+  COALESCE(dn.corp_unit, bp.organisation_name) AS firmenname,
+  CASE
+    WHEN dn.surname_s IS NULL THEN bp.title
+    ELSE ''
+  END AS akad_titel,
+  COALESCE(dn.surname_s, bp.surname) AS nachname,
+  COALESCE(dn.first_name_g, bp.first_name) AS vorname,
+  dn.land_sd AS land,
+  dn.zip_code AS plz,
+  dn.city AS wohnort,
+  CASE
+    WHEN dn.street IS NULL THEN
+      CASE
+        WHEN dn.pobox IS NULL THEN ''
+        ELSE CONCAT('Postfach ', CAST(dn.pobox AS STRING))
+      END
+    ELSE CONCAT(dn.street, ' ', CAST(dn.house_nr AS STRING))
+  END AS strasse,
+  dn.address_attachment_org AS organisationseinheit,
+  bp.sales_tax_freed AS mwst_kennzeichen
+FROM `${dataform.projectConfig.vars.gcp_project_id}.bert_staging_sof.sof$ta_e_reach_dn` dn
+JOIN `${dataform.projectConfig.vars.gcp_project_id}.bert_staging_sof.sof$ta_e_business_dn` bp
+  ON dn.bp_id = bp.bp_id
+JOIN ${ref("sof$ta_bpr_dn_evn")} bi
+  ON dn.bpr_inst_srvusr_id = bi.bpr_instance_id
