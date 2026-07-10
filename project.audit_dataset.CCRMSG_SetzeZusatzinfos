@@ -1,0 +1,18 @@
+CREATE OR REPLACE PROCEDURE `project.audit_dataset.CCRMSG_SetzeZusatzinfos`(
+  IN v_EintragsNr INT64,
+  IN v_Zusatz STRING
+)
+BEGIN
+  IF v_EintragsNr IS NULL THEN
+    RAISE USING MESSAGE = 'Eintragsnummer nicht gesetzt';
+  END IF;
+  IF v_Zusatz IS NULL THEN
+    RAISE USING MESSAGE = 'Zusatzinfos nicht gesetzt';
+  END IF;
+
+  UPDATE `project.audit_dataset.message_table`
+  SET 
+    zusatzinfos = v_Zusatz,
+    updated_at = CURRENT_TIMESTAMP()
+  WHERE entry_nr = v_EintragsNr;
+END;

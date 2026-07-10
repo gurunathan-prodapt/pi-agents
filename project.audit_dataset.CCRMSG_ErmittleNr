@@ -1,0 +1,12 @@
+CREATE OR REPLACE PROCEDURE `project.audit_dataset.CCRMSG_ErmittleNr`(
+  OUT v_EintragsNr INT64
+)
+BEGIN
+  INSERT INTO `project.audit_dataset.message_id_control` (created_at)
+  VALUES (CURRENT_TIMESTAMP());
+
+  SET v_EintragsNr = (
+    SELECT MAX(entry_nr) 
+    FROM `project.audit_dataset.message_id_control`
+  );
+END;

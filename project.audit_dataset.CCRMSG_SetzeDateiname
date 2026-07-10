@@ -1,0 +1,18 @@
+CREATE OR REPLACE PROCEDURE `project.audit_dataset.CCRMSG_SetzeDateiname`(
+  IN v_EintragsNr INT64,
+  IN v_Datei STRING
+)
+BEGIN
+  IF v_EintragsNr IS NULL THEN
+    RAISE USING MESSAGE = 'Eintragsnummer nicht gesetzt';
+  END IF;
+  IF v_Datei IS NULL THEN
+    RAISE USING MESSAGE = 'Dateiname nicht gesetzt';
+  END IF;
+
+  UPDATE `project.audit_dataset.message_table`
+  SET 
+    dateiname = v_Datei,
+    updated_at = CURRENT_TIMESTAMP()
+  WHERE entry_nr = v_EintragsNr;
+END;

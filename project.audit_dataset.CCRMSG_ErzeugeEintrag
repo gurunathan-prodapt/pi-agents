@@ -1,0 +1,33 @@
+CREATE OR REPLACE PROCEDURE `project.audit_dataset.CCRMSG_ErzeugeEintrag`(
+  IN v_EintragsNr INT64,
+  IN v_JobKennung STRING,
+  IN v_Programmname STRING,
+  IN v_LogDatei STRING,
+  IN v_Parameter STRING
+)
+BEGIN
+  IF v_EintragsNr IS NULL THEN
+    RAISE USING MESSAGE = 'Keine EintragsNummer bei Aufruf von ErzeugeEintrag angegeben';
+  END IF;
+
+  INSERT INTO `project.audit_dataset.message_table` (
+    entry_nr,
+    job_kennung,
+    programmname,
+    log_datei,
+    parameter_string,
+    status,
+    created_at,
+    updated_at
+  )
+  VALUES (
+    v_EintragsNr,
+    v_JobKennung,
+    v_Programmname,
+    v_LogDatei,
+    v_Parameter,
+    'INITIAL',
+    CURRENT_TIMESTAMP(),
+    CURRENT_TIMESTAMP()
+  );
+END;

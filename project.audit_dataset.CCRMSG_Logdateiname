@@ -1,0 +1,40 @@
+CREATE OR REPLACE PROCEDURE `project.audit_dataset.CCRMSG_Logdateiname`(
+  IN v_ProtDir STRING,
+  IN v_JobKennung STRING,
+  IN v_EintragsNr INT64,
+  OUT v_Dateiname STRING
+)
+BEGIN
+  SET v_Dateiname = CONCAT(
+    v_ProtDir,
+    '/',
+    v_JobKennung,
+    '_',
+    FORMAT_TIMESTAMP('%Y%m%d_%H%M', CURRENT_TIMESTAMP()),
+    '_',
+    CAST(v_EintragsNr AS STRING),
+    '.log'
+  );
+END;
+
+CREATE OR REPLACE PROCEDURE `project.audit_dataset.CCRMSG_Logdateiname_Parallel`(
+  IN v_ProtDir STRING,
+  IN v_JobKennung STRING,
+  IN v_EintragsNr INT64,
+  IN v_ParNr INT64,
+  OUT v_Dateiname STRING
+)
+BEGIN
+  SET v_Dateiname = CONCAT(
+    v_ProtDir,
+    '/',
+    v_JobKennung,
+    '_',
+    FORMAT_TIMESTAMP('%Y%m%d_%H%M', CURRENT_TIMESTAMP()),
+    '_',
+    CAST(v_EintragsNr AS STRING),
+    '.',
+    CAST(v_ParNr AS STRING),
+    '.log'
+  );
+END;

@@ -1,0 +1,90 @@
+CREATE OR REPLACE PROCEDURE `project.audit_dataset.CCRMSG_LogDebug`(
+  IN v_EintragsNr INT64,
+  IN v_Text STRING
+)
+BEGIN
+  IF v_EintragsNr IS NULL THEN
+    RAISE USING MESSAGE = 'Eintragsnummer nicht gesetzt';
+  END IF;
+  IF v_Text IS NULL THEN
+    RAISE USING MESSAGE = 'Text nicht gesetzt';
+  END IF;
+
+  INSERT INTO `project.audit_dataset.message_log` (entry_nr, severity, log_text, created_at)
+  VALUES (v_EintragsNr, 'DEBUG', v_Text, CURRENT_TIMESTAMP());
+END;
+
+CREATE OR REPLACE PROCEDURE `project.audit_dataset.CCRMSG_LogInfo`(
+  IN v_EintragsNr INT64,
+  IN v_Text STRING
+)
+BEGIN
+  IF v_EintragsNr IS NULL THEN
+    RAISE USING MESSAGE = 'Eintragsnummer nicht gesetzt';
+  END IF;
+  IF v_Text IS NULL THEN
+    RAISE USING MESSAGE = 'Text nicht gesetzt';
+  END IF;
+
+  INSERT INTO `project.audit_dataset.message_log` (entry_nr, severity, log_text, created_at)
+  VALUES (v_EintragsNr, 'INFO', v_Text, CURRENT_TIMESTAMP());
+END;
+
+CREATE OR REPLACE PROCEDURE `project.audit_dataset.CCRMSG_LogWarn`(
+  IN v_EintragsNr INT64,
+  IN v_Text STRING
+)
+BEGIN
+  IF v_EintragsNr IS NULL THEN
+    RAISE USING MESSAGE = 'Eintragsnummer nicht gesetzt';
+  END IF;
+  IF v_Text IS NULL THEN
+    RAISE USING MESSAGE = 'Text nicht gesetzt';
+  END IF;
+
+  INSERT INTO `project.audit_dataset.message_log` (entry_nr, severity, log_text, created_at)
+  VALUES (v_EintragsNr, 'WARN', v_Text, CURRENT_TIMESTAMP());
+END;
+
+CREATE OR REPLACE PROCEDURE `project.audit_dataset.CCRMSG_Fehler`(
+  IN v_EintragsNr INT64,
+  IN v_Fehler INT64,
+  IN v_Text STRING
+)
+BEGIN
+  IF v_EintragsNr IS NULL THEN
+    RAISE USING MESSAGE = 'Eintragsnummer nicht gesetzt';
+  END IF;
+  IF v_Fehler IS NULL THEN
+    RAISE USING MESSAGE = 'Fehlertyp nicht gesetzt';
+  END IF;
+  IF v_Text IS NULL THEN
+    RAISE USING MESSAGE = 'Text nicht gesetzt';
+  END IF;
+
+  INSERT INTO `project.audit_dataset.message_log` (entry_nr, severity, error_type, log_text, created_at)
+  VALUES (v_EintragsNr, 'ERROR', v_Fehler, v_Text, CURRENT_TIMESTAMP());
+
+  UPDATE `project.audit_dataset.message_table`
+  SET 
+    status = 'FAILED',
+    error_type = v_Fehler,
+    error_text = v_Text,
+    updated_at = CURRENT_TIMESTAMP()
+  WHERE entry_nr = v_EintragsNr;
+END;
+
+CREATE OR REPLACE PROCEDURE `project.audit_dataset.CCRMSG_Fertig`(
+  IN v_EintragsNr INT64
+)
+BEGIN
+  IF v_EintragsNr IS NULL THEN
+    RAISE USING MESSAGE = 'Eintragsnummer nicht gesetzt';
+  END IF;
+
+  UPDATE `project.audit_dataset.message_table`
+  SET 
+    status = 'SUCCESS',
+    updated_at = CURRENT_TIMESTAMP()
+  WHERE entry_nr = v_EintragsNr;
+END;
