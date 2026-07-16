@@ -1,1 +1,1 @@
-ERROR: tests skipped for DW.DWH_KUNDE_ABGL_WOECHENTLICH_JS — design unavailable.
+ERROR: tests skipped for DW.DWH_KUNDE_ABGL_WOECHENTLICH_JS — build phase failed or produced no output.
