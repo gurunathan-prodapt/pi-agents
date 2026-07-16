@@ -1,0 +1,10 @@
+{
+  "AB_HOME": "/appl/local/abinitio/abinitio",
+  "AB_AIR_ROOT": "/appl/local/abinitio/TMD_EME/eme_dev/repo",
+  "AB_AIR_HOME": "/appl/local/abinitio/abinitio-V2-14",
+  "ETL_Host": "dxcsa4.bn.detemobil.de",
+  "ETL_Projekt": "BHB",
+  "AI_PRIV_SAND_ROOT": "~/abinitio",
+  "AI_ENV_SAND_ROOT": "/appl/local/abinitio/sandboxes/DEV",
+  "AI_REPOSIT_TRACKING": "FALSE"
+}
