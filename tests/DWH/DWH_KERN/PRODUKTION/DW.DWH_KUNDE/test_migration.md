@@ -1,0 +1,1 @@
+ERROR: tests skipped for DW.DWH_KUNDE_ABGL_WOECHENTLICH_JS — design unavailable.
