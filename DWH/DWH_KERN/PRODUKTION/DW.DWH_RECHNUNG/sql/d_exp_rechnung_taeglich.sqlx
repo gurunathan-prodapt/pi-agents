@@ -1,0 +1,24 @@
+config {
+  type: "incremental",
+  schema: "dw_staging",
+  name: "tmp_export_rechnung_taeglich",
+  uniqueKey: ["rechnungs_id"],
+  bigquery: {
+    partitionBy: "rechnungs_datum"
+  }
+}
+
+SELECT
+  r.RECHNUNGSNUMMER AS rechnungs_id,
+  r.VERTRAG AS vertrag,
+  r.KUNDE AS kunden_nr,
+  r.TARIF AS tarif,
+  r.ABRECHNUNGSZEITRAUM AS abrechnungszeitraum,
+  ROUND(CAST(r.RECHNUNGSBETRAG AS NUMERIC), 2) AS brutto_betrag,
+  r.WAEHRUNG AS waehrung,
+  r.RECHNUNGSDATUM AS rechnungs_datum
+FROM
+  ${ref("dw_source", "tb_rechnungen")} AS r
+WHERE
+  r.RECHNUNGSDATUM = DATE('${dataform.projectConfig.vars.stichtag}')
+ORDER BY r.RECHNUNGSNUMMER
