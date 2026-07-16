@@ -1,0 +1,8 @@
+{
+  "source_dataset": "dwh_kern_bi",
+  "source_table": "agent_raw_data",
+  "lookup_rules": {
+    "active_status_codes": [1, 2, 3],
+    "restricted_types": ["TEST", "DUMMY"]
+  }
+}
