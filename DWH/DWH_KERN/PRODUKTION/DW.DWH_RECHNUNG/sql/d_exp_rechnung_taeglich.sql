@@ -1,21 +1,13 @@
--- =============================================================================
--- SQL-Script: d_exp_rechnung_taeglich.sql
--- Target Dialect: BigQuery Standard SQL
--- Description: Extracts daily billing records from T_RECHNUNG filtered by stichtag.
--- =============================================================================
-
-SELECT
-  r.RECHNUNGSNUMMER,
-  r.VERTRAG,
-  r.KUNDE,
-  r.TARIF,
-  r.ABRECHNUNGSZEITRAUM,
-  CAST(r.RECHNUNGSBETRAG AS NUMERIC) AS RECHNUNGSBETRAG,
-  r.WAEHRUNG,
-  r.RECHNUNGSDATUM
+-- Purpose: Extract daily invoice data from the T_RECHNUNG table
+-- Parameterized Stichtag is supplied dynamically at execution runtime.
+SELECT 
+  rechnungs_id,
+  rechnungs_datum,
+  kundennummer,
+  betrag,
+  waehrung,
+  referenz_id
 FROM 
-  `@gcp_project.@bq_dataset.T_RECHNUNG` AS r
+  `@gcp_project.@bq_dataset.t_rechnung`
 WHERE 
-  r.RECHNUNGSDATUM = PARSE_DATE('%Y%m%d', @p_Stichtag)
-ORDER BY 
-  r.RECHNUNGSNUMMER;
+  rechnungs_datum = PARSE_DATE('%Y%m%d', '@l_stichtag');
