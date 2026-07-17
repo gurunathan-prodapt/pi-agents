@@ -1,200 +1,251 @@
-Here is a comprehensive suite of migration-validation tests designed for the migrated weekly customer address reconciliation job (`DW.DWH_KUNDE_ABGL_WOECHENTLICH_JP`). 
-
-These tests are structured to prove behavioral equivalence between the legacy Oracle/KornShell environment and the target Google Cloud Composer (Airflow) + BigQuery environment.
+Here is a comprehensive suite of migration-validation tests designed to prove that the migrated Google Cloud Platform (Cloud Composer, BigQuery, Dataform) components are behaviorally equivalent to the legacy Automic/UC4, KornShell, and Oracle SQL*Plus workflow.
 
 ---
 
-# Test Suite: `DW.DWH_KUNDE_ABGL_WOECHENTLICH` Validation
+# Test Suite: `DW_KUNDE_ABGL_WOECHENTLICH` Migration Validation
 
-## 1. Output Parity & Functional Equivalence
-
-### Test Case 1.1: End-to-End Address Reconciliation Output Parity
-* **Purpose**: Prove that given the same input datasets (Customer Master and Reference), the migrated BigQuery SQL logic produces the exact same mismatch records as the legacy Oracle SQL script.
-* **Setup**:
-  1. Populate a test Oracle schema with a set of 10 customer records in `DWH_KERN.T_KUNDE` and corresponding reference records in `STAMMDATEN.T_KUNDE_REFERENZ`.
-     * Include 3 matching records.
-     * Include 3 records with mismatched `PLZ` (Postal Code).
-     * Include 2 records with mismatched `ORT` (City).
-     * Include 2 records with mismatched `STRASSE` (Street).
-     * Include 1 record where `AKTUALISIERT_AM` is greater than the test `p_Stichtag` (should be excluded).
-  2. Load the exact same dataset into the target BigQuery tables: `project.DWH_KERN.T_KUNDE` and `project.STAMMDATEN.T_KUNDE_REFERENZ`.
-* **Action**:
-  1. Execute the legacy Oracle SQL script using SQL*Plus with `p_Stichtag = '20241007'`. Export the output to a CSV file (`legacy_output.csv`).
-  2. Execute the migrated BigQuery SQL query (from `dw_dwh_kunde_abgl_woechentlich_sql.py`) with `@p_Stichtag = '20241007'`. Export the results to a CSV file (`target_output.csv`).
-* **Pass/Fail Criterion**: The contents of `legacy_output.csv` and `target_output.csv` must match exactly (100% row-by-row parity, ignoring order if sorted differently, though both specify `ORDER BY KUNDE`).
-
-```python
-# pytest code for output parity validation
-import pandas as pd
-
-def test_sql_output_parity():
-    legacy_df = pd.read_csv("legacy_output.csv").sort_values(by="KUNDE").reset_index(drop=True)
-    target_df = pd.read_csv("target_output.csv").sort_values(by="KUNDE").reset_index(drop=True)
-    
-    # Assert identical shapes and column values
-    pd.testing.assert_frame_equal(legacy_df, target_df, check_dtype=False)
-```
+This test suite validates the migration of the weekly customer address alignment workflow (`DW.DWH_KUNDE_ABGL_WOECHENTLICH_JP`) from Oracle/UC4 to GCP. It contains automated validation scripts, SQL assertions, and execution checks.
 
 ---
 
-## 2. Transformation Correctness & Edge Cases
+## Section 1: Output Parity & Transformation Correctness
 
-### Test Case 2.1: NULL Handling and Coalesce Equivalence
-* **Purpose**: Verify that `NULL` values in address fields (`PLZ`, `ORT`, `STRASSE`) do not cause false positives or false negatives during comparison. The legacy Oracle script uses `nvl(field, 'x')` while BigQuery uses `COALESCE(field, 'x')`.
-* **Setup**:
-  * Populate test tables in BigQuery with the following edge cases:
-    * Case A: Master has `PLZ = NULL`, Reference has `PLZ = NULL` (Should be treated as **Equal** -> No mismatch).
-    * Case B: Master has `PLZ = NULL`, Reference has `PLZ = '12345'` (Should be treated as **Mismatched** -> Flagged).
-    * Case C: Master has `PLZ = 'x'`, Reference has `PLZ = NULL` (Should be treated as **Mismatched** -> Flagged).
-* **Action**: Run the BigQuery reconciliation query.
-* **Pass/Fail Criterion**: 
-  * Case A must **not** appear in the output.
-  * Case B and Case C **must** appear in the output.
+### Test Case 1.1: Address Discrepancy Detection & Null Handling
+#### Purpose
+Verify that the migrated BigQuery SQL / Dataform logic identifies the exact same address discrepancies as the legacy Oracle SQL script, specifically validating:
+*   Mismatches in `PLZ` (Postal Code), `ORT` (City), or `STRASSE` (Street).
+*   Correct handling of `NULL` values (using `COALESCE` in BigQuery vs. `nvl` in Oracle).
+*   Filtering based on the reporting cutoff date (`AKTUALISIERT_AM <= stichtag`).
+
+#### Setup
+1.  Create temporary test tables in BigQuery mimicking the production schema:
+    *   `DWH_KERN.T_KUNDE`
+    *   `STAMMDATEN.T_KUNDE_REFERENZ`
+2.  Populate both tables with identical test cases containing matching records, mismatched records, and `NULL` values.
+
+#### Action
+Execute the following validation query in BigQuery for `stichtag = '20260301'`:
 
 ```sql
--- SQL Assertion to verify NULL handling
-WITH test_results AS (
-  SELECT
-    k.KUNDE,
-    (COALESCE(k.PLZ, 'x') != COALESCE(r.PLZ, 'x')) AS plz_mismatch
-  FROM (
-    SELECT 'A' AS KUNDE, CAST(NULL AS STRING) AS PLZ, '2024-10-07' AS AKTUALISIERT_AM UNION ALL
-    SELECT 'B', CAST(NULL AS STRING), '2024-10-07' UNION ALL
-    SELECT 'C', 'x', '2024-10-07'
-  ) k
-  JOIN (
-    SELECT 'A' AS KUNDE, CAST(NULL AS STRING) AS PLZ UNION ALL
-    SELECT 'B', '12345', CAST(NULL AS STRING) UNION ALL
-    SELECT 'C', CAST(NULL AS STRING), CAST(NULL AS STRING)
-  ) r ON k.KUNDE = r.KUNDE
-)
-SELECT 
-  KUNDE, 
-  plz_mismatch 
-FROM test_results;
+DECLARE target_stichtag DATE DEFAULT DATE('2026-03-01');
 
--- EXPECTED OUTPUT:
--- KUNDE | plz_mismatch
--- A     | false
--- B     | true
--- C     | true
+WITH test_kunde AS (
+  -- Row 1: Perfect Match
+  SELECT 'K001' AS KUNDE, 'Müller' AS NACHNAME, 'Hans' AS VORNAME, '12345' AS PLZ, 'Berlin' AS ORT, 'Hauptstr. 1' AS STRASSE, DATE('2026-02-20') AS AKTUALISIERT_AM UNION ALL
+  -- Row 2: Mismatched PLZ
+  SELECT 'K002', 'Schmidt', 'Anna', '54321', 'Hamburg', 'Elbchaussee 2', DATE('2026-02-25') UNION ALL
+  -- Row 3: Mismatched ORT (with NULL in source)
+  SELECT 'K003', 'Fischer', 'Fritz', '80331', NULL, 'Marienplatz 5', DATE('2026-02-28') UNION ALL
+  -- Row 4: Mismatched STRASSE (with NULL in reference)
+  SELECT 'K004', 'Weber', 'Julia', '50667', 'Köln', 'Domplatz 1', DATE('2026-02-28') UNION ALL
+  -- Row 5: Match but updated AFTER stichtag (Should be excluded)
+  SELECT 'K005', 'Meyer', 'Stefan', '60311', 'Frankfurt', 'Zeil 10', DATE('2026-03-02')
+),
+test_referenz AS (
+  SELECT 'K001' AS KUNDE, '12345' AS PLZ, 'Berlin' AS ORT, 'Hauptstr. 1' AS STRASSE UNION ALL
+  SELECT 'K002', '99999', 'Hamburg', 'Elbchaussee 2' UNION ALL -- Diff PLZ
+  SELECT 'K003', '80331', 'München', 'Marienplatz 5' UNION ALL -- Diff ORT (Source was NULL)
+  SELECT 'K004', '50667', 'Köln', NULL UNION ALL             -- Diff STRASSE (Ref is NULL)
+  SELECT 'K005', '60311', 'Frankfurt', 'Zeil 99'               -- Diff STRASSE (But excluded by date)
+)
+
+SELECT
+  k.KUNDE,
+  COALESCE(k.PLZ, 'x') != COALESCE(r.PLZ, 'x') AS plz_diff,
+  COALESCE(k.ORT, 'x') != COALESCE(r.ORT, 'x') AS ort_diff,
+  COALESCE(k.STRASSE, 'x') != COALESCE(r.STRASSE, 'x') AS strasse_diff
+FROM test_kunde k
+JOIN test_referenz r ON r.KUNDE = k.KUNDE
+WHERE k.AKTUALISIERT_AM <= target_stichtag
+  AND (
+        COALESCE(k.PLZ, 'x')     != COALESCE(r.PLZ, 'x')
+     OR COALESCE(k.ORT, 'x')     != COALESCE(r.ORT, 'x')
+     OR COALESCE(k.STRASSE, 'x') != COALESCE(r.STRASSE, 'x')
+  );
 ```
 
-### Test Case 2.2: Date Filter Boundary Conditions (`AKTUALISIERT_AM`)
-* **Purpose**: Prove that the date filter `k.AKTUALISIERT_AM <= PARSE_DATE('%Y%m%d', @p_Stichtag)` behaves identically to Oracle's `to_date` comparison.
-* **Setup**:
-  * Set `@p_Stichtag = '20241007'`.
-  * Insert records into `T_KUNDE` with `AKTUALISIERT_AM` values of:
-    * Record 1: `2024-10-06` (Before Stichtag -> Should be processed).
-    * Record 2: `2024-10-07` (On Stichtag -> Should be processed).
-    * Record 3: `2024-10-08` (After Stichtag -> Should be excluded).
-* **Action**: Execute the reconciliation query.
-* **Pass/Fail Criterion**: Record 1 and Record 2 are evaluated for mismatches; Record 3 is completely ignored.
+#### Pass/Fail Criterion
+*   **Pass**: The query returns exactly 3 rows: `K002` (PLZ mismatch), `K003` (ORT mismatch), and `K004` (STRASSE mismatch). `K001` (perfect match) and `K005` (updated after stichtag) are excluded.
+*   **Fail**: Any other row count or mismatch combination is returned.
 
 ---
 
-## 3. External-System Replacements & Orchestration
+## Section 2: Log and Alert Parity (KornShell to Python)
 
-### Test Case 3.1: Airflow Variable Resolution and Fallbacks
-* **Purpose**: Ensure that the custom variable retrieval function `get_gcp_variable` correctly fetches Airflow variables and throws appropriate errors when required variables are missing.
-* **Setup**: Initialize a clean Airflow metadata database.
-* **Action**:
-  1. Define `GCP_PROJECT` in Airflow Variables and call `get_gcp_variable("GCP_PROJECT")`.
-  2. Call `get_gcp_variable("NON_EXISTENT_VAR")` without a default value.
-  3. Call `get_gcp_variable("NON_EXISTENT_VAR", default="fallback_value")`.
-* **Pass/Fail Criterion**:
-  1. Step 1 returns the correct project ID.
-  2. Step 2 raises a `KeyError`.
-  3. Step 3 returns `"fallback_value"`.
+### Test Case 2.1: Verbatim Log Output and Warning Thresholds
+#### Purpose
+Verify that the migrated Python execution script (`bin/r_abgl_kunde_woech.py`) produces the exact character-for-character log outputs and warning messages as the legacy KornShell script under different anomaly counts.
+
+#### Setup
+Install `pytest` and mock the Google Cloud BigQuery client to return specific row counts.
+
+#### Action
+Run the following `pytest` test suite:
 
 ```python
 import pytest
-from airflow.models import Variable
-from dw_dwh_kunde.bin.r_abgl_kunde_woech import get_gcp_variable
+from unittest.mock import MagicMock, patch
+import datetime
 
-def test_get_gcp_variable(cleanup_vars):
-    # Setup
-    Variable.set("GCP_PROJECT", "test-gcp-project")
+# Import the migrated execution function
+from bin.r_abgl_kunde_woech import run_reconciliation
+
+@patch('bin.r_abgl_kunde_woech.bigquery.Client')
+def test_reconciliation_logging_no_discrepancies(mock_bq_client, capsys):
+    # Setup mock to return 0 discrepancies
+    mock_results = []
+    mock_client_instance = MagicMock()
+    mock_client_instance.query.return_value.result.return_value = mock_results
+    mock_bq_client.return_value = mock_client_instance
+
+    # Run execution
+    run_reconciliation(
+        gcp_project="test-project",
+        bq_dataset="test_dataset",
+        l_stichtag="20260301",
+        run_id="12345",
+        lauf_woche="2026-09"
+    )
+
+    captured = capsys.readouterr()
     
-    # Test 1: Successful retrieval
-    assert get_gcp_variable("GCP_PROJECT") == "test-gcp-project"
+    # Assertions for exact legacy string matches
+    assert "Starte Adressabgleich Kundenstammdaten fuer Stichtag 20260301" in captured.out
+    assert "Anzahl gefundener Abweichungen: 0" in captured.out
+    assert "Adressabgleich Kundenstammdaten ohne erkennbare Fehler beendet" in captured.out
+    assert "Kundenadressabgleich fuer Lauf 2026-09 angestossen" in captured.out
+    assert "[W]" not in captured.out  # No warning should be printed
+
+
+@patch('bin.r_abgl_kunde_woech.bigquery.Client')
+def test_reconciliation_logging_with_discrepancies(mock_bq_client, capsys):
+    # Setup mock to return 2 discrepancies
+    RowMock = collections.namedtuple('Row', ['status_msg'])
+    mock_results = [
+        RowMock(status_msg="ABWEICHUNG: Kunde K002 hat abweichende Adresse."),
+        RowMock(status_msg="ABWEICHUNG: Kunde K003 hat abweichende Adresse.")
+    ]
+    mock_client_instance = MagicMock()
+    mock_client_instance.query.return_value.result.return_value = mock_results
+    mock_bq_client.return_value = mock_client_instance
+
+    import collections
+
+    # Run execution
+    run_reconciliation(
+        gcp_project="test-project",
+        bq_dataset="test_dataset",
+        l_stichtag="20260301",
+        run_id="12345",
+        lauf_woche="2026-09"
+    )
+
+    captured = capsys.readouterr()
     
-    # Test 2: Missing variable raises KeyError
-    with pytest.raises(KeyError) as excinfo:
-        get_gcp_variable("MISSING_VARIABLE")
-    assert "Missing required Airflow Variable" in str(excinfo.value)
+    # Assertions for exact legacy warning format
+    assert "Starte Adressabgleich Kundenstammdaten fuer Stichtag 20260301" in captured.out
+    assert "Anzahl gefundener Abweichungen: 2" in captured.out
     
-    # Test 3: Fallback value
-    assert get_gcp_variable("MISSING_VARIABLE", default="fallback") == "fallback"
+    # Check warning format: [W] YYYY-MM-DD HH:MM:SS 2 Abweichungen im Kundenadressabgleich gefunden, siehe abgl_kunde_woech_12345.log
+    assert "[W]" in captured.out
+    assert "2 Abweichungen im Kundenadressabgleich gefunden, siehe abgl_kunde_woech_12345.log" in captured.out
+    assert "Kundenadressabgleich fuer Lauf 2026-09 angestossen" in captured.out
 ```
 
-### Test Case 3.2: Verbatim Logging Verification
-* **Purpose**: Prove that the Airflow task logs capture the exact German logging strings required by legacy downstream monitoring systems.
-* **Setup**: Configure a mock logger and run the `pre_execution_logging` and `post_execution_logging` tasks.
-* **Action**:
-  1. Trigger `pre_execution_logging` with `lauf_woche = '20241007'`.
-  2. Trigger `post_execution_logging` with `lauf_woche = '20241007'` (mocking BigQuery hook to return 42 deviations).
-* **Pass/Fail Criterion**:
-  * The log output must contain the exact strings:
-    * `Kundenadressabgleich fuer Lauf 20241007 angestossen`
-    * `Starte Adressabgleich Kundenstammdaten...`
-    * `Anzahl gefundener Abweichungen: 42`
-    * `Adressabgleich Kundenstammdaten ohne erkennbare Fehler beendet`
-
-```python
-def test_verbatim_logging(caplog):
-    import logging
-    from dw_dwh_kunde.bin.r_abgl_kunde_woech import pre_execution_logging
-    
-    context = {"templates_dict": {"lauf_woche": "20241007"}}
-    
-    with caplog.at_level(logging.INFO):
-        pre_execution_logging(**context)
-        
-    assert "Kundenadressabgleich fuer Lauf 20241007 angestossen" in caplog.text
-    assert "Starte Adressabgleich Kundenstammdaten..." in caplog.text
-```
+#### Pass/Fail Criterion
+*   **Pass**: Both test cases pass, proving that stdout matches the legacy KornShell output format character-for-character.
+*   **Fail**: Any assertion fails, or the warning format deviates from the legacy pattern.
 
 ---
 
-## 4. Data-Quality, Schema, & Row-Count Assertions
+## Section 3: Orchestration & Dynamic Parameter Handling
 
-### Test Case 4.1: Target Table Schema Validation
-* **Purpose**: Assert that the target table `T_ABGL_KUNDE_ERR` is created with correct data types, partitioning, and clustering to prevent performance degradation.
-* **Setup**: Deploy the DDL schema to BigQuery.
-* **Action**: Query the BigQuery `INFORMATION_SCHEMA.COLUMNS` and `INFORMATION_SCHEMA.TABLES` for `T_ABGL_KUNDE_ERR`.
-* **Pass/Fail Criterion**:
-  * Column `STICHTAG` must be of type `DATE`.
-  * Column `KUNDEN_ID` must be of type `STRING` and `NOT NULL`.
-  * The table must be partitioned by `STICHTAG`.
-  * The table must be clustered by `KUNDEN_ID`.
+### Test Case 3.1: Airflow Dynamic Date Fallback (Stichtag)
+#### Purpose
+Verify that the Airflow DAG correctly calculates the default `stichtag` parameter as "7 days ago" (matching the legacy shell script's `date -d '7 days ago' '+%Y%m%d'`) when no manual override is provided in the DAG run configuration.
 
-```sql
--- SQL Assertion for Schema Validation
-SELECT 
-  column_name, 
-  data_type, 
-  is_nullable
-FROM 
-  `project.reporting_dataset.INFORMATION_SCHEMA.COLUMNS`
-WHERE 
-  table_name = 'T_ABGL_KUNDE_ERR'
-  AND column_name IN ('STICHTAG', 'KUNDEN_ID');
+#### Setup
+Initialize a local Airflow unit testing context.
 
--- Assert Partitioning and Clustering
-SELECT 
-  is_partitioning_supported, 
-  clustering_fields
-FROM 
-  `project.reporting_dataset.INFORMATION_SCHEMA.TABLES`
-WHERE 
-  table_name = 'T_ABGL_KUNDE_ERR';
+#### Action
+Execute the following pytest test to validate parameter resolution:
+
+```python
+import datetime
+from airflow.models import DagRun, TaskInstance
+from airflow.utils.types import DagRunType
+from airflow.utils.state import State
+import pytest
+
+# Import the wrapper function
+from dags.dw_dwh_kunde_abgl_woechentlich import execute_reconciliation_wrapper
+
+@patch('dags.dw_dwh_kunde_abgl_woechentlich.run_reconciliation')
+@patch('dags.dw_dwh_kunde_abgl_woechentlich.Variable')
+def test_airflow_stichtag_fallback(mock_variable, mock_run_reconciliation):
+    # Mock Airflow Variables
+    mock_variable.get.side_effect = lambda key, default_var=None: {
+        "GCP_PROJECT": "prod-project",
+        "BQ_DATASET_DWH_KERN": "dwh_kern"
+    }.get(key, default_var)
+
+    # Mock Context
+    execution_date = datetime.datetime(2026, 3, 10, 6, 0, 0)
+    context = {
+        'execution_date': execution_date,
+        'ds': '2026-03-10',
+        'ds_nodash': '20260310',
+        'run_id': 'scheduled__2026-03-10T06:00:00+00:00',
+        'dag_run': MagicMock(conf={})  # Empty configuration to trigger fallback
+    }
+
+    # Execute wrapper
+    execute_reconciliation_wrapper(**context)
+
+    # Verify that run_reconciliation was called with stichtag = 7 days before 2026-03-10 (which is 20260303)
+    mock_run_reconciliation.assert_called_once_with(
+        gcp_project="prod-project",
+        bq_dataset="dwh_kern",
+        l_stichtag="20260303",  # 2026-03-10 minus 7 days
+        run_id="scheduled__2026-03-10T06:00:00+00:00",
+        lauf_woche="2026-03-10",
+        sql_path=pytest.any
+    )
 ```
 
-### Test Case 4.2: Row-Count Integrity Check
-* **Purpose**: Ensure that the number of rows inserted into `T_ABGL_KUNDE_ERR` matches the count of discrepancies calculated during the run.
-* **Setup**: Run the reconciliation pipeline for a specific `ds` (e.g., `2024-10-07`).
-* **Action**:
-  1. Query the count of rows in `T_ABGL_KUNDE_ERR` where `STICHTAG = '2024-10-07'`.
-  2. Compare this count with the value logged in `task_log_count` (retrieved via XCom).
-* **Pass/Fail Criterion**: The physical row count in the table must exactly equal the logged discrepancy count.
+#### Pass/Fail Criterion
+*   **Pass**: The wrapper correctly calculates `20260303` as the `l_stichtag` and passes it to the execution script.
+*   **Fail**: The wrapper passes any other date or fails to resolve.
+
+---
+
+## Section 4: Data Quality & Schema Assertions
+
+### Test Case 4.1: Dataform Output Schema and Partitioning Validation
+#### Purpose
+Ensure that the Dataform-generated table `work.wrk_kunden_abweichungen` matches the target schema specification, is correctly partitioned by `stichtag`, and enforces idempotency (pre-operations cleanup).
+
+#### Setup
+Deploy the Dataform model to a test environment.
+
+#### Action
+Execute the following metadata validation queries in BigQuery:
+
+```sql
+-- Assertion 1: Verify Column Names and Types
+SELECT column_name, data_type, is_nullable
+FROM `work.INFORMATION_SCHEMA.COLUMNS`
+WHERE table_name = 'wrk_kunden_abweichungen'
+ORDER BY ordinal_position;
+
+-- Assertion 2: Verify Partitioning
+SELECT is_partitioning_column, partitioning_type
+FROM `work.INFORMATION_SCHEMA.COLUMNS`
+WHERE table_name = 'wrk_kunden_abweichungen' AND column_name = 'stichtag';
+```
+
+#### Pass/Fail Criterion
+*   **Pass**: 
+    *   Assertion 1 returns columns: `MARKER` (STRING), `KUNDE` (STRING), `NACHNAME` (STRING), `VORNAME` (STRING), `PLZ` (STRING), `ORT` (STRING), `STRASSE` (STRING), `REF_PLZ` (STRING), `REF_ORT` (STRING), `REF_STRASSE` (STRING), `stichtag` (DATE).
+    *   Assertion 2 confirms `stichtag` is the partitioning column with `partitioning_type = 'DAY'`.
+*   **Fail**: Schema mismatches are detected, or the table is not partitioned.
