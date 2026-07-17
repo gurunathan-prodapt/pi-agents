@@ -1,0 +1,1 @@
+ERROR: tests skipped for Shared Files — sql_bqsql_linked_job/isbert/allgemein/is/util/bin — build phase failed or produced no output.
