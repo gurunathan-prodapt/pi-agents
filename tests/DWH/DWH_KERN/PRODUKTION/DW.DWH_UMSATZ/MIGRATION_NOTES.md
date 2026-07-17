@@ -1,0 +1,1 @@
+ERROR: migration notes skipped for DWH/DWH_KERN/PRODUKTION/DW.DWH_UMSATZ/DW.DWH_UMSATZ_KONSOLIDIERUNG_MONATLICH_JP.xml — build phase failed or produced no output.
