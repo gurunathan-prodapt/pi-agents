@@ -1,0 +1,39 @@
+config {
+  type: "incremental",
+  schema: "work",
+  name: "wrk_kunden_abweichungen",
+  tags: ["weekly_reconciliation"],
+  bigquery: {
+    partitionBy: "stichtag"
+  },
+  description: "Stores identified address mismatch records for audit checks"
+}
+
+pre_operations {
+  -- Clean up target partition to enforce idempotency
+  DELETE FROM `gcp-production-data-project.work.wrk_kunden_abweichungen`
+  WHERE stichtag = DATE('${dataform.projectConfig.vars.stichtag}');
+}
+
+SELECT
+  'ABWEICHUNG' as MARKER,
+  k.KUNDE,
+  k.NACHNAME,
+  k.VORNAME,
+  k.PLZ,
+  k.ORT,
+  k.STRASSE,
+  r.PLZ       as REF_PLZ,
+  r.ORT       as REF_ORT,
+  r.STRASSE   as REF_STRASSE,
+  DATE('${dataform.projectConfig.vars.stichtag}') as stichtag
+FROM `gcp-production-data-project.DWH_KERN.T_KUNDE` k
+JOIN `gcp-production-data-project.STAMMDATEN.T_KUNDE_REFERENZ` r
+  ON r.KUNDE = k.KUNDE
+WHERE k.AKTUALISIERT_AM <= PARSE_DATE('%Y%m%d', '${dataform.projectConfig.vars.stichtag}')
+  AND (
+        COALESCE(k.PLZ, 'x')     != COALESCE(r.PLZ, 'x')
+     OR COALESCE(k.ORT, 'x')     != COALESCE(r.ORT, 'x')
+     OR COALESCE(k.STRASSE, 'x') != COALESCE(r.STRASSE, 'x')
+      )
+ORDER BY k.KUNDE;
