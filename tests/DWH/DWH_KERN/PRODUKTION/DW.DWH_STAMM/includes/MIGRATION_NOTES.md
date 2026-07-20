@@ -1,0 +1,1 @@
+ERROR: migration notes skipped for Shared Files — DWH/DWH_KERN/PRODUKTION/DW.DWH_STAMM/includes — build phase failed or produced no output.
