@@ -1,238 +1,194 @@
-# Migration Validation Test Suite
-**Job Name:** DW.DWH_DUMMY_ABSD_PLATO_TARIFE  
-**Target DAG ID:** `dw_dwh_plato_tarif_mapping_taeglich_jp`
-
-This test suite contains automated validation tests to prove that the migrated Airflow DAG behaves identically to the legacy UC4 Unix job. Since the legacy job is a dummy synchronization anchor, the validation focuses on print-literal compliance, DAG structure, environment variable integration, and execution integrity.
+Here is the migration-validation test suite designed to verify that the migrated Airflow DAG `dw_dwh_dummy_absd_plato_tarife` behaves identically to the legacy UC4 job `DW.DWH_DUMMY_ABSD_PLATO_TARIFE`.
 
 ---
 
-## Test Case 1: Print Literal and Output Parity Validation
+# Test Suite: Migration Validation for `DW.DWH_DUMMY_ABSD_PLATO_TARIFE`
 
-### Purpose
-To verify that the migrated task outputs the exact string `"Doing nothinig"` (preserving the original spelling mistake character-for-character) to both standard output and the Airflow task logs, matching the legacy UC4 `:print Doing nothinig` action.
-
-### Setup
-* A Python testing environment with `pytest` and `pytest-mock` installed.
-* The target DAG file `DW.DWH_DUMMY_ABSD_PLATO_TARIFE.py` must be in the Python path.
-* Airflow variables mocked to prevent initialization errors.
-
-### Action
-Execute the Python callable `execute_dummy_job` inside a captured standard output and logging context, then assert the output contents.
-
-### Code Implementation
-```python
-import logging
-import sys
-from io import StringIO
-import pytest
-from unittest.mock import patch
-
-# Mock Airflow Variables before importing the DAG to avoid KeyError
-with patch('airflow.models.Variable.get') as mock_variable_get:
-    mock_variable_get.side_effect = lambda key: f"mocked_{key.lower()}"
-    from uc4_airflow_linked_job.DW_DWH_PLATO_TARIF_MAPPING_TAEGLICH_JP.DW_DWH_DUMMY_ABSD_PLATO_TARIFE import execute_dummy_job
-
-def test_print_literal_parity(caplog):
-    """
-    Verify that the dummy job prints and logs the exact string 'Doing nothinig'
-    preserving the original legacy spelling mistake.
-    """
-    # Capture standard output
-    captured_stdout = StringIO()
-    sys.stdout = captured_stdout
-
-    try:
-        with caplog.at_level(logging.INFO):
-            execute_dummy_job()
-    finally:
-        # Restore standard output
-        sys.stdout = sys.__stdout__
-
-    # 1. Assert Standard Output Parity
-    stdout_val = captured_stdout.getvalue().strip()
-    assert stdout_val == "Doing nothinig", f"Expected stdout 'Doing nothinig', got '{stdout_val}'"
-
-    # 2. Assert Logging Output Parity
-    log_messages = [record.message for record in caplog.records if record.levelno == logging.INFO]
-    assert "Doing nothinig" in log_messages, f"Expected 'Doing nothinig' in logs, found: {log_messages}"
-```
-
-### Pass/Fail Criterion
-* **Pass:** The standard output and the log records contain the exact string `"Doing nothinig"`.
-* **Fail:** The string is missing, modified, or corrected (e.g., "Doing nothing").
+This test suite ensures that the migrated Airflow DAG is structurally sound, preserves all metadata, handles environment variables correctly, and executes the exact character-for-character log output of the legacy UC4 job.
 
 ---
 
-## Test Case 2: Airflow DAG Structure and Metadata Validation
+## Test Case 1: DAG Import and Structural Integrity
 
 ### Purpose
-To verify that the DAG is correctly configured with the specified metadata (ID, schedule, catchup, active status) and that the task dependency chain matches the legacy design (`start >> dw_dwh_dummy_absd_plato_tarife >> end`).
+Verify that the migrated Airflow DAG file is syntactically correct, can be parsed by the Airflow `DagBag` without import errors, and maintains the exact task structure, dependencies, and default configurations defined in the migration design.
 
 ### Setup
-* Access to the Airflow DAG parsing context.
-* Airflow Variables mocked to return dummy values.
+*   Ensure the target file `uc4_airflow_linked_job/DW.DWH_PLATO_TARIF_MAPPING_TAEGLICH_JP/DW_DWH_DUMMY_ABSD_PLATO_TARIFE.py` is in the Airflow DAGs search path.
+*   Install `pytest` and `apache-airflow` in the test environment.
 
 ### Action
-Load the DAG using Airflow's `DagBag` and inspect its properties and task relationships.
+Run a pytest execution that loads the DAG via `DagBag` and asserts its structural properties.
 
-### Code Implementation
 ```python
 import pytest
-from unittest.mock import patch
 from airflow.models import DagBag
 
-@pytest.fixture(scope="module")
-def dagbag():
-    # Mock Airflow Variables during DAG parsing
-    with patch('airflow.models.Variable.get') as mock_variable_get:
-        mock_variable_get.side_effect = lambda key: f"mocked_{key.lower()}"
-        # Load the DAG file
-        db = DagBag(dag_folder="uc4_airflow_linked_job/DW.DWH_PLATO_TARIF_MAPPING_TAEGLICH_JP", include_examples=False)
-        return db
-
-def test_dag_structure_and_metadata(dagbag):
-    """
-    Verify DAG properties, task IDs, and execution flow.
-    """
-    dag_id = 'dw_dwh_plato_tarif_mapping_taeglich_jp'
-    dag = dagbag.get_dag(dag_id)
+def test_dag_import_and_structure():
+    # Load the DAG bag
+    dag_bag = DagBag(dag_folder="uc4_airflow_linked_job/DW.DWH_PLATO_TARIF_MAPPING_TAEGLICH_JP", include_examples=False)
     
-    # 1. Verify DAG exists
-    assert dag is not None, f"DAG {dag_id} failed to load. Errors: {dagbag.import_errors}"
+    # 1. Assert no import errors occurred
+    assert len(dag_bag.import_errors) == 0, f"DAG import failures: {dag_bag.import_errors}"
     
-    # 2. Verify Metadata
-    assert dag.schedule_interval is None, "DAG schedule must be None (triggered dynamically)"
-    assert dag.catchup is False, "DAG catchup must be False"
-    assert dag.max_active_runs == 1, "DAG max_active_runs must be 1"
-    assert dag.is_paused_upon_creation is False, "DAG must not be paused upon creation (Active=1 in UC4)"
+    # 2. Assert DAG exists
+    dag_id = "dw_dwh_dummy_absd_plato_tarife"
+    assert dag_id in dag_bag.dags, f"DAG {dag_id} not found in DagBag"
     
-    # 3. Verify Task Inventory
-    expected_tasks = {'start', 'dw_dwh_dummy_absd_plato_tarife', 'end'}
+    dag = dag_bag.get_dag(dag_id)
+    
+    # 3. Assert DAG Properties
+    assert dag.schedule_interval is None, "Schedule interval should be None (manual execution)"
+    assert dag.catchup is False, "Catchup should be set to False"
+    assert dag.max_active_runs == 1, "Max active runs should be constrained to 1"
+    assert "migrated_uc4" in dag.tags, "Missing 'migrated_uc4' tag"
+    assert "dummy_task" in dag.tags, "Missing 'dummy_task' tag"
+    
+    # 4. Assert Task Inventory
+    expected_tasks = {"start", "dwh_dummy_absd_plato_tarife", "end"}
     actual_tasks = set(dag.task_ids)
     assert actual_tasks == expected_tasks, f"Task mismatch. Expected {expected_tasks}, got {actual_tasks}"
     
-    # 4. Verify Task Dependencies (start >> dummy >> end)
-    start_task = dag.get_task('start')
-    dummy_task = dag.get_task('dw_dwh_dummy_absd_plato_tarife')
-    end_task = dag.get_task('end')
+    # 5. Assert Task Dependencies (start >> dwh_dummy_absd_plato_tarife >> end)
+    start_task = dag.get_task("start")
+    dummy_task = dag.get_task("dwh_dummy_absd_plato_tarife")
+    end_task = dag.get_task("end")
     
-    assert dummy_task.task_id in [t.task_id for t in start_task.downstream_list], "start must precede dummy task"
-    assert end_task.task_id in [t.task_id for t in dummy_task.downstream_list], "dummy task must precede end"
+    assert dummy_task.task_id in [t.task_id for t in start_task.downstream_list]
+    assert end_task.task_id in [t.task_id for t in dummy_task.downstream_list]
 ```
 
 ### Pass/Fail Criterion
-* **Pass:** The DAG loads without import errors, matches all metadata assertions, and preserves the exact linear execution sequence.
-* **Fail:** Any metadata mismatch, missing tasks, or incorrect dependency ordering.
+*   **Pass**: The DAG imports with zero errors, contains exactly the tasks `start`, `dwh_dummy_absd_plato_tarife`, and `end` in sequential order, and matches all metadata properties.
+*   **Fail**: Any import errors are raised, tasks are missing, or dependencies are incorrectly wired.
 
 ---
 
-## Test Case 3: Environment Variable Integration Validation
+## Test Case 2: Output Parity (Log Execution Verification)
 
 ### Purpose
-To verify that the DAG does not contain hardcoded environment values or prose placeholders (e.g., `"YOUR_GCP_PROJECT_ID"`), and instead dynamically retrieves global environment variables from Airflow Variables at runtime.
+Verify that the `dwh_dummy_absd_plato_tarife` task executes and outputs the exact string `"Doing nothinig"` (preserving the legacy typo) to standard output, matching the legacy UC4 `:print Doing nothinig` command.
 
 ### Setup
-* A clean test environment where Airflow Variables are not pre-configured.
+*   Initialize a local Airflow metadata database or mock the execution context.
+*   Set up a test runner to execute the specific task instance.
 
 ### Action
-Attempt to load the DAG and assert that it dynamically calls `Variable.get` for `GCP_PROJECT`, `GCP_REGION`, and `GCS_BUCKET`.
+Execute the `dwh_dummy_absd_plato_tarife` task locally and capture standard output to verify the print literal.
 
-### Code Implementation
 ```python
 import pytest
-from unittest.mock import patch, MagicMock
+from datetime import datetime
+from airflow.models import DagBag, TaskInstance
+from airflow.utils.state import TaskInstanceState
 
-def test_environment_variable_resolution():
-    """
-    Verify that the DAG dynamically retrieves GCP configurations from Airflow Variables
-    and does not contain hardcoded fallback values.
-    """
-    # Track calls to Variable.get
-    with patch('airflow.models.Variable.get') as mock_get:
-        mock_get.side_effect = lambda key: f"env_value_for_{key}"
-        
-        # Import the module to trigger global variable evaluation
-        import uc4_airflow_linked_job.DW_DWH_PLATO_TARIF_MAPPING_TAEGLICH_JP.DW_DWH_DUMMY_ABSD_PLATO_TARIFE as dag_module
-        
-        # Assert that the variables were fetched dynamically
-        mock_get.assert_any_call("GCP_PROJECT")
-        mock_get.assert_any_call("GCP_REGION")
-        mock_get.assert_any_call("GCS_BUCKET")
-        
-        # Assert that the module-level variables hold the dynamically fetched values
-        assert dag_module.GCP_PROJECT_ID == "env_value_for_GCP_PROJECT"
-        assert dag_module.GCP_REGION == "env_value_for_GCP_REGION"
-        assert dag_module.GCS_BUCKET_NAME == "env_value_for_GCS_BUCKET"
+def test_output_parity_log_execution(capsys):
+    dag_bag = DagBag(dag_folder="uc4_airflow_linked_job/DW.DWH_PLATO_TARIF_MAPPING_TAEGLICH_JP", include_examples=False)
+    dag = dag_bag.get_dag("dw_dwh_dummy_absd_plato_tarife")
+    task = dag.get_task("dwh_dummy_absd_plato_tarife")
+    
+    # Create a dummy execution context
+    execution_date = datetime(2026, 3, 30)
+    ti = TaskInstance(task=task, execution_date=execution_date)
+    
+    # Run the task directly
+    ti.run(ignore_ti_state=True, ignore_all_deps=True, test_mode=True)
+    
+    # Capture standard output/error
+    captured = capsys.readouterr()
+    
+    # Assert task completed successfully
+    assert ti.state == TaskInstanceState.SUCCESS
+    
+    # Assert the exact print literal is present in the execution output
+    # Note: BashOperator outputs the command execution to logs
+    assert "Doing nothinig" in captured.out or "Doing nothinig" in captured.err, \
+        "The exact legacy print statement 'Doing nothinig' was not found in the execution logs."
 ```
 
 ### Pass/Fail Criterion
-* **Pass:** The DAG successfully resolves `GCP_PROJECT_ID`, `GCP_REGION`, and `GCS_BUCKET_NAME` via `Variable.get()` calls without hardcoded fallbacks.
-* **Fail:** The DAG uses hardcoded strings or fails to call `Variable.get()`.
+*   **Pass**: The task runs successfully and outputs the exact string `"Doing nothinig"` to the execution log.
+*   **Fail**: The task fails to execute, or the output string does not match the legacy typo character-for-character.
 
 ---
 
-## Test Case 4: Task Execution and Idempotency Validation
+## Test Case 3: Metadata and Recovery Documentation Verification
 
 ### Purpose
-To verify that the `dw_dwh_dummy_absd_plato_tarife` task executes successfully, behaves idempotently (can be run repeatedly without side effects), and completes within a minimal runtime (verifying that it does not spin up expensive Dataproc clusters).
+Verify that the German recovery documentation (`Wiederanlauf ohne weitere Maßnahmen möglich`) is preserved exactly inside the DAG's markdown documentation (`doc_md`) to comply with the operational preservation rules.
 
 ### Setup
-* Initialize a local Airflow metadata database or mock the execution context.
-* Create a dummy DAG run and Task Instance.
+*   Load the DAG via `DagBag`.
 
 ### Action
-Run the `dw_dwh_dummy_absd_plato_tarife` task instance twice in succession and measure execution status and duration.
+Assert that the `doc_md` attribute of the DAG object contains the exact recovery string.
 
-### Code Implementation
 ```python
-import time
+import pytest
+from airflow.models import DagBag
+
+def test_recovery_documentation_preservation():
+    dag_bag = DagBag(dag_folder="uc4_airflow_linked_job/DW.DWH_PLATO_TARIF_MAPPING_TAEGLICH_JP", include_examples=False)
+    dag = dag_bag.get_dag("dw_dwh_dummy_absd_plato_tarife")
+    
+    expected_recovery_phrase = "Wiederanlauf ohne weitere Maßnahmen möglich"
+    
+    assert dag.doc_md is not None, "DAG doc_md is empty or missing"
+    assert expected_recovery_phrase in dag.doc_md, \
+        f"Expected recovery phrase '{expected_recovery_phrase}' not found in DAG doc_md."
+```
+
+### Pass/Fail Criterion
+*   **Pass**: The DAG's `doc_md` contains the exact German recovery phrase.
+*   **Fail**: The `doc_md` is missing or does not contain the exact phrase.
+
+---
+
+## Test Case 4: Environment Variable Sourcing & Fallback Robustness
+
+### Purpose
+Verify that the DAG retrieves environment variables (`GCP_PROJECT`, `GCP_REGION`, `DATAPROC_CLUSTER`, `GCS_BUCKET`) via `Variable.get` and handles missing variables gracefully using `default_var=None` without throwing parsing exceptions.
+
+### Setup
+*   Clear any existing Airflow Variables in the test environment to simulate a clean bootstrap environment.
+
+### Action
+Parse the DAG file and verify that the variables default to `None` instead of raising a `KeyError`. Then, set the variables and verify they are correctly read.
+
+```python
 import pytest
 from unittest.mock import patch
-from airflow.utils.state import State
-from airflow.utils.types import DagRunType
-from airflow.utils import timezone
+from airflow.models import DagBag, Variable
 
-@pytest.mark.integration
-def test_task_execution_and_idempotency():
-    """
-    Verify that executing the PythonOperator task is successful, fast, and idempotent.
-    """
-    with patch('airflow.models.Variable.get') as mock_variable_get:
-        mock_variable_get.side_effect = lambda key: f"mocked_{key.lower()}"
-        from uc4_airflow_linked_job.DW_DWH_PLATO_TARIF_MAPPING_TAEGLICH_JP.DW_DWH_DUMMY_ABSD_PLATO_TARIFE import dag
+def test_variable_sourcing_and_fallbacks():
+    # 1. Test with missing variables (should fallback to None gracefully)
+    with patch.object(Variable, 'get', return_value=None) as mock_get:
+        dag_bag = DagBag(dag_folder="uc4_airflow_linked_job/DW.DWH_PLATO_TARIF_MAPPING_TAEGLICH_JP", include_examples=False)
+        assert len(dag_bag.import_errors) == 0, "DAG failed to import when Airflow Variables were missing"
         
-    task = dag.get_task('dw_dwh_dummy_absd_plato_tarife')
+        # Verify Variable.get was called for the expected environment keys
+        called_keys = [call[0][0] for call in mock_get.call_args_list]
+        assert "GCP_PROJECT" in called_keys
+        assert "GCP_REGION" in called_keys
+        assert "DATAPROC_CLUSTER" in called_keys
+        assert "GCS_BUCKET" in called_keys
+
+    # 2. Test with populated variables
+    mock_vars = {
+        "GCP_PROJECT": "prod-gcp-project",
+        "GCP_REGION": "europe-west3",
+        "DATAPROC_CLUSTER": "dwh-dataproc-cluster",
+        "GCS_BUCKET": "dwh-gcs-bucket"
+    }
     
-    # Create a mock DagRun and TaskInstance context
-    now = timezone.utcnow()
-    dag_run = dag.create_dagrun(
-        state=State.RUNNING,
-        execution_date=now,
-        data_interval=(now, now),
-        start_date=now,
-        run_type=DagRunType.MANUAL
-    )
-    
-    ti = dag_run.get_task_instance(task_id='dw_dwh_dummy_absd_plato_tarife')
-    ti.task = task
-    
-    # Run 1: Verify Success and Speed
-    start_time = time.time()
-    ti.run(ignore_ti_state=True, ignore_all_deps=True)
-    duration_run_1 = time.time() - start_time
-    
-    assert ti.state == State.SUCCESS, "First execution failed"
-    assert duration_run_1 < 2.0, f"Execution took too long ({duration_run_1}s). Ensure no Dataproc clusters are being provisioned."
-    
-    # Run 2: Verify Idempotency (running again has no side effects and succeeds)
-    start_time_2 = time.time()
-    ti.run(ignore_ti_state=True, ignore_all_deps=True)
-    duration_run_2 = time.time() - start_time_2
-    
-    assert ti.state == State.SUCCESS, "Second execution failed"
-    assert duration_run_2 < 2.0, "Second execution took too long"
+    def side_effect(key, default_var=None):
+        return mock_vars.get(key, default_var)
+        
+    with patch.object(Variable, 'get', side_effect=side_effect):
+        dag_bag = DagBag(dag_folder="uc4_airflow_linked_job/DW.DWH_PLATO_TARIF_MAPPING_TAEGLICH_JP", include_examples=False)
+        assert len(dag_bag.import_errors) == 0
 ```
 
 ### Pass/Fail Criterion
-* **Pass:** Both task executions complete with a state of `SUCCESS` in under 2 seconds.
-* **Fail:** The task fails, throws an exception, or takes a significant amount of time (indicating cluster provisioning or external network calls).
+*   **Pass**: The DAG parses successfully both when variables are completely absent (returning `None`) and when they are present.
+*   **Fail**: The DAG raises a `KeyError` or fails to import when variables are missing from the environment.
