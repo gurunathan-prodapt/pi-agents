@@ -1,300 +1,275 @@
 # MIGRATION DESIGN DOCUMENT
-**Job Name:** DW.DWH_DUMMY_ABSD_PLATO_TARIFE  
-**Source Root:** `/home/gurunathan_t/tool_mapping_samples`  
-**Target Platform:** BigQuery & Cloud Composer (Airflow)  
-**Migration Pattern:** `UC4_ONLY` (Orchestration Migration)
+**Job Name**: `DW.DWH_DUMMY_ABSD_PLATO_TARIFE`  
+**Target Platform**: Cloud Composer (Airflow)  
+**Migration Pattern**: `UC4_ONLY` (Orchestration Migration)
 
 ---
 
-## File Disposition
+## 1. FILE DISPOSITION TABLE
 
 | Source File Path | Target File / Action | Purpose / Reason for Action |
 | :--- | :--- | :--- |
-| `uc4_airflow_linked_job/DW.DWH_PLATO_TARIF_MAPPING_TAEGLICH_JP/DW.DWH_DUMMY_ABSD_PLATO_TARIFE.xml` | `uc4_airflow_linked_job/DW.DWH_PLATO_TARIF_MAPPING_TAEGLICH_JP/DW.DWH_DUMMY_ABSD_PLATO_TARIFE.py` | Migrates the UC4 dummy Unix job logic to a Cloud Composer Airflow DAG structure. |
+| `uc4_airflow_linked_job/DW.DWH_PLATO_TARIF_MAPPING_TAEGLICH_JP/DW.DWH_DUMMY_ABSD_PLATO_TARIFE.xml` | `uc4_airflow_linked_job/DW.DWH_PLATO_TARIF_MAPPING_TAEGLICH_JP/DW_DWH_DUMMY_ABSD_PLATO_TARIFE.py` | Migrates the UC4 dummy Unix Job to an Airflow DAG. Folder structure is preserved exactly per the Folder Integrity Rule. |
 
 ---
 
-## SECTION 1 — VERBATIM MCP TOOL OUTPUT
-The section below contains the complete, unmodified output from the migration conversion tool `uc4_to_airflow_dag_design`.
+## 2. VERBATIM MCP TOOL OUTPUT
+
+Below is the verbatim output returned by the `uc4_design_airflow_dag` tool:
 
 ```markdown
 ### WARNING: INCOMPLETE WORKFLOW DETECTED
-Only one file was provided, and it is a `JOBS_UNIX` (Unix Job) file. A complete workflow transformation typically requires at least one `EVNT_TIME` (Time Event), one `JOBP` (Job Plan), and one `JOBS_UNIX` (Unix Job) file to extract scheduling, workflow structures, and task-level dependencies. 
-
-This analysis is based strictly on the single provided Unix Job file. Assumptions have been made to construct a functional DAG blueprint around it.
+*   **Validation Flag**: Only one file has been provided, and it is a Unix Job file (`JOBS_UNIX`), not an `EVNT_TIME` or `JOBP` workflow file. 
+*   **Impact**: A complete UC4 workflow typically requires at least one `EVNT_TIME` (for scheduling), one `JOBP` (for orchestration structure), and one or more `JOBS_UNIX` files (for task actions). 
+*   **Action taken**: To allow progress, the design document and pseudocode below have been generated using default and placeholder assumptions for orchestration and scheduling. Please export and attach the corresponding `JOBP` and `EVNT_TIME` files to complete this blueprint.
 
 ---
 
 # SECTION 1 — DESIGN DOCUMENT
 
 ## 1. Overview
-The provided UC4 object `DW.DWH_DUMMY_ABSD_PLATO_TARIFE` is a Unix Job that functions as a dummy task (the script body merely outputs `:print Doing nothinig`). It is part of the `DW.DWH_PLATO_TARIF_MAPPING_TAEGLICH_JP` job plan context (inferred from the source path). Because it contains no business logic or Ab Initio processing, its primary purpose in UC4 is to act as a synchronization anchor, a placeholder, or a manual trigger step in the daily Plato Tarif Mapping workflow.
+This design covers the migration of `DW.DWH_DUMMY_ABSD_PLATO_TARIFE`, which is a standalone UC4 Unix Job. In the source system, this is defined as a dummy job that performs no execution logic (it only prints a log statement: "Doing nothinig"). It has an estimated runtime (ERT) of 11 seconds. Because no parent Job Plan (`JOBP`) or Schedule (`JSCH` / `EVNT_TIME`) files were provided, this DAG is designed as a single-task standalone pipeline.
 
 ## 2. UC4 Object Inventory
 | Object Name | Object Type | Active Flag | Description |
 |---|---|---|---|
-| `DW.DWH_DUMMY_ABSD_PLATO_TARIFE` | `JOBS_UNIX` | `1` (Active) | A dummy Unix job that prints a placeholder message and finishes successfully. |
+| `DW.DWH_DUMMY_ABSD_PLATO_TARIFE` | `JOBS_UNIX` | `<Active>1</Active>` | Dummy Unix task running on host `|DWHDWH1P|HOST` using credentials `DW.UNIX.ISTNS`. |
 
 ## 3. Airflow DAG Properties
-| Property | Value |
-|---|---|
-| **dag_id** | `dw_dwh_plato_tarif_mapping_taeglich_jp` |
-| **schedule** | `None` (No schedule info; `EVNT_TIME` or `JSCH` files were not provided) |
-| **start_date** | `2026-03-30` (Derived from object export/modification date) |
-| **catchup** | `False` |
-| **max_active_runs** | `1` |
-| **is_paused_upon_creation** | `False` (Source active value is `<Active>1</Active>`) |
-| **default_args** | `{ 'owner': 'airflow', 'retries': 0, 'retry_delay': timedelta(minutes=5) }` |
+| Property | Value | Note |
+|---|---|---|
+| **dag_id** | `dw_dwh_dummy_absd_plato_tarife` | Derived by sanitising the UC4 object name to lowercase and replacing dots with underscores. |
+| **schedule** | `None` or `'@daily'` | Missing scheduling file (`EVNT_TIME`). Defaulting to manual or basic daily schedule placeholder. |
+| **start_date** | `datetime(2026, 3, 30)` | Placeholder set based on export timestamp metadata. |
+| **catchup** | `False` | Standard recommendation to prevent historical backfill storms. |
+| **max_active_runs** | `1` | Standard concurrency guard. |
+| **is_paused_upon_creation** | `False` | Source object had `<Active>1</Active>`, so normal deployment applies. |
+| **default_args** | `{'owner': 'airflow', 'retries': 0}` | No retries or failure alerts were specified in the source Unix object. |
 
 ## 4. Task Inventory
 | Task ID | Operator | PySpark Script | Dataproc Parameters | Retries | Retry Delay | Earliest Start Time | Calendar Constraint | Fire-and-Forget | on_failure_callback | Notes |
 |---|---|---|---|---|---|---|---|---|---|---|
-| `dw_dwh_dummy_absd_plato_tarife` | `DataprocSubmitJobOperator` (or `EmptyOperator`) | `dw_dwh_dummy_absd_plato_tarife.py` | Project, Region, Cluster, GCS Bucket placeholders | 0 | 5 min | None | None | N/A | None | This is a dummy job. It is modeled here as a Dataproc PySpark task, but can safely be optimized to an `EmptyOperator`. |
+| `dwh_dummy_absd_plato_tarife` | `EmptyOperator` | N/A | N/A | 0 | N/A | None | None | N/A | None | Designed as an `EmptyOperator` since the source command is simply `:print Doing nothinig`. |
 
 ## 5. Task Dependency Map
-Since only one task was provided, the dependency map represents a standalone task structure:
-
-`start >> dw_dwh_dummy_absd_plato_tarife >> end`
-
-* **`start`**: Airflow dummy start node.
-* **`dw_dwh_dummy_absd_plato_tarife`**: The imported dummy task executing its placeholder script on Dataproc.
-* **`end`**: Airflow dummy end node.
+```
+start >> dwh_dummy_absd_plato_tarife >> end
+```
+*   **Dependency Logic**: This is a standalone single-task DAG with no upstream or downstream dependencies.
 
 ## 6. Parameter and Variable Mapping
-| UC4 Parameter | Value/Source | Airflow Equivalent |
+| UC4 Parameter / Attribute | Value / Source | Airflow Equivalent / Action |
 |---|---|---|
-| `DW.DWH_DUMMY_ABSD_PLATO_TARIFE` | UC4 Job Name | Sanitized Task ID: `dw_dwh_dummy_absd_plato_tarife` |
-| Host: `|DWHDWH1P|HOST` | Host executing Unix script | Maps to `YOUR_DATAPROC_CLUSTER_NAME` placeholder |
-| Login: `DW.UNIX.ISTNS` | Execution Credentials | Maps to Dataproc Service Account / Execution Context |
-| Estimated Runtime (ERT) | `11` seconds | Used for performance baseline tracking |
+| **UC4 Object Name** | `DW.DWH_DUMMY_ABSD_PLATO_TARIFE` | Sanitised DAG ID: `dw_dwh_dummy_absd_plato_tarife` |
+| **Login** | `DW.UNIX.ISTNS` | Replaced by GCP IAM/Service Account binding in Airflow. |
+| **Host** | `|DWHDWH1P|HOST` | Replaced by Google Cloud infrastructure. |
+| **Script body** | `:print Doing nothinig` | Replaced by an `EmptyOperator` (or a `BashOperator` executing `echo "Doing nothing"`). |
 
 ## 7. Error Handling and Retry Strategy
-* **Retries**: There is no retry configuration specified in the UC4 XML (`<RUNTIME>` details basic runtime collection settings, but no automated post-execution recovery loops are set). Default Airflow task-level retries are set to `0`.
-* **Sync Object Else behavior**: No sync configuration (`<Syncs/>` is empty) was declared on this object.
-* **Postconditions**: No post-scripts, terminal block criteria, or custom failure alert rules are defined in this XML file.
+*   **Retries**: No retry settings are defined in the source UC4 XML (`<RUNTIME>` has average metrics but no automated retry logic).
+*   **Postcondition Rules**: None detected.
+*   **Sync Rules**: No Sync resources (`<Syncs/>` empty) or concurrency restrictions exist in the job.
 
 ## 8. Developer Notes
-* **Missing Workflows**: The surrounding Job Plan (`JOBP`) and Schedule/Event triggers are missing. The scheduling parameter has been defaulted to `None`. The developer must verify the correct parent DAG schedule and structure.
-* **Dummy Job Optimization**: `DW.DWH_DUMMY_ABSD_PLATO_TARIFE` does nothing but print a string (`Doing nothinig`). In production Airflow, running a full Dataproc cluster job for this is inefficient. It is highly recommended to replace the `DataprocSubmitJobOperator` for this task with an `EmptyOperator` or a lightweight `PythonOperator` that logs the string.
-* **GCP Placeholders**: The developer must replace all GCS bucket, project, region, and cluster configuration variables before deployment.
+*   **Missing Orchestration context**: Because this file was exported as a single job, it has been mapped as a simple standalone DAG. If this job is triggered inside an overarching workflow, its `EmptyOperator` task should instead be incorporated into a larger master DAG, or called via a `TriggerDagRunOperator`.
+*   **Future Upgrades to Dataproc**: If this job is ever converted from a dummy task into an actual PySpark computation task, GCP placeholder parameters (`YOUR_GCP_PROJECT_ID`, `YOUR_DATAPROC_CLUSTER_NAME`, etc.) have been provided in the pseudocode to ease the migration path.
+*   **Scheduler Gaps**: Since there is no `EVNT_TIME` configuration, the schedule remains a manual execution placeholder.
 
 ---
 
 # SECTION 2 — PSEUDOCODE
 
 ```python
-# ── Imports ──────────────────────────────────────────────
+# ==============================================================================
+# Imports
+# ==============================================================================
 from datetime import datetime, timedelta
 from airflow import DAG
 from airflow.operators.empty import EmptyOperator
-from airflow.providers.google.cloud.operators.dataproc import DataprocSubmitJobOperator
+# Note: If this task is eventually converted into an actual Dataproc PySpark execution, 
+# uncomment the import below:
+# from airflow.providers.google.cloud.operators.dataproc import DataprocSubmitJobOperator
 
-# ── GCP Configuration ────────────────────────────────────
-# TODO: Replace placeholders with target environment values
+# ==============================================================================
+# GCP Configuration Placeholders (Prepared for future PySpark extensions)
+# ==============================================================================
 GCP_PROJECT_ID = "YOUR_GCP_PROJECT_ID"
 DATAPROC_REGION = "YOUR_DATAPROC_REGION"
 DATAPROC_CLUSTER_NAME = "YOUR_DATAPROC_CLUSTER_NAME"
 GCS_BUCKET_NAME = "YOUR_BUCKET_NAME"
 
-# ── Default Args ─────────────────────────────────────────
+# ==============================================================================
+# Default Arguments
+# ==============================================================================
 default_args = {
-    'owner': 'airflow',
-    'depends_on_past': False,
-    'start_date': datetime(2026, 3, 30),
-    'retries': 0,
-    'retry_delay': timedelta(minutes=5),
+    "owner": "airflow",
+    "depends_on_past": False,
+    "start_date": datetime(2026, 3, 30),
+    "retries": 0,
+    "retry_delay": timedelta(minutes=5),
 }
 
-# ── DAG Definition ───────────────────────────────────────
-dag = DAG(
-    dag_id='dw_dwh_plato_tarif_mapping_taeglich_jp',
+# ==============================================================================
+# DAG Definition
+# ==============================================================================
+with DAG(
+    dag_id="dw_dwh_dummy_absd_plato_tarife",
     default_args=default_args,
-    description='Converted Plato Tarif Mapping Daily DAG from UC4',
-    schedule=None,  # Unknown Schedule: No EVNT_TIME/JSCH file provided
+    description="Converted dummy task from UC4 DW.DWH_DUMMY_ABSD_PLATO_TARIFE",
+    schedule_interval=None,  # Missing scheduling context (EVNT_TIME file not provided)
     catchup=False,
     max_active_runs=1,
-    is_paused_upon_creation=False, # Source <Active>1</Active>
-)
+    is_paused_upon_creation=False,  # Active in UC4 <Active>1</Active>
+    tags=["migrated_uc4", "dummy_task"],
+) as dag:
 
-# ── Tasks ───────────────────────────────────────────────
+    # ==========================================================================
+    # Task Declarations
+    # ==========================================================================
+    
+    start = EmptyOperator(task_id="start")
 
-# Boundary tasks
-start = EmptyOperator(
-    task_id='start',
-    dag=dag,
-)
+    # This task is mapped to EmptyOperator because the source XML contained 
+    # only a log print command: ":print Doing nothinig"
+    dwh_dummy_absd_plato_tarife = EmptyOperator(
+        task_id="dwh_dummy_absd_plato_tarife",
+        # If this is converted to a PySpark execution in the future, use:
+        # operator=DataprocSubmitJobOperator,
+        # job={
+        #     "reference": {"project_id": GCP_PROJECT_ID},
+        #     "placement": {"cluster_name": DATAPROC_CLUSTER_NAME},
+        #     "pyspark_job": {
+        #         "main_python_file_uri": f"gs://{GCS_BUCKET_NAME}/pyspark_scripts/dw_dwh_dummy_absd_plato_tarife.py"
+        #     }
+        # },
+        # region=DATAPROC_REGION,
+    )
 
-end = EmptyOperator(
-    task_id='end',
-    dag=dag,
-)
+    end = EmptyOperator(task_id="end")
 
-# Task: dw_dwh_dummy_absd_plato_tarife
-# UC4 Object: DW.DWH_DUMMY_ABSD_PLATO_TARIFE
-# Note: Source is a dummy job printing "Doing nothinig".
-# Below is the Dataproc mapping. (EmptyOperator can be used alternatively to save cost)
-pyspark_job_definition = {
-    "reference": {"project_id": GCP_PROJECT_ID},
-    "placement": {"cluster_name": DATAPROC_CLUSTER_NAME},
-    "pyspark_job": {
-        "main_python_file_uri": f"gs://{GCS_BUCKET_NAME}/pyspark_scripts/dw_dwh_dummy_absd_plato_tarife.py"
-    },
-}
-
-dw_dwh_dummy_absd_plato_tarife = DataprocSubmitJobOperator(
-    task_id='dw_dwh_dummy_absd_plato_tarife',
-    project_id=GCP_PROJECT_ID,
-    region=DATAPROC_REGION,
-    job=pyspark_job_definition,
-    # Unique execution ID generation
-    job_id="dw_dwh_dummy_absd_plato_tarife_{{ run_id | ts_nodash }}_{{ task_instance.try_number }}",
-    dag=dag,
-)
-
-# ── Dependencies ─────────────────────────────────────────
-start >> dw_dwh_dummy_absd_plato_tarife >> end
+    # ==========================================================================
+    # Task Dependencies
+    # ==========================================================================
+    start >> dwh_dummy_absd_plato_tarife >> end
 ```
 ```
 
 ---
 
-## SECTION 2 — ADDITIONAL TARGET ARCHITECTURE CONTEXT
+## 3. CONTEXT THE MCP COULD NOT SEE
 
-### 1. Job Dependencies & Target Orchestration
-Based on the JOB DEPENDENCIES section of the pre-collected context, this job interacts with other components in the workflow environment as follows:
-* **Downstream Workflow Dependency:**
-  * `uc4_airflow_linked_job/DW.DWH_PLATO_TARIF_MAPPING_TAEGLICH_JP/DW.DWH_PLATO_TARIF_MAPPING_TAEGLICH_JP.xml` (Status: **Not Yet Migrated**)
-  * **Target Wiring:** The current job `DW.DWH_DUMMY_ABSD_PLATO_TARIFE` is a child task inside the Daily Plato Tarif Mapping workflow (`DW.DWH_PLATO_TARIF_MAPPING_TAEGLICH_JP`). On Cloud Composer, once the parent workflow is migrated, the tasks should be integrated into a single unified DAG (`dw_dwh_plato_tarif_mapping_taeglich_jp`), or orchestrated via cross-DAG execution using the `TriggerDagRunOperator` or `ExternalTaskSensor` if implemented as separate modules.
-  * **Predecessors / Successors:** Since this is a placeholder/synchronization step, its successful execution is a prerequisite for downstream execution steps of the Plato Tarif Mapping workflow.
+### A. Job Dependencies & Execution Order
+*   **Upstream Dependencies**: None discovered. This UC4 Job acts as an independent orchestration node or starting/synchronization point.
+*   **Downstream Dependencies**:
+    *   `uc4_airflow_linked_job/DW.DWH_PLATO_TARIF_MAPPING_TAEGLICH_JP/DW.DWH_PLATO_TARIF_MAPPING_TAEGLICH_JP.xml` (Status: **Not yet migrated**).
+    *   *Wiring Plan on GCP*: Because the downstream job `DW.DWH_PLATO_TARIF_MAPPING_TAEGLICH_JP` is not yet migrated, the orchestration link between these jobs cannot be fully finalized. Once migrated, a cross-DAG dependency should be established using an `ExternalTaskSensor` in the downstream DAG, or this task should be consolidated directly as a step inside the parent workflow.
 
-### 2. Execution Order & Scheduling
-* **Execution Order:**
-  * In the parent JP (Job Plan), this dummy step executes as a synchronization anchor.
-  * In the target platform, the execution sequence must preserve this structure, resolving starting points and downstream triggers cleanly within Cloud Composer.
-* **Scheduling:**
-  * Since the UC4 job contains no active scheduler of its own, it inherits its execution trigger from its parent workflow `DW.DWH_PLATO_TARIF_MAPPING_TAEGLICH_JP`.
-  * The DAG is configured with `schedule=None` and will trigger dynamically based on parent orchestration or external sensor events.
+### B. Scheduling & Variables
+*   **Scheduling**: No local scheduling rules or `EVNT_TIME` details are defined in this individual file context. The DAG schedule is set to `None` (manual/triggered runs only) to prevent unwanted runs until its parent workflow (`DW.DWH_PLATO_TARIF_MAPPING_TAEGLICH_JP`) is migrated.
+*   **Variables**: No variables are registered in `<DYNVALUES>`.
 
-### 3. External System Replacements & Lineage Edges
-* **Lineage Edge 1 (`--[CALLS_HTTP]--> EXT:DWHDWH1P`):**
-  * **Legacy context:** Executed on UC4 Host `|DWHDWH1P|HOST`.
-  * **GCP Target Architecture:** Replaced entirely by standard Cloud Composer (Airflow) worker execution, eliminating the need for dedicated physical host execution.
-* **Lineage Edge 2 (`--[USES_PACKAGE]--> PACKAGE:DW.UNIX.ISTNS`):**
-  * **Legacy context:** Execution credentials associated with Login `DW.UNIX.ISTNS`.
-  * **GCP Target Architecture:** Replaced with IAM Service Account roles associated with Cloud Composer and GKE/Dataproc execution environment.
+### C. Lineage Edges
+*   `DW.DWH_DUMMY_ABSD_PLATO_TARIFE.xml --[CALLS_HTTP]--> EXT:DWHDWH1P (conf=0.85)`: The legacy execution environment logged a connection host target, which is not required for execution on Composer because this is a dummy task.
+*   `DW.DWH_DUMMY_ABSD_PLATO_TARIFE.xml --[USES_PACKAGE]--> PACKAGE:DW.UNIX.ISTNS (conf=0.80)`: Points to the execution credentials.
 
-### 4. Folder Integrity Rule
-To guarantee folder integrity, the target folder layout exactly mirrors the legacy codebase directory structures.
-* **Source Folder:** `uc4_airflow_linked_job/DW.DWH_PLATO_TARIF_MAPPING_TAEGLICH_JP/`
-* **Target Folder:** `uc4_airflow_linked_job/DW.DWH_PLATO_TARIF_MAPPING_TAEGLICH_JP/`
-* No files from other source folders have been merged or grouped into this target path.
-
-### 5. Print Literal Rule Compliance
-The legacy print statement inside the XML `<SCRIPT>` tag is:
-```xml
-<MSCRI><![CDATA[:print Doing nothinig]]></MSCRI>
-```
-The original string contains the spelling mistake `"Doing nothinig"`. In the target code, this string must be preserved **exactly as-is** (character-for-character) inside the logging/output mechanism:
-```python
-print("Doing nothinig")
-```
+### D. External System Replacements
+*   None required. This is a pure metadata/dummy task.
 
 ---
 
-## SECTION 3 — COMPLIANT ENVIRONMENTS & TARGET ENVIRONMENT MAPPING
+## 4. ENVIRONMENT-SPECIFIC VALUES CLASSIFICATION
 
-To comply with the environment variable guidelines, there are no prose placeholders (e.g., `"YOUR_GCP_PROJECT_ID"`) in the target code or default fallbacks. Global GCP values must be fetched dynamically at runtime using Airflow Variables or environment settings.
+Per the **Environment Values Policy**, we classify all environment values based on their functional role in the target architecture. 
 
-### 1. Environment Variable Classification
-* **GLOBAL (Environment-wide):**
-  * `GCP_PROJECT`: Sourced via `Variable.get("GCP_PROJECT")`
-  * `GCP_REGION`: Sourced via `Variable.get("GCP_REGION")`
-  * `DATAPROC_CLUSTER`: Sourced via `Variable.get("DATAPROC_CLUSTER")`
-  * `GCS_BUCKET`: Sourced via `Variable.get("GCS_BUCKET")`
-* **JOB-SPECIFIC:**
-  * `task_id`: `dw_dwh_dummy_absd_plato_tarife`
-  * `dag_id`: `dw_dwh_plato_tarif_mapping_taeglich_jp`
+To strictly enforce the **HARD BAN** on prose placeholders (such as `"YOUR_GCP_PROJECT_ID"` or `"YOUR_BUCKET_NAME"`), the production target code retrieves these values dynamically using the Airflow variable storage system:
+
+| Variable / Parameter Name | Classification | Sourcing Method | Target GCP Mapping / Purpose |
+| :--- | :--- | :--- | :--- |
+| `GCP_PROJECT` | **GLOBAL** | `Variable.get("GCP_PROJECT")` | Identifies the hosting Google Cloud Project ID. |
+| `GCP_REGION` | **GLOBAL** | `Variable.get("GCP_REGION")` | The target GCP region for Composer/Dataproc resources. |
+| `DATAPROC_CLUSTER` | **GLOBAL** | `Variable.get("DATAPROC_CLUSTER")` | The name of the target Dataproc cluster (for potential future extensions). |
+| `GCS_BUCKET` | **GLOBAL** | `Variable.get("GCS_BUCKET")` | Shared GCS bucket for staging scripts or operational logs. |
 
 ---
 
-## SECTION 4 — REFINED COMPLIANT TARGET IMPLEMENTATION (PSEUDOCODE)
+## 5. RISKS & MANUAL ACTIONS
 
-Below is the optimized, fully compliant production-ready Python Airflow DAG script. In accordance with Section 1's recommendation to optimize dummy jobs, a `PythonOperator` logging the exact literal statement is used to execute the dummy step efficiently without spinning up a Dataproc cluster.
+*   **WIRING: NOT YET MIGRATED** — `DW.DWH_PLATO_TARIF_MAPPING_TAEGLICH_JP` is the downstream consumer/workflow that references this dummy task. The target connection must be verified once that parent workflow is migrated.
+*   **PROSE PLACEHOLDER REPLACEMENT** — The verbatim output from the MCP contained string placeholders (e.g. `"YOUR_GCP_PROJECT_ID"`). We have resolved this by strictly replacing them with compliant dynamic `Variable.get` calls in the Target File Plan.
+*   **PRESERVATION OF SOURCE LOGGING (German & Typos)** — The source script specifies `:print Doing nothinig` (with a typo in "nothinig"), and the source documentation contains the text `Wiederanlauf ohne weitere Maßnahmen möglich`. We preserve these character-for-character inside the target DAG implementation to adhere strictly to the **Output/Print Literal Rule**.
+
+---
+
+## 6. TARGET FILE PLAN & PRODUCTION-READY BQ-AIRFLOW CODE
+
+### Target File: `uc4_airflow_linked_job/DW.DWH_PLATO_TARIF_MAPPING_TAEGLICH_JP/DW_DWH_DUMMY_ABSD_PLATO_TARIFE.py`
+
+This code implements the logic verbatim from the source system. It converts the `:print Doing nothinig` script into a `BashOperator` to execute the exact log message and preserves the German recovery comments as docstrings.
 
 ```python
-# ── Imports ──────────────────────────────────────────────
-import logging
+# ==============================================================================
+# UC4-to-Airflow Converted DAG
+# Source File: uc4_airflow_linked_job/DW.DWH_PLATO_TARIF_MAPPING_TAEGLICH_JP/DW.DWH_DUMMY_ABSD_PLATO_TARIFE.xml
+# Documented recovery note (German): Wiederanlauf ohne weitere Maßnahmen möglich
+# ==============================================================================
+
 from datetime import datetime, timedelta
 from airflow import DAG
 from airflow.models import Variable
 from airflow.operators.empty import EmptyOperator
-from airflow.operators.python import PythonOperator
+from airflow.operators.bash import BashOperator
 
-# ── GCP Configuration (GLOBAL Env Variables) ──────────────
-# Sourced dynamically at runtime via Airflow Variables.
-# No hardcoded placeholders or fake fallback values.
-GCP_PROJECT_ID = Variable.get("GCP_PROJECT")
-GCP_REGION = Variable.get("GCP_REGION")
-GCS_BUCKET_NAME = Variable.get("GCS_BUCKET")
+# ==============================================================================
+# Environment Configuration Retrieval (Strictly complying with Placeholder Ban)
+# ==============================================================================
+GCP_PROJECT_ID = Variable.get("GCP_PROJECT", default_var=None)
+DATAPROC_REGION = Variable.get("GCP_REGION", default_var=None)
+DATAPROC_CLUSTER_NAME = Variable.get("DATAPROC_CLUSTER", default_var=None)
+GCS_BUCKET_NAME = Variable.get("GCS_BUCKET", default_var=None)
 
-# ── Default Args ─────────────────────────────────────────
+# ==============================================================================
+# Default Arguments
+# ==============================================================================
 default_args = {
-    'owner': 'airflow',
-    'depends_on_past': False,
-    'start_date': datetime(2026, 3, 30),
-    'retries': 0,
-    'retry_delay': timedelta(minutes=5),
+    "owner": "airflow",
+    "depends_on_past": False,
+    "start_date": datetime(2026, 3, 30),
+    "retries": 0,
+    "retry_delay": timedelta(minutes=5),
 }
 
-# ── DAG Definition ───────────────────────────────────────
-dag = DAG(
-    dag_id='dw_dwh_plato_tarif_mapping_taeglich_jp',
+# ==============================================================================
+# DAG Definition
+# ==============================================================================
+with DAG(
+    dag_id="dw_dwh_dummy_absd_plato_tarife",
     default_args=default_args,
-    description='Converted Plato Tarif Mapping Daily DAG from UC4',
-    schedule=None,  # Dynamic scheduling managed by parent/external triggers
+    description="Converted dummy task from UC4 DW.DWH_DUMMY_ABSD_PLATO_TARIFE",
+    schedule_interval=None,  # No schedule defined in the individual XML component
     catchup=False,
     max_active_runs=1,
-    is_paused_upon_creation=False,  # Matches legacy active state
-)
+    is_paused_upon_creation=False,
+    tags=["migrated_uc4", "dummy_task"],
+) as dag:
 
-# ── Executable Logic (Print Literal Compliance) ──────────
-def execute_dummy_job():
-    # MUST print original-language and original-spelling exactly as-is
-    print("Doing nothinig")
-    logging.info("Doing nothinig")
+    dag.doc_md = """
+    ### Recovery Documentation
+    Wiederanlauf ohne weitere Maßnahmen möglich
+    """
 
-# ── Tasks ───────────────────────────────────────────────
+    start = EmptyOperator(task_id="start")
 
-start = EmptyOperator(
-    task_id='start',
-    dag=dag,
-)
+    # This task is mapped to a BashOperator executing the exact character-for-character
+    # legacy log output message to strictly respect the Output/Print Literal Rule.
+    dwh_dummy_absd_plato_tarife = BashOperator(
+        task_id="dwh_dummy_absd_plato_tarife",
+        bash_command='echo "Doing nothinig"',
+    )
 
-# Optimized dummy job utilizing a PythonOperator (preserves execution logic efficiently)
-dw_dwh_dummy_absd_plato_tarife = PythonOperator(
-    task_id='dw_dwh_dummy_absd_plato_tarife',
-    python_callable=execute_dummy_job,
-    dag=dag,
-)
+    end = EmptyOperator(task_id="end")
 
-end = EmptyOperator(
-    task_id='end',
-    dag=dag,
-)
-
-# ── Dependencies ─────────────────────────────────────────
-start >> dw_dwh_dummy_absd_plato_tarife >> end
+    # ==========================================================================
+    # Task Dependencies
+    # ==========================================================================
+    start >> dwh_dummy_absd_plato_tarife >> end
 ```
-
----
-
-## SECTION 5 — RISKS & MANUAL ACTIONS
-
-### 1. Predecessors & Successors Integration Risk
-* **SOURCE: NOT YET MIGRATED — DOWNSTREAM — uc4_airflow_linked_job/DW.DWH_PLATO_TARIF_MAPPING_TAEGLICH_JP/DW.DWH_PLATO_TARIF_MAPPING_TAEGLICH_JP.xml**
-* **Impact:** The downstream workflow parent job plan is currently unmigrated. The task node sequence and integration configurations cannot be fully tested or locked down until `DW.DWH_PLATO_TARIF_MAPPING_TAEGLICH_JP` has been converted.
-* **Mitigation:** Defer DAG scheduling activation and perform final end-to-end task integration testing once the parent workflow configuration XML is fully migrated to Cloud Composer.
-
-### 2. Synchronization Anchor validation
-* **Risk:** In UC4, dummy tasks are frequently used to pause execution for manual operator checks or external synchronizations. Replacing this task with an instantaneous `PythonOperator` removes any artificial wait state unless manually introduced.
-* **Manual Action:** Coordinate with the business operations team to ensure that `DW.DWH_DUMMY_ABSD_PLATO_TARIFE` is purely an execution placeholder and does not require manual pause or gate checks in production.
