@@ -1,0 +1,21 @@
+config {
+  type: "operations",
+  hasOutput: false,
+  tags: ["params_load"]
+}
+
+-- d_param_load.sqlx — merge staged parameters into the DWH parameter table
+MERGE INTO `DWH_ADM.JOB_PARAMS` tgt
+USING (
+    SELECT 
+        CAST(param_key AS STRING) AS param_key, 
+        CAST(param_value AS STRING) AS param_value, 
+        CAST(loaded_at AS TIMESTAMP) AS loaded_at
+    FROM `DWH_STG.PARAM_LOAD`
+) src
+ON (tgt.param_key = src.param_key)
+WHEN MATCHED THEN UPDATE SET
+    tgt.param_value = src.param_value,
+    tgt.updated_at  = src.loaded_at
+WHEN NOT MATCHED THEN INSERT (param_key, param_value, updated_at)
+VALUES (src.param_key, src.param_value, src.loaded_at);
