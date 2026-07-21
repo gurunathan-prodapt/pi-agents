@@ -1,124 +1,114 @@
-# MIGRATION NOTES
-**Job Name:** DW.DWH_DUMMY_ABSD_PLATO_TARIFE  
-**Migration Pattern:** `UC4_ONLY` (Orchestration Migration)  
-**Target Platform:** Cloud Composer (Apache Airflow) & Google Cloud Platform (GCP)
-
----
+# MIGRATION NOTES: DW.DWH_DUMMY_ABSD_PLATO_TARIFE
 
 ## 1. Summary
-The UC4 Unix Job `DW.DWH_DUMMY_ABSD_PLATO_TARIFE` has been migrated to a native Apache Airflow DAG on Cloud Composer. 
+This document details the migration of the UC4 Unix Job `DW.DWH_DUMMY_ABSD_PLATO_TARIFE` to Google Cloud Composer (Airflow). 
 
-In the legacy UC4 environment, this job functioned as a dummy task within the daily Plato Tarif Mapping workflow (`DW.DWH_PLATO_TARIF_MAPPING_TAEGLICH_JP`). It contained no business logic or Ab Initio processing, serving primarily as a synchronization anchor, placeholder, or manual trigger step. The migration preserves this orchestration role while optimizing execution for the cloud environment.
+* **Source Object**: `DW.DWH_DUMMY_ABSD_PLATO_TARIFE` (UC4 `JOBS_UNIX` object)
+* **Target Platform**: Google Cloud Composer (Airflow)
+* **Migration Pattern**: `UC4_ONLY` (Orchestration Migration)
+* **Functional Description**: In the legacy system, this job functions as an operational dummy/placeholder task. It performs no business logic or data transformations; its sole action is printing a log statement (`Doing nothinig`).
 
 ---
 
 ## 2. Generated Artifacts
 The migration process generated the following file:
 
-* **Target File:** `uc4_airflow_linked_job/DW.DWH_PLATO_TARIF_MAPPING_TAEGLICH_JP/DW.DWH_DUMMY_ABSD_PLATO_TARIFE.py`
-  * **Role:** A fully compliant Airflow DAG script defining the workflow structure. It replaces the legacy UC4 XML definition and implements the dummy execution logic using a lightweight Airflow operator.
-  * **Folder Integrity:** The target file path strictly mirrors the legacy codebase directory structure to maintain repository organization.
+| Target File Path | Role / Description |
+| :--- | :--- |
+| `uc4_airflow_linked_job/DW.DWH_PLATO_TARIF_MAPPING_TAEGLICH_JP/DW_DWH_DUMMY_ABSD_PLATO_TARIFE.py` | The production-ready Airflow DAG file containing the orchestration logic, environment variable retrieval, and task definitions. |
 
 ---
 
 ## 3. Key Design Decisions
 
-### Lightweight Operator Optimization
-* **Decision:** The automated migration tool initially suggested mapping this job to a `DataprocSubmitJobOperator` executing a PySpark script. This was rejected in favor of a native Airflow `PythonOperator`.
-* **Reasoning:** Spinning up or submitting a job to a Dataproc cluster to execute a dummy print statement is highly inefficient, introduces unnecessary latency, and incurs avoidable GCP compute costs. The `PythonOperator` executes instantly within the Airflow worker environment.
-
-### Print Literal Compliance
-* **Decision:** The legacy UC4 script contained the print statement `:print Doing nothinig` (which includes a spelling mistake). This exact string has been preserved character-for-character in the Python execution block:
-  ```python
-  print("Doing nothinig")
-  logging.info("Doing nothinig")
-  ```
-* **Reasoning:** Strict compliance with legacy print statements prevents breaking any downstream log-scraping, monitoring, or auditing tools that might key off specific legacy log patterns.
+### BashOperator for Legacy Log Preservation
+To strictly adhere to the **Output/Print Literal Rule**, the legacy command `:print Doing nothinig` was migrated to an Airflow `BashOperator` executing `echo "Doing nothinig"`. This preserves the exact character-for-character legacy log output, including the original typographical error ("nothinig").
 
 ### Dynamic Environment Configuration
-* **Decision:** Hardcoded environment variables and prose placeholders (e.g., `YOUR_GCP_PROJECT_ID`) have been completely eliminated.
-* **Reasoning:** The DAG dynamically fetches global environment configurations (`GCP_PROJECT`, `GCP_REGION`, `GCS_BUCKET`) at runtime using Airflow Variables (`Variable.get()`), ensuring seamless portability across Development, UAT, and Production environments.
+To comply with the **Environment Values Policy** and enforce the ban on hardcoded prose placeholders, all environment-specific variables are retrieved dynamically from the Airflow Variable store:
+* `GCP_PROJECT`
+* `GCP_REGION`
+* `DATAPROC_CLUSTER`
+* `GCS_BUCKET`
+
+These variables are prepared in the DAG header to facilitate future upgrades if this dummy task is ever converted into an active PySpark computation task.
+
+### Manual Scheduling (`None`)
+Because the source export was limited to a single Unix Job file without its parent Job Plan (`JOBP`) or Schedule (`EVNT_TIME`), the DAG's schedule is set to `None`. This prevents accidental or unscheduled executions in the target environment.
+
+### Preservation of Recovery Documentation
+The legacy recovery comment (*"Wiederanlauf ohne weitere Maßnahmen möglich"*) has been preserved verbatim and embedded directly into the DAG's markdown documentation (`dag.doc_md`) to maintain operational continuity for support teams.
 
 ---
 
 ## 4. Manual Steps Before Go-Live
 
-### 1. Airflow Variables Configuration
-Ensure that the following global Airflow variables are defined in the target Cloud Composer environment prior to DAG execution:
-* `GCP_PROJECT`: The target Google Cloud Project ID.
-* `GCP_REGION`: The target GCP region (e.g., `europe-west3`).
-* `GCS_BUCKET`: The GCS bucket associated with the environment.
+### 1. Airflow Variable Configuration
+Ensure that the following Airflow variables are configured in the target Cloud Composer environment:
 
-These can be set via the Airflow UI (**Admin -> Variables**) or via the gcloud CLI:
-```bash
-gcloud composer environments run <ENVIRONMENT_NAME> \
-    --location <LOCATION> \
-    variables set GCP_PROJECT <YOUR_PROJECT_ID>
+```json
+{
+  "GCP_PROJECT": "your-gcp-project-id",
+  "GCP_REGION": "your-gcp-region",
+  "DATAPROC_CLUSTER": "your-dataproc-cluster-name",
+  "GCS_BUCKET": "your-gcs-bucket-name"
+}
 ```
 
 ### 2. IAM & Permissions
-Ensure that the Cloud Composer worker service account has the minimum required IAM roles (`roles/composer.worker`) to execute basic Python tasks and write logs to Cloud Logging.
+Although this is currently a dummy task running a basic `echo` command, the Composer Worker Service Account should have the standard IAM roles configured if this job is expanded in the future:
+* `roles/composer.worker`
+* `roles/dataproc.editor` (for future PySpark execution)
+* `roles/storage.objectAdmin` (for future script/log access)
 
-### 3. Scheduling & Parent Integration
-The DAG is currently configured with `schedule=None` because it inherits its execution trigger from its parent workflow. If this DAG is to be run independently during testing, it must be triggered manually or via an external sensor.
+### 3. Scheduling & Integration
+Keep the DAG schedule set to `None` until the downstream parent workflow (`DW.DWH_PLATO_TARIF_MAPPING_TAEGLICH_JP`) is migrated.
 
 ---
 
 ## 5. Known Gaps & Unresolved References
 
-### Unmigrated Parent Workflow (Dependency Risk)
-* **Gap:** The parent Job Plan `DW.DWH_PLATO_TARIF_MAPPING_TAEGLICH_JP.xml` has **not yet been migrated** to Cloud Composer.
-* **Redesign (B4) Item:** Once the parent workflow is migrated, this DAG should be integrated. Depending on the final architecture of the parent workflow, this can be achieved by:
-  1. Merging this DAG's tasks directly into a single unified parent DAG.
-  2. Triggering this DAG from the parent DAG using the `TriggerDagRunOperator`.
-  3. Utilizing an `ExternalTaskSensor` to coordinate execution.
+### Missing Orchestration Context
+The source UC4 export did not contain the parent `JOBP` or `EVNT_TIME` files. Consequently, this DAG is currently configured as a standalone, manually triggered pipeline.
 
-### Synchronization Anchor Verification
-* **Action Item:** Coordinate with the business operations team to verify that this dummy task does not represent a manual gate or physical pause point in the legacy system. If a manual gate is required, an `EmptyOperator` with a manual trigger or an `Airflow Webhook/Sensor` must be introduced.
+### Unresolved Downstream Dependency
+* **Downstream Target**: `DW.DWH_PLATO_TARIF_MAPPING_TAEGLICH_JP` (Not yet migrated).
+* **Resolution Plan**: Once the parent workflow `DW.DWH_PLATO_TARIF_MAPPING_TAEGLICH_JP` is migrated, this DAG should either:
+  1. Be integrated directly as a task node inside the parent DAG.
+  2. Be triggered via a `TriggerDagRunOperator` from the parent DAG.
+  3. Be sensed using an `ExternalTaskSensor` in the downstream DAG.
 
 ---
 
 ## 6. Validation
 
-### 1. DAG Parsing Test
-Verify that the DAG is syntactically correct and can be loaded by Airflow without import errors:
+### DAG Parsing Test
+Verify that the DAG is syntactically correct and can be parsed by Airflow without errors:
+
 ```bash
-python3 uc4_airflow_linked_job/DW.DWH_PLATO_TARIF_MAPPING_TAEGLICH_JP/DW.DWH_DUMMY_ABSD_PLATO_TARIFE.py
+python3 uc4_airflow_linked_job/DW.DWH_PLATO_TARIF_MAPPING_TAEGLICH_JP/DW_DWH_DUMMY_ABSD_PLATO_TARIFE.py
 ```
-*A successful test returns no output/errors.*
+* **Passing Criteria**: The command exits with code `0` and outputs no syntax or import errors.
 
-### 2. Execution Test
-1. Upload the DAG file to the Cloud Composer `dags/` folder, preserving the directory structure: `dags/uc4_airflow_linked_job/DW.DWH_PLATO_TARIF_MAPPING_TAEGLICH_JP/DW.DWH_DUMMY_ABSD_PLATO_TARIFE.py`.
-2. Trigger the DAG manually via the Airflow UI or CLI:
-   ```bash
-   gcloud composer environments run <ENVIRONMENT_NAME> \
-       --location <LOCATION> \
-       dags trigger -- dw_dwh_plato_tarif_mapping_taeglich_jp
-   ```
+### Execution Test
+1. Upload the DAG file to the Cloud Composer DAGs bucket: `gs://<composer-dag-bucket>/dags/`.
+2. Navigate to the Airflow UI and locate the DAG `dw_dwh_dummy_absd_plato_tarife`.
+3. Trigger the DAG manually.
+4. Verify the task execution logs.
 
-### 3. Definition of "Passing"
-The validation is successful if:
-* The DAG run transitions to a **Success** state.
-* The task execution sequence completes: `start` -> `dw_dwh_dummy_absd_plato_tarife` -> `end`.
-* The task logs for `dw_dwh_dummy_absd_plato_tarife` contain the exact string:
-  ```text
-  Doing nothinig
-  ```
+* **Passing Criteria**:
+  * The DAG run completes with a `success` status.
+  * The task `dwh_dummy_absd_plato_tarife` outputs `Doing nothinig` in its standard output log.
+  * The DAG documentation tab in the Airflow UI displays the recovery note: *"Wiederanlauf ohne weitere Maßnahmen möglich"*.
 
 ---
 
 ## 7. Rollback Procedure
+In the event of an issue or deployment failure, execute the following rollback steps:
 
-In the event of a deployment failure or unexpected behavior in production:
-
-1. **Pause the DAG:** Immediately pause the DAG in the Airflow UI or via the CLI to prevent further executions:
+1. **Pause the DAG**: Locate `dw_dwh_dummy_absd_plato_tarife` in the Airflow UI and toggle the switch to **Off** (Paused).
+2. **Remove the Artifact**: Delete the migrated DAG file from the Cloud Composer DAGs bucket:
    ```bash
-   gcloud composer environments run <ENVIRONMENT_NAME> \
-       --location <LOCATION> \
-       dags pause -- dw_dwh_plato_tarif_mapping_taeglich_jp
+   gcloud storage rm gs://<composer-dag-bucket>/dags/DW_DWH_DUMMY_ABSD_PLATO_TARIFE.py
    ```
-2. **Remove the Artifact:** Delete the migrated Python file from the Cloud Composer GCS bucket:
-   ```bash
-   gsutil rm gs://<COMPOSER_DAG_BUCKET>/dags/uc4_airflow_linked_job/DW.DWH_PLATO_TARIF_MAPPING_TAEGLICH_JP/DW.DWH_DUMMY_ABSD_PLATO_TARIFE.py
-   ```
-3. **Revert to Legacy Orchestration:** If the legacy UC4 system was deactivated, re-enable the `DW.DWH_DUMMY_ABSD_PLATO_TARIFE` job in the UC4 active queue to resume legacy orchestration.
+3. **Re-enable Legacy Job**: If the legacy UC4 system has been deactivated, re-enable the `DW.DWH_DUMMY_ABSD_PLATO_TARIFE` job in the UC4 console to resume legacy orchestration.
