@@ -1,0 +1,18 @@
+config {
+  type: "operations",
+  hasOutput: false,
+  tags: ["cfg_load_params"]
+}
+
+-- d_param_load.sql — merge staged parameters into the DWH parameter table
+MERGE INTO `${dataform.project()}.${dataform.dataset("DWH_ADM")}.JOB_PARAMS` tgt
+USING (
+    SELECT param_key, param_value, loaded_at
+    FROM   `${dataform.project()}.${dataform.dataset("DWH_STG")}.PARAM_LOAD`
+) src
+ON (tgt.param_key = src.param_key)
+WHEN MATCHED THEN UPDATE SET
+    tgt.param_value = src.param_value,
+    tgt.updated_at  = src.loaded_at
+WHEN NOT MATCHED THEN INSERT (param_key, param_value, updated_at)
+VALUES (src.param_key, src.param_value, src.loaded_at);
