@@ -1,0 +1,15 @@
+config {
+  type: "operations",
+  schema: "DWH_ADM",
+  name: "JOB_PARAMS",
+  tags: ["params"]
+}
+
+MERGE `DWH_ADM.JOB_PARAMS` tgt
+USING `DWH_STG.PARAM_LOAD` src
+ON (tgt.param_key = src.param_key)
+WHEN MATCHED THEN UPDATE SET
+    tgt.param_value = src.param_value,
+    tgt.updated_at  = src.loaded_at
+WHEN NOT MATCHED THEN INSERT (param_key, param_value, updated_at)
+VALUES (src.param_key, src.param_value, src.loaded_at);
