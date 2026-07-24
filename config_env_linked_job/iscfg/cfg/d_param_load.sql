@@ -1,0 +1,9 @@
+-- d_param_load.sql
+-- Merges staged parameters from DWH_STG.PARAM_LOAD into target DWH_ADM.JOB_PARAMS
+MERGE INTO `{{ var.value.GCP_PROJECT }}.DWH_ADM.JOB_PARAMS` target
+USING `{{ var.value.GCP_PROJECT }}.DWH_STG.PARAM_LOAD` source
+ON target.PARAM_KEY = source.PARAM_KEY
+WHEN MATCHED THEN
+  UPDATE SET target.PARAM_VALUE = source.PARAM_VALUE
+WHEN NOT MATCHED THEN
+  INSERT (PARAM_KEY, PARAM_VALUE) VALUES (source.PARAM_KEY, source.PARAM_VALUE);
