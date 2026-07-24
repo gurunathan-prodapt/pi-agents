@@ -6,8 +6,10 @@ The automated reviewer rejected this output after 3 attempt(s). The generated fi
 
 ## Final Rejection Reason
 
-The design document contains multiple concatenated drafts (three separate 'MIGRATION DESIGN DOCUMENT' headers and conflicting file plans), which caused the build to generate three redundant and conflicting Airflow DAG files. Additionally, the design and build violate the literal preservation rule by reworking 'Lade Parameter nach ${STG_TABLE} auf ${DB_HOST}/${DB_SID}' into 'Lade Parameter nach {dataset_id}.{table_id} ...' and completely dropping the error messages 'FEHLER: sqlldr beendet mit RC=${rc}' and 'FEHLER: d_param_load.sql beendet mit RC=${rc}'.
+The build output for the Airflow DAG (`dw_cfg_load_params.py`) is abruptly truncated at `GCP_PROJECT_ID = Variable.get(`, resulting in a syntax error. Additionally, the generated `r_load_params.py` is missing the core logic to parse the properties file and load it into BigQuery (the `sqlldr` replacement), containing only the post-load SQL execution step.
 
 ## Required Changes
 
-['Consolidate the design document into a single, coherent plan with exactly one target Airflow DAG file.', "Ensure the Python script preserves the exact wording of 'Lade Parameter nach ${STG_TABLE} auf ${DB_HOST}/${DB_SID}' (using appropriate target variables for the placeholders).", "Ensure the Python script preserves the exact wording of the error messages 'FEHLER: sqlldr beendet mit RC=${rc}' and 'FEHLER: d_param_load.sql beendet mit RC=${rc}' (e.g., in exception blocks if the BigQuery load or Dataform invocation fails)."]
+1. Complete the generation of `dw_cfg_load_params.py` without truncating the file.
+2. Ensure `r_load_params.py` includes the full logic from the design to read `dwh_env.properties`, parse the keys, and load them into the BigQuery staging table `PARAM_LOAD` before executing the SQL script.
+3. Ensure all legacy print statements (e.g., 'Lade Parameter nach...', 'Parameterladen erfolgreich abgeschlossen') are included in `r_load_params.py` as specified in the design.
