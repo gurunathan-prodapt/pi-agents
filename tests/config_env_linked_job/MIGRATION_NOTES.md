@@ -1,158 +1,158 @@
-# Migration Notes: `DW.CFG_LOAD_PARAMS`
+# MIGRATION_NOTES.md: DW.CFG_LOAD_PARAMS
 
-This document provides comprehensive migration notes for the transition of the legacy UC4 job `DW.CFG_LOAD_PARAMS` to Google Cloud Platform (GCP).
-
----
-
-## 1. Executive Summary
-
-The legacy UC4 job `DW.CFG_LOAD_PARAMS` has been migrated from an on-premises Oracle-based environment to a native Google Cloud Platform (GCP) architecture. 
-
-* **Legacy Platform:** UC4/Automic Scheduler + KornShell (KSH) + Oracle SQL\*Loader (`sqlldr`) + Oracle SQL\*Plus (`sqlplus`).
-* **Target Platform:** Google Cloud Composer (Apache Airflow 2) + Python 3 + Google Cloud Storage (GCS) + Dataform + BigQuery.
-* **Core Migration Strategy:** 
-  * The orchestration logic from UC4 has been consolidated into a Cloud Composer Airflow DAG.
-  * The file-parsing and staging logic previously handled by `r_load_params.ksh` and Oracle SQL\*Loader has been rewritten into a native Python script (`r_load_params.py`) utilizing the Google Cloud Storage and BigQuery Client Libraries.
-  * The database merge/upsert logic previously executed via SQL\*Plus (`d_param_load.sql`) has been converted into a Dataform SQLX incremental operations model (`d_param_load.sqlx`).
+This document provides the comprehensive migration notes for transitioning the legacy Oracle/KornShell staging job `DW.CFG_LOAD_PARAMS` to a modern Google Cloud Platform (GCP) architecture using Cloud Composer (Airflow 2.x) and BigQuery.
 
 ---
 
-## 2. Generated Artifacts
+## 1. SUMMARY
 
-The migration process generated the following files, each playing a specific role in the target architecture:
+The legacy `DW.CFG_LOAD_PARAMS` workflow has been migrated from an on-premises Oracle and UC4/Automic scheduler environment to **GCP (Cloud Composer + BigQuery)**. 
 
-| Target File Path | Language / Type | Role / Description |
+### Legacy vs. Target Architecture
+*   **Legacy Process**: Sourced environment variables via `.dw_init`, parsed database connection details from a local properties file (`dwh_env.properties`), executed Oracle **SQL\*Loader** (`sqlldr`) to stage parameters into `DWH_STG.PARAM_LOAD`, and ran Oracle **SQL\*Plus** (`sqlplus`) to execute `d_param_load.sql` which merged parameters into `DWH_ADM.JOB_PARAMS`.
+*   **Target Process**: A Cloud Composer DAG orchestrates a unified Python script (`r_load_params.py`). This script natively parses the properties file, loads the data into BigQuery using the Google Cloud BigQuery SDK (replacing `sqlldr`), and executes the parameterized merge SQL query (`d_param_load.sql`) directly within the same execution block (replacing `sqlplus`).
+
+---
+
+## 2. GENERATED ARTIFACTS
+
+The migration process generated the following files, organized by their target paths:
+
+| Target File Path | Role / Description |
+| :--- | :--- |
+| `dags/dw_cfg_load_params_dag.py` | **Airflow DAG**: Orchestrates the execution of the parameter load process. Replaces the legacy UC4 `JOBS_UNIX` scheduling and job definition. |
+| `config_env_linked_job/iscfg/bin/r_load_params.py` | **Python Execution Script**: Replaces `r_load_params.ksh`. Parses the local properties file, loads data to BigQuery via `load_table_from_json()`, and executes the post-load SQL merge. |
+| `config_env_linked_job/iscfg/cfg/d_param_load.sql` | **Parameterized BigQuery SQL**: Replaces the legacy Oracle SQL script. Contains the standard BigQuery `MERGE` statement with dynamic dataset and project placeholders. |
+
+---
+
+## 3. KEY DESIGN DECISIONS
+
+### Unified Python-Based Execution Strategy
+*   **Decision**: Consolidate the properties parsing, BigQuery staging, and post-load SQL execution into a single Python script (`r_load_params.py`) executed via Airflow's `BashOperator`.
+*   **Reasoning**: This eliminates the risk of orphaning the SQL script or creating complex, multi-tool dependencies (such as mixing Airflow, Dataproc, and Dataform for a simple parameter load). It ensures that the entire ingestion and merge logic runs within a single, easily monitored transactional block.
+*   **Trade-off**: Moving away from Dataform for this specific task means SQL compilation is handled dynamically at runtime via Python string formatting. However, this is highly acceptable given the lightweight nature of the parameter configuration step.
+
+### Native BigQuery SDK Ingestion (SQL\*Loader Replacement)
+*   **Decision**: Replace Oracle `sqlldr` with the BigQuery Python Client's `load_table_from_json()` method using a `WRITE_TRUNCATE` write disposition.
+*   **Reasoning**: This removes the need for legacy control files (`.ctl`) and local binary dependencies on the Airflow worker, leveraging GCP-native, high-speed streaming ingestion instead.
+
+### Verbatim Error Message Retention
+*   **Decision**: Retain legacy German error logging (`FEHLER: d_param_load.sql beendet mit RC={rc}`) within the Python exception handling blocks.
+*   **Reasoning**: Preserves compatibility with legacy log-scraping and monitoring systems that look for specific error patterns, ensuring zero disruption to operations.
+
+---
+
+## 4. MANUAL STEPS BEFORE GO-LIVE
+
+The following setup steps must be completed in the target environment before executing the migrated workflow:
+
+### A. Schema & Dataset Creation
+Ensure the following BigQuery datasets and tables exist in your target GCP project:
+1.  **Staging Dataset**: `DW_STG` (or the value configured in `BQ_DATASET_STG`).
+    *   Table: `PARAM_LOAD`
+    *   Schema: `param_key STRING (REQUIRED)`, `param_value STRING (NULLABLE)`, `loaded_at TIMESTAMP (NULLABLE)`
+2.  **Admin Dataset**: `DWH_ADM` (or the value configured in `BQ_DATASET_ADM`).
+    *   Table: `JOB_PARAMS`
+    *   Schema: `param_key STRING (REQUIRED)`, `param_value STRING (NULLABLE)`, `updated_at TIMESTAMP (NULLABLE)`
+
+### B. IAM & Permissions
+The Cloud Composer service account (e.g., `service-XXXXXXXX@gcp-sa-composer.iam.gserviceaccount.com`) must be granted the following IAM roles:
+*   `roles/bigquery.dataEditor` on the `DW_STG` and `DWH_ADM` datasets.
+*   `roles/bigquery.jobUser` on the target GCP project to run load and query jobs.
+
+### C. Airflow Variables Configuration
+Configure the following Airflow Variables in the Composer environment (via Airflow UI -> Admin -> Variables):
+
+| Variable Key | Example Value | Description |
 | :--- | :--- | :--- |
-| `config_env_linked_job/DWH_CFG_JOB/dw_cfg_load_params.py` | Python (Airflow DAG) | **Primary Production DAG.** Orchestrates the end-to-end pipeline: executes the Python staging loader, compiles the Dataform repository, and triggers the Dataform workflow invocation to merge parameters. |
-| `config_env_linked_job/iscfg/bin/r_load_params.py` | Python | **Staging Loader Script.** Replaces `r_load_params.ksh` and `sqlldr`. Downloads the properties file from GCS, parses key-value pairs, truncates the staging table, and loads the records into BigQuery (`DWH_STG.PARAM_LOAD`). |
-| `config_env_linked_job/iscfg/cfg/d_param_load.sqlx` | SQLX (Dataform) | **ELT Merge Script.** Replaces `d_param_load.sql`. Executes an incremental `MERGE` operation to upsert staged parameters from `PARAM_LOAD` into the master parameter table `DWH_ADM.JOB_PARAMS`. |
-| `config_env_linked_job/DWH_CFG_JOB/dw_cfg_load_params_dag.py` | Python (Airflow DAG) | *Alternative/Simplified DAG.* Executes the parameter load via direct Python module import. Retained for local/direct execution testing. |
-| `dw_cfg_load_params.py` | Python (Airflow DAG) | *Alternative/Simplified DAG.* Executes the parameter load via `BashOperator` invoking the Python script. Retained for legacy-style execution testing. |
+| `GCP_PROJECT` | `my-gcp-project-id` | Target GCP Project ID. |
+| `GCS_BUCKET` | `my-composer-bucket` | GCS Bucket for environment logs/exports. |
+| `DWH_HOME` | `/home/airflow/gcs/dags` | Base directory where code and config files reside. |
+| `DWH_LOG_DIR` | `/home/airflow/gcs/logs` | Directory for writing execution logs. |
+
+### D. Configuration File Deployment
+1.  Deploy the `dwh_env.properties` file to the path: `{DWH_HOME}/cfg/dwh_env.properties`.
+2.  Deploy the parameterized `d_param_load.sql` file to the path: `{DWH_HOME}/config_env_linked_job/iscfg/cfg/d_param_load.sql`.
+
+### E. Scheduling
+The DAG is currently configured with `schedule_interval=None` (manual execution). If this job must run on a time-based schedule, update the `schedule_interval` parameter in `dags/dw_cfg_load_params_dag.py` to the desired cron expression (e.g., `0 6 * * *` for daily at 6 AM).
 
 ---
 
-## 3. Key Design Decisions
+## 5. KNOWN GAPS & UNRESOLVED REFERENCES
 
-### 3.1 Transition from Oracle Utilities to GCP Native
-* **Decision:** Replaced Oracle SQL\*Loader (`sqlldr`) and SQL\*Plus (`sqlplus`) with native Google Cloud SDKs.
-* **Reasoning:** Eliminates the need to maintain heavy Oracle client binaries, TNS configurations, and local file system dependencies on Cloud Composer workers.
-* **Trade-off:** Parsing the properties file is now performed in-memory within a Python task. Because configuration files are extremely small (typically <1MB), this is highly cost-effective and avoids the overhead of spinning up a Dataproc cluster (which was initially proposed in the early UC4-only design phase).
+### Retired Legacy Components
+The following legacy components have been officially retired and flagged as **NO SOURCE NEEDED** based on human review:
+*   `.DW_INIT`: Environment initialization is now handled natively by Cloud Composer's environment variables.
+*   `DW.HOLE_PFAD`: Path resolution is replaced by standard Python `os.path` operations and Airflow variables.
+*   `DW.BERT_LESE_LOG`: Log evaluation is replaced by native Google Cloud Logging and Airflow task lifecycle states.
 
-### 3.2 Dataform for ELT Merge
-* **Decision:** Migrated the database merge logic to Dataform (`d_param_load.sqlx`) rather than running raw SQL queries via Python.
-* **Reasoning:** Aligns with modern ELT practices, provides built-in compilation checks, maintains data lineage within BigQuery, and separates orchestration (Airflow) from data transformation (Dataform).
-
-### 3.3 Strict Message Preservation
-* **Decision:** Retained all original German terminal output and error messages verbatim inside `r_load_params.py`.
-* **Reasoning:** Ensures that legacy log-scraping and monitoring systems parsing stdout/stderr continue to function without modification.
-* **Preserved Literals:**
-  * `FEHLER: Parameterdatei {param_file_path} nicht gefunden` (Exits with code `1` or `8`)
-  * `Lade Parameter nach {dataset_id}.{table_id} ...`
-  * `Parameterladen erfolgreich abgeschlossen` (Exits with code `0`)
+### Properties File Format Constraints
+*   The custom Python parser in `r_load_params.py` assumes standard `key=value` formatting. If the legacy `dwh_env.properties` file contains multi-line values, backslash escapes, or complex inline comments, the parser must be updated to use a robust parser like `configparser` or a custom regex.
 
 ---
 
-## 4. Manual Steps Before Go-Live
+## 6. VALIDATION
 
-Before deploying and enabling the migrated pipeline, the following manual setup steps must be completed:
+To validate the migration, execute the following test cases in a non-production environment:
 
-### 4.1 Schema and Dataset Creation
-Ensure the target BigQuery datasets and tables exist with the correct schemas:
-1. **Staging Dataset:** `DWH_STG`
-   * Table: `PARAM_LOAD`
-   * Schema:
-     * `param_key` (STRING)
-     * `param_value` (STRING)
-     * `loaded_at` (TIMESTAMP)
-2. **Administrative Dataset:** `DWH_ADM`
-   * Table: `JOB_PARAMS`
-   * Schema:
-     * `param_key` (STRING)
-     * `param_value` (STRING)
-     * `updated_at` (TIMESTAMP)
+### Test Case 1: Local Python Script Execution (Dry Run)
+1.  Set the required environment variables in your terminal:
+    ```bash
+    export GCP_PROJECT="your-dev-project-id"
+    export DWH_HOME="/path/to/your/local/migration/folder"
+    export BQ_DATASET_STG="DW_STG"
+    export BQ_DATASET_ADM="DWH_ADM"
+    ```
+2.  Run the Python script:
+    ```bash
+    python3 config_env_linked_job/iscfg/bin/r_load_params.py
+    ```
+3.  **Verify**:
+    *   The console outputs: `Lade Parameter nach PARAM_LOAD auf <host>/<sid>`.
+    *   The console outputs: `Parameterladen erfolgreich abgeschlossen`.
+    *   The script exits with code `0`.
 
-### 4.2 IAM and Permissions
-The Cloud Composer environment's service account must be granted the following IAM roles:
-* **BigQuery:** `roles/bigquery.dataEditor` and `roles/bigquery.jobUser` (to write to staging and execute queries).
-* **Cloud Storage:** `roles/storage.objectViewer` on the GCS bucket containing the parameter files.
-* **Dataform:** `roles/dataform.editor` (to compile and trigger Dataform workflows).
+### Test Case 2: End-to-End Airflow DAG Execution
+1.  Trigger the `dw_cfg_load_params` DAG manually from the Airflow UI.
+2.  **Verify**:
+    *   The DAG runs and all tasks complete with a `SUCCESS` status.
+    *   Query the BigQuery table `DW_STG.PARAM_LOAD` and confirm it contains the keys and values from `dwh_env.properties`.
+    *   Query the BigQuery table `DWH_ADM.JOB_PARAMS` and confirm the parameters have been successfully merged (inserted or updated).
 
-### 4.3 Airflow Variables
-Configure the following Airflow Variables in the Cloud Composer UI or via the `gcloud` CLI:
-* `GCP_PROJECT`: The target Google Cloud Project ID.
-* `GCP_REGION`: The GCP region where Dataform is deployed (e.g., `us-central1`).
-* `GCS_BUCKET`: The GCS bucket name where parameter files are uploaded.
-* `DATAFORM_REPOSITORY`: The name of the target Dataform repository.
-* `BQ_DATASET`: The target administrative dataset (defaults to `DWH_ADM`).
-
-### 4.4 File Placement
-Upload the parameter properties file to the designated GCS bucket path:
-* **Path:** `gs://{GCS_BUCKET}/config/param_load.properties`
-
-### 4.5 Scheduling
-The production DAG is configured to run daily at 02:00 AM (`'0 2 * * *'`). If this job needs to be triggered on-demand or via an external event (e.g., file arrival in GCS), update the `schedule_interval` in `dw_cfg_load_params.py` to `None` and configure a Cloud Storage Trigger Cloud Function to trigger the DAG.
+### Test Case 3: Failure Path Verification
+1.  Temporarily rename the `d_param_load.sql` file to force a failure.
+2.  Trigger the DAG.
+3.  **Verify**:
+    *   The DAG task `r_load_params` fails.
+    *   The task logs contain the exact legacy German error message:
+        `FEHLER: d_param_load.sql beendet mit RC=1`
 
 ---
 
-## 5. Known Gaps & Unresolved References
+## 7. ROLLBACK PROCEDURE
 
-* **Source Code Gaps:** The original `r_load_params.ksh` and `d_param_load.sql` source files were missing during the initial migration phase. The target Python and SQLX scripts were reconstructed based on execution logs and lineage. A manual code review against the actual legacy files (if recovered) is recommended to ensure no hidden edge cases (e.g., custom local environment variables or complex shell logic) were missed.
-* **Dataform Repository Integration:** The production DAG assumes a pre-existing Dataform repository configured with Git. The compilation step targets the `main` branch. If using a different branch or development workspace, the `git_commit_val` parameter in `DataformCreateCompilationResultOperator` must be updated.
-* **Retired Components:** The following legacy files were confirmed obsolete by human review on 2026-07-24 and have been retired (not migrated):
-  * `.DW_INIT`
-  * `DW.BERT_LESE_LOG`
-  * `DW.HOLE_PFAD`
+In the event of a critical failure during deployment or go-live, execute the following rollback steps:
 
----
+### Step 1: Revert Code & Orchestration
+1.  Pause the `dw_cfg_load_params` DAG in the Cloud Composer Airflow UI.
+2.  Revert the Git repository to the commit prior to the deployment of the new DAG and Python scripts.
+3.  Redeploy the codebase to remove the DAG from the Composer environment.
 
-## 6. Validation
+### Step 2: Database State Rollback
+Since the merge operation is an upsert, rolling back requires restoring the `DWH_ADM.JOB_PARAMS` table to its state prior to the run. Use BigQuery's **Time Travel** feature to restore the table:
 
-To validate the migration, execute the following testing steps:
+```sql
+-- 1. Backup the corrupted table (optional safety step)
+CREATE OR REPLACE TABLE `DWH_ADM.JOB_PARAMS_BACKUP` AS
+SELECT * FROM `DWH_ADM.JOB_PARAMS`;
 
-### 6.1 DAG Parsing Test
-Verify that the Airflow DAG compiles without syntax or import errors:
-```bash
-python3 dags/dw_cfg_load_params.py
+-- 2. Restore the table to its state 1 hour ago (adjust interval as needed)
+CREATE OR REPLACE TABLE `DWH_ADM.JOB_PARAMS` AS
+SELECT * FROM `DWH_ADM.JOB_PARAMS`
+FOR SYSTEM_TIME AS OF TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 1 HOUR);
 ```
 
-### 6.2 Task-Level Validation
-Test the parameter loading task individually to verify GCS connectivity and BigQuery staging:
-```bash
-airflow tasks test dw_cfg_load_params load_parameters_to_staging 2026-04-21
-```
-* **Expected Result:** The task should complete successfully, and the console logs must output:
-  ```
-  Lade Parameter nach DWH_STG.PARAM_LOAD ...
-  Parameterladen erfolgreich abgeschlossen
-  ```
-
-### 6.3 End-to-End Pipeline Run
-1. Trigger the `dw_cfg_load_params` DAG manually from the Airflow UI.
-2. Verify that:
-   * `load_parameters_to_staging` completes and populates `DWH_STG.PARAM_LOAD`.
-   * `create_compilation_result` compiles the Dataform repository.
-   * `run_dataform_merge` executes the merge and updates `DWH_ADM.JOB_PARAMS`.
-3. Query `DWH_ADM.JOB_PARAMS` in BigQuery to verify that the parameters match the values in the GCS properties file.
-
----
-
-## 7. Rollback Procedure
-
-If issues are encountered post-deployment, follow these steps to roll back the migration:
-
-1. **Pause the Airflow DAG:**
-   Disable the migrated DAG to prevent further automated runs:
-   ```bash
-   airflow dags pause dw_cfg_load_params
-   ```
-2. **Restore Target Table State:**
-   If a bad parameter load corrupted `DWH_ADM.JOB_PARAMS`, restore the table to its pre-migration state using BigQuery Time Travel:
-   ```sql
-   CREATE OR REPLACE TABLE `DWH_ADM.JOB_PARAMS` AS
-   SELECT * FROM `DWH_ADM.JOB_PARAMS`
-   FOR SYSTEM_TIME AS OF TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 1 HOUR);
-   ```
-3. **Revert Properties File:**
-   Revert the properties file in `gs://{GCS_BUCKET}/config/param_load.properties` to its previous known-good version.
-4. **Revert Code Changes:**
-   If code modifications caused the failure, revert the git commits for the DAG, Python script, or Dataform SQLX files in the deployment repository.
+### Step 3: Legacy Environment Reactivation
+If necessary, reactivate the legacy UC4 job `DW.CFG_LOAD_PARAMS` in the Automic scheduler to resume on-premises operations.
