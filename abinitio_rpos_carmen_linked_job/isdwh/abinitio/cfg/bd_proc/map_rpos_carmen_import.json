@@ -1,0 +1,17 @@
+{
+  "FWP_Pre_Session": "",
+  "FWP_Post_Session": "",
+  "BHB_Projektverzeichnis": "/Projects/TMD/processing/BHB/BD_PROC",
+  "BHB_Version": "RLS_BHB_nach_64_rabatt_sap",
+  "BHB_Graph": "map_rpos_carmen_import",
+  "BHB_Prozesstyp": "D",
+  "BHB_Quellverzeichnis": "$DW_DIR_IMP_SAP/crs/work/",
+  "BHB_Zielverzeichnis": "$DW_DIR_IMP_SAP/crs/store/",
+  "BHB_Dateimaske": "CARMEN_B_*_pos.fix",
+  "BHB_Kopfdatensatzkennung": "H",
+  "BHB_Nutzdatensatzkennung": "P",
+  "BHB_Endedatensatzkennung": "X",
+  "BHB_Eintragsnr": "",
+  "BHB_Dateiname": "",
+  "BHB_Laufzeitvariable": ""
+}

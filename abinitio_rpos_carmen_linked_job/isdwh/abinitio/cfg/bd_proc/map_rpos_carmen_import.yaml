@@ -1,0 +1,12 @@
+# Job configurations for map_rpos_carmen_import
+job_settings:
+  BHB_Projektverzeichnis: "/Projects/TMD/processing/BHB/BD_PROC"
+  BHB_Version: "RLS_BHB_nach_64_rabatt_sap"
+  BHB_Graph: "map_rpos_carmen_import"
+  BHB_Prozesstyp: "D"
+  BHB_Quellverzeichnis: "crs/work/"
+  BHB_Zielverzeichnis: "crs/store/"
+  BHB_Dateimaske: "CARMEN_B_*_pos.fix"
+  BHB_Kopfdatensatzkennung: "H"
+  BHB_Nutzdatensatzkennung: "P"
+  BHB_Endedatensatzkennung: "X"
