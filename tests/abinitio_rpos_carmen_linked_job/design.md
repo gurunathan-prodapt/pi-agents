@@ -1,309 +1,421 @@
-# Migration Design Document: DW.RPOS_CARM_IMPORT
+# MIGRATION DESIGN DOCUMENT: DW.RPOS_CARM_IMPORT
 
-## File Disposition Table
+## 1. File Disposition Table
 
 | Source File Path | Target File / Action | Purpose / Reason for Action |
 | :--- | :--- | :--- |
-| `abinitio_rpos_carmen_linked_job/DWH_BD_PROC_JOB/DW.RPOS_CARM_IMPORT.xml` | `abinitio_rpos_carmen_linked_job/DWH_BD_PROC_JOB/dw_rpos_carm_import.py` | Migrated to an Apache Airflow DAG that orchestrates the execution of the converted PySpark job. |
+| `abinitio_rpos_carmen_linked_job/DWH_BD_PROC_JOB/DW.RPOS_CARM_IMPORT.xml` | `dags/abinitio_rpos_carmen_linked_job/DWH_BD_PROC_JOB/dw_rpos_carm_import_dag.py` | Migrated Airflow DAG executing the Dataproc Serverless PySpark job mapped from the Ab Initio graph. |
 
 ---
 
-## Verbatim MCP Tool Output
+## 2. Shared & Retained Resources
+The following shared components are already migrated or confirmed not needed:
+* **Shared Modules:** `abinitio_pyspark_linked_job/isccr/abinitio/bin/r_ai_start` is already migrated and merged under PR `https://github.com/gurunathan-prodapt/pi-agents/pull/764`. The migrated DAG should call the equivalent converted PySpark entry point rather than invoking the legacy shell wrapper.
+* **Human-Confirmed Exemptions (No Source Needed):**
+  * `.dw_init` (not needed)
+  * `.CCR_INIT` (not needed)
+  * `DW.DWH_ADM_PRUEFE_AB_INITIO_START_INC` (not needed)
+  * `DW.DWH_ADM_PRUEFE_AB_INITIO_ENDE_INC` (not needed)
+  * `DW.HOLE_PFAD` (not needed)
+  * `DW.LESE_LOG` (not needed)
+  * `AB_CATALOG_FUNCTIONS.KSH` (not needed)
+  * `H_ALIS_DATE.KSH` (not needed)
+  * `H_ALIS_DATENOBJEKT.KSH` (not needed)
+  * `H_ALIS_MELDUNGEN.KSH` (not needed)
+  * `H_ALIS_PARAMETER.KSH` (not needed)
+
+---
+
+## 3. Orchestration & Context Details
+
+### Job Dependencies
+* **Upstream:**
+  * Shared Files module `/isccr/abinitio/bin/r_ai_start` must exist and be accessible (already migrated).
+* **Downstream (Data Consumers):**
+  * This workflow populates the target DWH tables: `DWH$TA_F_RPOS_CARM`, `DWH$TA_F_RPOS_FACT_CARM`, `DWH$TA_F_RPOS_RESELLING_CARM`, `DWH$TA_F_GPOS_FACT_CARM`, and `DWH$TA_T_RPOS_CARM`.
+
+### Execution Order Mapping
+The legacy workflow sequence is mapped to Airflow task execution:
+1. **UC4 Job Definition (`DW.RPOS_CARM_IMPORT.xml`):** Replaced by the Composer DAG `dw_rpos_carm_import_dag.py`.
+2. **Parameters File (`map_rpos_carmen_import.cfg`):** Inlined as a structured job configuration dictionary inside the Airflow DAG or passed as job parameters.
+3. **Execution Script (`map_rpos_carmen_import.ksh`):** Retired. Orchestration logic is handled directly by Composer.
+4. **Ab Initio Graph (`map_rpos_carmen_import.mp`):** Converted to PySpark and executed on Google Cloud Dataproc Serverless.
+
+### Scheduling & Scheduler-Set Variables
+* **Schedule:** There is no schedule specified in the UC4 XML (`schedule=None`). This DAG is designed to be triggered manually or externally.
+* **Variables:**
+  * `DWH_JOB_KENNUNG` (value: `'RPOS_CARM_IMPORT'`) is passed directly to the Spark application as an execution argument (`--job_kennung`).
+
+### External System Replacements
+* **File Directories:**
+  * Legacy directory references using `$DW_DIR_IMP_SAP` (e.g. `crs/work/` and `crs/store/`) are mapped to Google Cloud Storage (GCS) paths under `gs://{GCS_BUCKET}/`.
+* **Execution Engine:**
+  * The legacy Ab Initio GDE parallel engine is replaced by GCP Dataproc Serverless (PySpark).
+
+---
+
+## 4. Environment-Specific Values
+
+All environment variables have been classified according to role:
+
+### GLOBAL Variables (Infrastructure-level)
+To comply with environment isolation and prevent hardcoded placeholders, these variables must be retrieved dynamically from Airflow's metadata store:
+* `GCP_PROJECT`: Retrieved via `Variable.get("GCP_PROJECT")`
+* `GCP_REGION`: Retrieved via `Variable.get("GCP_REGION")`
+* `DATAPROC_CLUSTER_NAME`: Retrieved via `Variable.get("DATAPROC_CLUSTER")`
+* `GCS_BUCKET`: Retrieved via `Variable.get("GCS_BUCKET")`
+
+### JOB-SPECIFIC Variables (Application-level)
+These parameters are specific to the `DW.RPOS_CARM_IMPORT` workload and are hardcoded or derived from the parameters configuration:
+* `DWH_JOB_KENNUNG`: `'RPOS_CARM_IMPORT'`
+* `BHB_Projektverzeichnis`: `"/Projects/TMD/processing/BHB/BD_PROC"`
+* `BHB_Version`: `"RLS_BHB_nach_64_rabatt_sap"`
+* `BHB_Graph`: `"map_rpos_carmen_import"`
+* `BHB_Prozesstyp`: `"D"`
+* `BHB_Quellverzeichnis`: `f"gs://{{ GCS_BUCKET }}/crs/work/"`
+* `BHB_Zielverzeichnis`: `f"gs://{{ GCS_BUCKET }}/crs/store/"`
+* `BHB_Dateimaske`: `"CARMEN_B_*_pos.fix"`
+* `BHB_Kopfdatensatzkennung`: `"H"`
+* `BHB_Nutzdatensatzkennung`: `"P"`
+* `BHB_Endedatensatzkennung`: `"X"`
+
+---
+
+## 5. Verbatim MCP Tool Output
 
 ```markdown
-# Migration Design Document: UC4 to Apache Airflow
+# UC4 to Apache Airflow Migration Design Document
 
 ## 1. Overview
-This migration design document covers the transition of the UC4 `JOBS_UNIX` object `DW.RPOS_CARM_IMPORT` to an Apache Airflow DAG. The original UC4 job's primary responsibility is to execute an Ab Initio graph (`map_rpos_carmen_import`) via the `r_ai_start` launcher utility. This process imports Carmen retail/point-of-sale (RPOS) data into the Data Warehouse. 
-
-Because this object was supplied as an isolated Unix job without its enclosing JobPlan (`JOBP`) or calendar trigger definitions, this design establishes a standalone single-task DAG representing the job execution. This DAG is designed to be triggered externally or integrated into a master pipeline at a later stage.
+The UC4 object `DW.RPOS_CARM_IMPORT` is a Unix-based job (`JOBS_UNIX`) designed to execute an Ab Initio graph called `map_rpos_carmen_import`. It processes data imports for the RPOS Carmen business domain by invoking the standard UC4 Ab Initio launch wrapper `r_ai_start` with specific configuration and identification flags. Since this extraction bundle contains only this single job and no parent Job Plan (`JOBP`) or schedule, this design document establishes a standalone wrapper DAG in Apache Airflow to execute this migrated workload.
 
 ---
 
 ## 2. UC4 Object Inventory
+
 | Object Name | Object Type | Active Flag | Title/Description |
-|---|---|---|---|
-| `DW.RPOS_CARM_IMPORT` | `JOBS_UNIX` | Active (`<Active>1</Active>`) | Job startet AbInitio Graph map_rpos_carmen_import |
+| :--- | :--- | :--- | :--- |
+| `DW.RPOS_CARM_IMPORT` | JOBS_UNIX | 1 (Active) | Job startet AbInitio Graph  map_rpos_carmen_import |
 
 ---
 
 ## 3. Scheduling
-* **Calendar/Trigger Analysis:** No `EVNT_TIME` or scheduling definitions were present in this extraction bundle. Additionally, no parent `JOBP` or triggering `SCRI` script was provided to define an execution schedule.
-* **Trigger Strategy:** This DAG is classified as **externally triggered (source unknown from this extraction alone)**.
-* **DAG Schedule:** `schedule=None` (no cron schedule will be generated to avoid inventing logic).
+* **Schedule Source:** No schedule (`EVNT_TIME` or `JSCH`) or triggering script (`SCRI`) is present in this bundle.
+* **Trigger Pattern:** This job is externally triggered, meaning its source is unknown from this extraction alone.
+* **Airflow Schedule:** `schedule=None` (manual or external trigger).
 
 ---
 
 ## 4. Airflow DAG Properties
+The following DAG properties are established for the wrapper DAG:
+
 | Property | Value |
-|---|---|
+| :--- | :--- |
 | **dag_id** | `dw_rpos_carm_import` |
 | **schedule** | `None` |
-| **start_date** | `datetime(2026, 4, 21)` (Derived from UC4 export metadata year/month/day) |
+| **start_date** | `datetime(2026, 4, 21)` *(derived from UC4 export timestamp)* |
 | **catchup** | `False` |
-| **max_active_runs** | `1` (Enforced default to prevent concurrent write collisions on the imported data) |
-| **is_paused_upon_creation** | `False` (Derived from active flag `1`) |
-| **default_args** | `{'owner': 'airflow', 'retries': 1, 'retry_delay': timedelta(minutes=5)}` |
+| **max_active_runs** | `1` |
+| **is_paused_upon_creation** | `False` *(Active=1 in UC4 source)* |
+| **default_args** | `{"owner": "airflow", "retries": 1, "retry_delay": timedelta(minutes=5)}` |
 
 ---
 
 ## 5. Task Inventory
+
 | Task ID | Source Object | Operator | Target Script/DAG | Launch Parameters | Retries | Retry Delay | Earliest Start Time | Calendar Constraint | Fire-and-Forget | on_failure_callback | Notes |
-|---|---|---|---|---|---|---|---|---|---|---|---|
-| `map_rpos_carmen_import` | `DW.RPOS_CARM_IMPORT` | `DataprocSubmitJobOperator` | `gs://YOUR_BUCKET_NAME/pyspark_scripts/map_rpos_carmen_import.py` | `project_id`, `region`, `cluster_name` | 1 | 5 mins | N/A | N/A | False | N/A | `#REVIEW-STRUCT:` This task executes a PySpark translation of the original Ab Initio graph launched by `r_ai_start`. |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| `rpos_carm_import` | `DW.RPOS_CARM_IMPORT` | `DataprocSubmitJobOperator` | `map_rpos_carmen_import.py` | `project_id`, `region`, `cluster_name` (GCP placeholders), PySpark main file at `gs://YOUR_BUCKET_NAME/pyspark_scripts/map_rpos_carmen_import.py` | 1 | 5 min | None | None | N/A | None | # REVIEW-STRUCT: Target PySpark script migrated from Ab Initio graph `map_rpos_carmen_import`. |
 
 ---
 
 ## 6. Task Dependency Map
-Since this bundle contains only a single Unix job mapped to a single-task DAG:
-
+As a single-task DAG, the execution chain is linear:
 ```python
-map_rpos_carmen_import
+rpos_carm_import
 ```
 
 ---
 
 ## 7. Sync / Concurrency Analysis
-* **UC4 Sync Rows:** No sync entries (`<Syncs/>`) are defined in the source XML.
-* **Airflow Concurrency Mapping:** 
-  * Standard `max_active_runs=1` is applied to the DAG to prevent concurrent pipeline runs from writing to the same targets simultaneously.
+No sync keys, mutual exclusion locks, or concurrency pools are defined for this object.
+* **Recommendation:** Standard single-concurrency protection is applied using `max_active_runs=1` on the DAG.
 
 ---
 
 ## 8. Error Handling and Retry Strategy
-* **Task Retries:** Built-in task retry is configured to 1 attempt with a 5-minute delay (as per the default args policy).
-* **Execution Failure:** No native custom postcondition action scripts or standard block actions were found in the XML. Thus, standard Airflow failure behavior applies (task state set to `failed` and propagation downstream stops).
-* **Execution Timing Constraints:**
-  * No `earliest_start_time` is configured.
-  * No `calendar_on` rule is configured.
+* **Retry Count:** Configured to retry once (`retries=1`) with a 5-minute interval (`retry_delay=timedelta(minutes=5)`).
+* **Failure Trigger Rules:** Relies on default Airflow behavior (`all_success`), requiring all tasks to complete successfully.
 
 ---
 
 ## 9. Parameter and Variable Mapping
+
 | UC4 Parameter | Value/Source | Airflow Equivalent |
-|---|---|---|
-| `&DWH_JOB_KENNUNG` | `'RPOS_CARM_IMPORT'` | Managed internally within the execution environment or passed as a job argument if required by the target script. |
-| N/A | Target GCS Bucket | `gcp_bucket_name` (Airflow Variable) |
-| N/A | Target GCP Project | `gcp_project_id` (Airflow Variable) |
-| N/A | Target Region | `gcp_region` (Airflow Variable) |
-| N/A | Target Dataproc Cluster | `dataproc_cluster_name` (Airflow Variable) |
+| :--- | :--- | :--- |
+| `&DWH_JOB_KENNUNG` | `'RPOS_CARM_IMPORT'` | Set as a labels parameter in Dataproc job metadata |
+| `$HOME/aktuell/abinitio/cfg/...` | Ab Initio Configuration | Embedded or parameterized within the PySpark script/GCS runtime configuration |
 
 ---
 
 ## 10. Developer Notes
-* **#REVIEW-STRUCT: Unresolved Parent/Triggering Container:** The `DW.RPOS_CARM_IMPORT` Unix job was supplied as an independent object. It has been wrapped in its own DAG `dw_rpos_carm_import`. If this job is later identified as a task within a larger JobPlan (`JOBP`), this DAG should be converted into a `TriggerDagRunOperator` or task block within that parent pipeline's DAG.
-* **#REVIEW-STRUCT: Ab Initio Graph Conversion:** The original system executed an Ab Initio graph using `/abinitio/bin/r_ai_start -j RPOS_CARM_IMPORT -k .../map_rpos_carmen_import.cfg`. This design maps the workload to a Google Cloud Dataproc PySpark execution. The development team must ensure that the Ab Initio graph logic is fully translated into Python/PySpark and uploaded to the GCS path: `gs://{gcp_bucket_name}/pyspark_scripts/map_rpos_carmen_import.py`.
-* **GCP Credentials/Configuration:** The target Dataproc cluster must have access to the source files previously processed by the UC4 Unix host.
+* **GCP Infrastructure Placeholders:** The GCS bucket (`YOUR_BUCKET_NAME`), GCP Project ID (`YOUR_PROJECT_ID`), Dataproc cluster name (`YOUR_CLUSTER_NAME`), and region (`YOUR_REGION`) must be replaced with target cloud environment parameters.
+* **# REVIEW-STRUCT: Unresolved Calling Context:** The parent Job Plan (JOBP) is missing from this extraction. This job has been wrapped into a standalone Airflow DAG. Confirm upstream dependencies in the master workflow scheduler.
+* **Ab Initio Migration Path:** The job has been mapped from an Ab Initio Unix launcher (`r_ai_start`) to a Google Cloud Dataproc PySpark job operator, assuming a prior conversion of the Ab Initio graph to PySpark.
 
 ---
 
-# Pseudocode
+# PSEUDOCODE OUTLINE
 
 ```python
 # ── Imports ──────────────────────────────────────────────
 from datetime import datetime, timedelta
 from airflow import DAG
-from airflow.models import Variable
 from airflow.providers.google.cloud.operators.dataproc import DataprocSubmitJobOperator
 
 # ── GCP Configuration ────────────────────────────────────
-# Fetching environment variables configured in Airflow
-GCP_PROJECT_ID = Variable.get("gcp_project_id", default_var="YOUR_PROJECT_ID")
-GCP_REGION = Variable.get("gcp_region", default_var="YOUR_REGION")
-GCP_BUCKET_NAME = Variable.get("gcp_bucket_name", default_var="YOUR_BUCKET_NAME")
-DATAPROC_CLUSTER_NAME = Variable.get("dataproc_cluster_name", default_var="YOUR_CLUSTER_NAME")
+# REVIEW: Configure these variables with your cloud environment targets
+GCP_PROJECT_ID = "YOUR_PROJECT_ID"
+GCP_REGION = "YOUR_REGION"
+DATAPROC_CLUSTER_NAME = "YOUR_CLUSTER_NAME"
+GCS_BUCKET = "YOUR_BUCKET_NAME"
 
 # ── Default Args ─────────────────────────────────────────
 DEFAULT_ARGS = {
-    'owner': 'airflow',
-    'depends_on_past': False,
-    'retries': 1,
-    'retry_delay': timedelta(minutes=5),
+    "owner": "airflow",
+    "depends_on_past": False,
+    "retries": 1,
+    "retry_delay": timedelta(minutes=5),
 }
 
-# ── DAG Definition ──────────────────────────────────────────
+# ── DAG Definition ───────────────────────────────────────
+# REVIEW-STRUCT: Parent JOBP not supplied; wrapped inside a standalone DAG.
 with DAG(
-    dag_id='dw_rpos_carm_import',
+    dag_id="dw_rpos_carm_import",
     default_args=DEFAULT_ARGS,
-    description='Standalone run of RPOS Carmen Import, migrated from UC4 JOBS_UNIX DW.RPOS_CARM_IMPORT',
-    schedule_interval=None,  # Externally triggered/No schedule in extraction
+    description="Wrapper DAG for migrated Ab Initio graph map_rpos_carmen_import",
+    schedule_interval=None,
     start_date=datetime(2026, 4, 21),
     catchup=False,
     max_active_runs=1,
-    tags=['dwh', 'abinitio_migration', 'rpos'],
+    tags=["dwh", "abinitio", "rpos"],
 ) as dag:
 
-    # ── Task: map_rpos_carmen_import ─────────────────────────
-    # #REVIEW-STRUCT: Ab Initio graph map_rpos_carmen_import migrated to PySpark execution on Dataproc
-    pyspark_job = {
+    # ── Task: rpos_carm_import ───────────────────────────
+    # Migrated from UC4 JOBS_UNIX object: DW.RPOS_CARM_IMPORT
+    # Launcher type: abinitio_graph (r_ai_start)
+    pyspark_job_config = {
         "reference": {"project_id": GCP_PROJECT_ID},
         "placement": {"cluster_name": DATAPROC_CLUSTER_NAME},
         "pyspark_job": {
-            "main_python_file_uri": f"gs://{GCP_BUCKET_NAME}/pyspark_scripts/map_rpos_carmen_import.py",
+            "main_python_file_uri": f"gs://{GCS_BUCKET}/pyspark_scripts/map_rpos_carmen_import.py",
             "args": [
-                "--job_kennung", "RPOS_CARM_IMPORT"
-            ]
+                "--job_kennung", "RPOS_CARM_IMPORT",
+            ],
         },
+        "labels": {
+            "uc4_object_name": "dw_rpos_carm_import",
+            "job_kennung": "rpos_carm_import"
+        }
     }
 
-    map_rpos_carmen_import = DataprocSubmitJobOperator(
-        task_id='map_rpos_carmen_import',
-        job=pyspark_job,
+    rpos_carm_import = DataprocSubmitJobOperator(
+        task_id="rpos_carm_import",
+        job=pyspark_job_config,
         region=GCP_REGION,
         project_id=GCP_PROJECT_ID,
     )
 
-    # ── Dependencies ─────────────────────────────────────────
-    # Standalone task, no upstream or downstream dependencies defined within this extraction.
-    map_rpos_carmen_import
+    # ── Dependencies ─────────────────────────────────────
+    # Single-step job, no upstream/downstream dependencies inside this DAG context.
+    rpos_carm_import
 ```
 ```
 
 ---
 
-## Target File Plan
-- **Target File Path:** `abinitio_rpos_carmen_linked_job/DWH_BD_PROC_JOB/dw_rpos_carm_import.py` (mirrors source relative path according to Folder Integrity Rule)
-- **Language:** `Python (Apache Airflow DAG)`
-- **Derived from Source File:** `abinitio_rpos_carmen_linked_job/DWH_BD_PROC_JOB/DW.RPOS_CARM_IMPORT.xml`
+## 6. Target File Plan & Implementation-Ready DAG
+
+In accordance with the **FOLDER INTEGRITY RULE**, the target file resides in the exact mirrored path. 
+
+### Target File: `dags/abinitio_rpos_carmen_linked_job/DWH_BD_PROC_JOB/dw_rpos_carm_import_dag.py`
+This production-ready implementation resolves all infrastructure placeholders dynamically using Airflow variables to adhere strictly to the environment isolation policy, avoiding hardcoded strings.
+
+```python
+# ── Imports ──────────────────────────────────────────────
+from datetime import datetime, timedelta
+import os
+from airflow import DAG
+from airflow.models import Variable
+from airflow.providers.google.cloud.operators.dataproc import DataprocSubmitJobOperator
+
+# ── Dynamic Environment Variables ────────────────────────
+# Global dynamic configurations loaded from Airflow Variable Store
+GCP_PROJECT_ID = Variable.get("GCP_PROJECT")
+GCP_REGION = Variable.get("GCP_REGION")
+DATAPROC_CLUSTER_NAME = Variable.get("DATAPROC_CLUSTER")
+GCS_BUCKET = Variable.get("GCS_BUCKET")
+
+# ── Job-Specific Parameters ──────────────────────────────
+JOB_CONFIG = {
+    "DWH_JOB_KENNUNG": "RPOS_CARM_IMPORT",
+    "BHB_Projektverzeichnis": "/Projects/TMD/processing/BHB/BD_PROC",
+    "BHB_Version": "RLS_BHB_nach_64_rabatt_sap",
+    "BHB_Graph": "map_rpos_carmen_import",
+    "BHB_Prozesstyp": "D",
+    "BHB_Quellverzeichnis": f"gs://{GCS_BUCKET}/crs/work/",
+    "BHB_Zielverzeichnis": f"gs://{GCS_BUCKET}/crs/store/",
+    "BHB_Dateimaske": "CARMEN_B_*_pos.fix",
+    "BHB_Kopfdatensatzkennung": "H",
+    "BHB_Nutzdatensatzkennung": "P",
+    "BHB_Endedatensatzkennung": "X",
+}
+
+# ── Default Args ─────────────────────────────────────────
+DEFAULT_ARGS = {
+    "owner": "airflow",
+    "depends_on_past": False,
+    "retries": 1,
+    "retry_delay": timedelta(minutes=5),
+}
+
+# ── DAG Definition ───────────────────────────────────────
+# Mirrored Orchestration of DW.RPOS_CARM_IMPORT
+with DAG(
+    dag_id="dw_rpos_carm_import",
+    default_args=DEFAULT_ARGS,
+    description="Job startet AbInitio Graph  map_rpos_carmen_import", # OUTPUT/PRINT LITERAL RULE: Verbatim German title preserved
+    schedule_interval=None,
+    start_date=datetime(2026, 4, 21),
+    catchup=False,
+    max_active_runs=1,
+    tags=["dwh", "abinitio", "rpos", "carmen"],
+) as dag:
+
+    # ── Task: rpos_carm_import ───────────────────────────
+    # Submits the migrated PySpark script representing map_rpos_carmen_import.mp
+    pyspark_job_config = {
+        "reference": {"project_id": GCP_PROJECT_ID},
+        "placement": {"cluster_name": DATAPROC_CLUSTER_NAME},
+        "pyspark_job": {
+            "main_python_file_uri": f"gs://{GCS_BUCKET}/pyspark_scripts/map_rpos_carmen_import.py",
+            "args": [
+                "--job_kennung", JOB_CONFIG["DWH_JOB_KENNUNG"],
+                "--project_dir", JOB_CONFIG["BHB_Projektverzeichnis"],
+                "--version", JOB_CONFIG["BHB_Version"],
+                "--graph", JOB_CONFIG["BHB_Graph"],
+                "--process_type", JOB_CONFIG["BHB_Prozesstyp"],
+                "--source_dir", JOB_CONFIG["BHB_Quellverzeichnis"],
+                "--target_dir", JOB_CONFIG["BHB_Zielverzeichnis"],
+                "--file_mask", JOB_CONFIG["BHB_Dateimaske"],
+                "--header_id", JOB_CONFIG["BHB_Kopfdatensatzkennung"],
+                "--data_id", JOB_CONFIG["BHB_Nutzdatensatzkennung"],
+                "--trailer_id", JOB_CONFIG["BHB_Endedatensatzkennung"]
+            ],
+        },
+        "labels": {
+            "uc4_object_name": "dw_rpos_carm_import",
+            "job_kennung": "rpos_carm_import"
+        }
+    }
+
+    rpos_carm_import = DataprocSubmitJobOperator(
+        task_id="rpos_carm_import",
+        job=pyspark_job_config,
+        region=GCP_REGION,
+        project_id=GCP_PROJECT_ID,
+    )
+
+    rpos_carm_import
+```
 
 ---
 
-## Context and Additional Details
-
-### 1. Job Dependencies & Cross-File Lineage
-* **Upstream Dependencies:**
-  * **Shared Module:** `abinitio_pyspark_linked_job/isccr/abinitio/bin/r_ai_start` — already migrated to BigQuery/Cloud Composer-compatible Python standard and merged (PR: `https://github.com/gurunathan-prodapt/pi-agents/pull/764`). The DAG execution utilizes standard Airflow operators and does not directly execute legacy shell wrappers.
-* **Human-Confirmed Resolutions:**
-  The following legacy scripts and includes have been reviewed by a human expert and confirmed as **not needed** on the target platform (no replacement is required):
-  * `.CCR_INIT`
-  * `.DW_INIT`
-  * `AB_CATALOG_FUNCTIONS.KSH`
-  * `DW.DWH_ADM_PRUEFE_AB_INITIO_ENDE_INC`
-  * `DW.DWH_ADM_PRUEFE_AB_INITIO_START_INC`
-  * `DW.HOLE_PFAD`
-  * `DW.LESE_LOG`
-  * `H_ALIS_DATE.KSH`
-  * `H_ALIS_DATENOBJEKT.KSH`
-  * `H_ALIS_MELDUNGEN.KSH`
-  * `H_ALIS_PARAMETER.KSH`
-
-### 2. Execution Order Preservation
-The legacy system executes dependencies in the following sequence. This order must be preserved and mapped to the target as specified:
-1. `abinitio_rpos_carmen_linked_job/DWH_BD_PROC_JOB/DW.RPOS_CARM_IMPORT.xml`
-   * **Target Mapping:** Orchestrated by the newly created Airflow DAG: `dw_rpos_carm_import`.
-2. `abinitio_rpos_carmen_linked_job/isdwh/abinitio/cfg/bd_proc/map_rpos_carmen_import.cfg`
-   * **Target Mapping:** Environment variables and static configurations are compiled into Cloud Composer/Airflow DAG `default_args` or `params`.
-3. `abinitio_rpos_carmen_linked_job/TMD_processing/BHB/BD_PROC/run/map_rpos_carmen_import.ksh`
-   * **Target Mapping:** Superseded by direct execution in Airflow via the `DataprocSubmitJobOperator`.
-4. `abinitio_rpos_carmen_linked_job/TMD_processing/BHB/BD_PROC/mp/map_rpos_carmen_import.mp`
-   * **Target Mapping:** Refactored into a Dataproc PySpark pipeline (`map_rpos_carmen_import.py`) handled in a separate design pass.
-
-### 3. Scheduling & Orchestration
-* **Legacy Triggering:** Executed as part of the `CLIENT_QUEUE` under UC4 login profile `DW.UNIX.ISTNS`.
-* **Target Scheduling:** Airflow schedule is configured to `None` (triggered externally or integrated into a parent orchestrator DAG).
+## 7. Risks & Manual Actions
+* **Missing Parent Plan (JOBP):** The UC4 extraction does not include the master schedule or job chain. A manual task remains to verify upstream orchestration triggers.
+* **GCS Path Structure Verification:** Verify that input files matching `CARMEN_B_*_pos.fix` are placed in the migrated GCS directory `gs://{GCS_BUCKET}/crs/work/` ahead of triggering this task.
 
 ---
 
-## Environment-Specific Values (Classification)
+# MIGRATION DESIGN DOCUMENT: DW.RPOS_CARM_IMPORT
 
-### 1. GLOBAL (Environment-Wide Infrastructure Constants)
-The following parameters identify target cloud infrastructure resources and must be fetched at runtime via standard Airflow Variables (`Variable.get`) or environment variables, **never** hardcoded as strings:
-* **`GCP_PROJECT`** — Google Cloud Platform Project ID.
-* **`GCP_REGION`** — GCP Region (e.g., `us-central1`).
-* **`GCS_BUCKET`** — Cloud Storage Bucket where PySpark artifacts and schema definitions reside.
-* **`DATAPROC_CLUSTER`** — Dataproc cluster name running serverless/standard PySpark.
+## 1. EXECUTIVE SUMMARY & DISPOSITION
 
-### 2. JOB-SPECIFIC (Parameters Unique to This Run)
-The following constants are strictly specific to this job's context and logic, and should be populated inline or via local configs:
-* **`DWH_JOB_KENNUNG`** — Literal value `'RPOS_CARM_IMPORT'`.
-* **`CFG_FILE`** — `'map_rpos_carmen_import.cfg'`.
+This migration design document covers the transformation of the legacy Ab Initio graph `map_rpos_carmen_import` into a PySpark pipeline optimized for Dataproc Serverless and BigQuery. The graph is responsible for reading, validating, joining, filtering, and importing commercial billing/factoring transaction records into multiple Data Warehouse (DWH) tables under a full-refresh reload cycle (DELETE-then-INSERT).
 
----
+### File Disposition Table
 
-## Risks and Manual Steps
-* **Verification of PySpark Script:** The target DAG depends on the migrated PySpark code (`map_rpos_carmen_import.py`) being loaded into Google Cloud Storage at the path specified in `main_python_file_uri`. This must be verified prior to testing the Airflow DAG.
-* **Folder Integrity Adherence:** The generated DAG script MUST be committed to `abinitio_rpos_carmen_linked_job/DWH_BD_PROC_JOB/dw_rpos_carm_import.py` in the target code repository to match the source folder structure. Do not fold this task into any sibling DAG located in a different source subdirectory.
-
----
-
-# MIGRATION DESIGN DOCUMENT: DW.RPOS_CARM_IMPORT (Ab Initio Graph)
-
-This migration design document covers the conversion of the Ab Initio graph `map_rpos_carmen_import.mp` into a PySpark pipeline designed to run on Dataproc Serverless, orchestrated via Cloud Composer (Airflow).
-
----
-
-## 1. DESIGN SCOPE & FILE DISPOSITION TABLE
-
-In accordance with the architectural boundaries defined for this design pass, **only** the source files explicitly assigned to this group are covered under the File Disposition Table and Target File Plan.
-
-### File Disposition
 | Source File Path | Target File / Action | Purpose / Reason for Action |
 | :--- | :--- | :--- |
-| `abinitio_rpos_carmen_linked_job/TMD_processing/BHB/BD_PROC/mp/map_rpos_carmen_import.mp` | `abinitio_rpos_carmen_linked_job/TMD_processing/BHB/BD_PROC/mp/map_rpos_carmen_import.py` | Migrating the Ab Initio graph mapping and processing logic to PySpark on Dataproc Serverless. |
+| `abinitio_rpos_carmen_linked_job/TMD_processing/BHB/BD_PROC/mp/map_rpos_carmen_import.mp` | `abinitio_rpos_carmen_linked_job/TMD_processing/BHB/BD_PROC/mp/map_rpos_carmen_import.py` | PySpark application mapping the complete Ab Initio data flow, filtering, historical joining, and target persistence logic. |
 
 ---
 
-## 2. CROSS-FILE / CROSS-JOB DEPENDENCIES & LINEAGE
+## 2. TARGET DESIGN & ORCHESTRATION CONTEXT
 
-This job processes billing and invoicing transactions, joining them against contract histories. The execution, sequencing, and shared module relationships must be maintained as follows on Google Cloud Platform:
+### Scheduling & Execution Order
+In the legacy environment, the execution of this job follows a multi-step sequence managed via UC4 and KornShell wrappers:
+1. **UC4 Job Definition** (`DW.RPOS_CARM_IMPORT.xml`) schedules and starts the pipeline.
+2. **Configuration Loader** (`map_rpos_carmen_import.cfg`) exports environment settings and processing constants.
+3. **KornShell Script** (`map_rpos_carmen_import.ksh`) acts as the primary runtime execution wrapper.
+4. **Ab Initio Graph** (`map_rpos_carmen_import.mp`) executes the data-processing pipeline.
 
-### 2.1. Shared Files & Common Libraries
-* **Shared Upstream Library:** `abinitio_pyspark_linked_job/isccr/abinitio/bin` has already been migrated and merged (PR #764). It contains the initialization sequence script `r_ai_start`.
-* **Target Mapping:** The converted PySpark script should import or reference the corresponding initialization utilities or setup functions from this migrated utility block at runtime.
+In the target platform (Google Cloud Platform), this orchestration is modernized using **Cloud Composer (Airflow)** and **Dataproc Serverless (PySpark)**:
+- **Cloud Composer Orchestration**: A central Airflow DAG represents the UC4 schedule.
+- **Dataproc PySpark Operators**: An Airflow operator submits the migrated PySpark script (`map_rpos_carmen_import.py`) as a Serverless batch job.
+- **Execution Order Mapping**:
+  - Task 1: Check/Sensor for incoming file in GCS matching mask `CARMEN_B_*_pos.fix` (replacing legacy `BHB_Dateimaske`).
+  - Task 2: Invoke Dataproc Serverless job running `map_rpos_carmen_import.py`.
+  - Task 3: Move processed file from staging to archive path.
 
-### 2.2. Execution Sequencing (Orchestration)
-The legacy scheduling dependencies run in a 4-step execution order. To preserve this sequence in the Cloud Composer (Airflow) DAG, the tasks must be scheduled as follows:
-1. **Trigger / Initialization:** Cloud Composer parses external inputs, mapping configuration variables from the legacy XML/CFG states.
-2. **Configuration Sourcing:** Parameters from the configuration block (`map_rpos_carmen_import.cfg`) are fed as dynamic runtime variables to the PySpark operator.
-3. **Execution Task:** The Dataproc Serverless Spark Submit Operator executes the compiled target file `map_rpos_carmen_import.py`.
+### Upstream and Downstream Job Dependencies
+- **Upstream Shared Files**: 
+  - `abinitio_pyspark_linked_job/isccr/abinitio/bin/r_ai_start` is already migrated and merged into the target environment (PR #764). The target PySpark pipeline should import or reference utility helpers from this merged library for any common startup/initialization routines.
+- **Human-Confirmed Resolutions**:
+  - The following components have been reviewed and determined as **Not Needed** for migration. They are deprecated or superseded by standard GCP / Spark native operators:
+    - `.CCR_INIT`
+    - `.DW_INIT`
+    - `AB_CATALOG_FUNCTIONS.KSH`
+    - `DW.DWH_ADM_PRUEFE_AB_INITIO_ENDE_INC`
+    - `DW.DWH_ADM_PRUEFE_AB_INITIO_START_INC`
+    - `DW.HOLE_PFAD`
+    - `DW.LESE_LOG`
+    - `H_ALIS_DATE.KSH`
+    - `H_ALIS_DATENOBJEKT.KSH`
+    - `H_ALIS_MELDUNGEN.KSH`
+    - `H_ALIS_PARAMETER.KSH`
 
-### 2.3. Lineage Edges
-* **Upstream Producers:** Input flat files arrive via an external folder pattern (represented in legacy as `$DW_DIR_IMP_SAP/crs/work/CARMEN_B_*_pos.fix`).
-* **Downstream Consumers:** Target database loads affect multiple core DWH target tables on BigQuery, including:
-  - `DWH$TA_F_RPOS_CARM`
-  - `DWH$TA_F_RPOS_FACT_CARM`
-  - `DWH$TA_F_RPOS_RESELLING_CARM`
-  - `DWH$TA_F_GPOS_FACT_CARM`
-  - `DWH$TA_T_RPOS_CARM`
-  - Operational Logging logs to `DWH$TA_K_MELDUNGEN` and `DWH$TA_K_RECH_ABSGRP`.
-
----
-
-## 3. ENVIRONMENT-SPECIFIC VALUES & POLICIES
-
-To prevent hardcoded environmental references, all environment variables must be classified and sourced dynamically at runtime based on their respective roles.
-
-### 3.1. Global Environment-Wide Values
-These values identify target platform infrastructure and remain consistent across all jobs in a given environment (dev/test/prod).
-
-| Source Legacy Ref | Canonical GCP Parameter | PySpark / Composer Retrieval Method |
-| :--- | :--- | :--- |
-| `DB_TNS_NAME_DWH` | `GCP_PROJECT` / `BQ_DATASET` | `os.environ.get("GCP_PROJECT")` / `Variable.get("BQ_DATASET")` |
-| `DW_DIR_IMP_SAP` | `GCS_BUCKET` | `os.environ.get("GCS_BUCKET")` (e.g. `gs://[environment]-dwh-import-sap`) |
-| `HOME` | `HOME` | `os.environ.get("HOME")` |
-
-### 3.2. Job-Specific Values
-These parameters are unique to this specific processing module and are extracted directly from the legacy parameter set:
-
-| Parameter Key | Extracted Legacy Value | Implementation Sourcing Method |
-| :--- | :--- | :--- |
-| `BHB_Projektverzeichnis` | `/Projects/TMD/processing/BHB/BD_PROC` | Job-specific config block parameter |
-| `BHB_Version` | `RLS_BHB_nach_64_rabatt_sap` | Job-specific config block parameter |
-| `BHB_Graph` | `map_rpos_carmen_import` | Job-specific config block parameter |
-| `BHB_Prozesstyp` | `D` | Job-specific config block parameter |
-| `BHB_Dateimaske` | `CARMEN_B_*_pos.fix` | Job-specific config block parameter |
-| `BHB_Kopfdatensatzkennung` | `H` | Job-specific config block parameter |
-| `BHB_Nutzdatensatzkennung` | `P` | Job-specific config block parameter |
-| `BHB_Endedatensatzkennung` | `X` | Job-specific config block parameter |
+### Lineage & External System Replacements
+- **File System**: Legacy localized files under Unix storage are relocated to Google Cloud Storage (GCS) buckets.
+- **Database Storage**: Oracle database schemas are mapped directly to Google BigQuery datasets.
+- **Cross-File Dependencies**: The job reads metadata/contracts from `dwh_ta_c_vertrag` and manages target load boundaries.
 
 ---
 
-## 4. VERBATIM AB INITIO GRAPH CONVERSION DESIGN
+## 3. ENVIRONMENT-SPECIFIC VALUES & CONFIGURATIONS
 
-Below is the complete, unmodified structural extraction and target PySpark architecture generated for `map_rpos_carmen_import.mp`.
+The following configuration parameters must be externalized and resolved at runtime. No hardcoded environment paths, project IDs, or connection credentials are permitted.
 
-=== VERBATIM MCP TOOL OUTPUT START ===
-GRAPH: tmp47qvv8ul
+| Legacy Variable | Target Name | Classification | Resolution Mechanism | Purpose / Usage |
+| :--- | :--- | :--- | :--- | :--- |
+| `DB_TNS_NAME_DWH` | `GCP_PROJECT` | GLOBAL | Airflow Variable / `os.environ` | Target GCP project containing destination BigQuery datasets. |
+| - | `BQ_DATASET` | GLOBAL | Airflow Variable / `os.environ` | Target BigQuery dataset (e.g. `dwh_dataset`). |
+| `DW_DIR_IMP_SAP` | `GCS_BUCKET` | GLOBAL | Airflow Variable / `os.environ` | Root cloud storage bucket where data files are uploaded. |
+| `BHB_Quellverzeichnis` | `BHB_Quellverzeichnis` | JOB-SPECIFIC | Job Parameter / Config Dict | Path to staging folder: `gs://{GCS_BUCKET}/crs/work/`. |
+| `BHB_Zielverzeichnis` | `BHB_Zielverzeichnis` | JOB-SPECIFIC | Job Parameter / Config Dict | Path to archive folder: `gs://{GCS_BUCKET}/crs/store/`. |
+| `BHB_Dateimaske` | `BHB_Dateimaske` | JOB-SPECIFIC | Job Parameter / Config Dict | Mask used to identify execution targets: `CARMEN_B_*_pos.fix`. |
+| `BHB_Kopfdatensatzkennung` | `BHB_Kopfdatensatzkennung` | JOB-SPECIFIC | Job Parameter / Config Dict | File row identifier for header data (`H`). |
+| `BHB_Nutzdatensatzkennung` | `BHB_Nutzdatensatzkennung` | JOB-SPECIFIC | Job Parameter / Config Dict | File row identifier for transaction payload rows (`P`). |
+| `BHB_Endedatensatzkennung` | `BHB_Endedatensatzkennung` | JOB-SPECIFIC | Job Parameter / Config Dict | File row identifier for operational footer (`X`). |
+
+---
+
+## 4. VERBATIM MCP TRANSLATION & ANALYSIS
+
+Below is the complete, unmodified output from the primary conversion tool `abinitio_design_pyspark`:
+
+```text
+GRAPH: tmpjbw5fv1j
 
 === SOURCES ===
 [DWH$TA_F_RPOS_CARM] kind=select
@@ -703,46 +815,26 @@ AND    rechnungsteil = :rechnungsteil
   Select "Factoring Gutschriften" --> Reformat for insert "Factoring Gutschriften"
 
 
-# DETAILED DESIGN DOCUMENT
+# 1. GRAPH OVERVIEW
 
-## 1. GRAPH OVERVIEW
-The graph `tmp47qvv8ul` processes incoming billing and invoice transaction data from raw CSV files. It parses and validates the payload records, cleanses data fields (such as decimal separator conversions), and joins the records against contract historical records loaded from `dwh$ta_c_vertrag`. Validated matches are filtered using ranking to ensure only active, relevant contract records are utilized, after which they are partitioned into various target outputs (temporary tables, reselling, factoring invoices, and factoring credit notes) using a Delete-and-Insert transactional reload pattern. Finally, metadata trailer records are compiled to update processing status and monitoring logs.
+The overall purpose of this graph is to load, validate, process, and route commercial invoice position data (RPOS CARM) from an incoming CSV data file into various database tables based on business type rules. 
+
+Specifically, the graph:
+- Reads an incoming CSV file containing transaction payload records and a processing summary footer.
+- Validates the payload records and splits them based on payload vs. footer records.
+- Joins payload records with contract history data (`dwh$ta_c_vertrag`) to append operational context, resolving historical records via specific date ranges.
+- Filters and splits validated records into four business streams based on business transaction indicators: Factoring Invoices, Factoring Credit Notes (Gutschriften), Reselling, or Temporary position data.
+- Executes a full-refresh reload cycle (DELETE matching keys before INSERT) on five target destination tables.
+- Parses metadata footer records to update file logging and registration tables (`DWH$TA_K_MELDUNGEN`, `DWH$TA_K_RECH_ABSGRP`).
 
 ---
 
-## 2. SOURCES
+# 2. SOURCES
 
-### DWH$TA_F_RPOS_CARM [table / select]
-```sql
-select rechnung_id, rechnung_datum, standardvertrags_id, vertrags_id, rech_leistung_id_carm from DWH$TA_F_RPOS_CARM
-```
-
-### DWH$TA_F_RPOS_CARM-2 [table / select]
-```sql
-select rechnung_id, rechnung_datum, standardvertrags_id, vertrags_id, rech_leistung_id_carm, debitor_id from DWH$TA_F_RPOS_CARM
-```
-
-### DWH$TA_F_RPOS_FACT_CARM [table / select]
-```sql
-select rechnung_datum, rechnung_id, standardvertrags_id, vertrags_id, rech_leistung_id_carm from DWH$TA_F_RPOS_FACT_CARM
-```
-
-### DWH$TA_F_RPOS_FACT_CARM - 2 [table / select]
-```sql
-select rechnung_datum, rechnung_id, standardvertrags_id, vertrags_id, rech_leistung_id_carm, debitor_id from DWH$TA_F_RPOS_FACT_CARM
-```
-
-### DWH$TA_F_RPOS_RESELLING_CARM [table / select]
-```sql
-select rechnung_datum, rechnung_id, standardvertrags_id, vertrags_id, rech_leistung_id_carm from DWH$TA_F_RPOS_RESELLING_CARM
-```
-
-### DWH$TA_F_RPOS_RESELLING_CARM-1 [table / select]
-```sql
-select rechnung_datum, rechnung_id, standardvertrags_id, vertrags_id, rech_leistung_id_carm, debitor_id from DWH$TA_F_RPOS_RESELLING_CARM
-```
-
-### dwh$ta_c_vertrag [table / select]
+### dwh$ta_c_vertrag
+- **Label**: `dwh$ta_c_vertrag`
+- **Kind**: select
+- **SQL**:
 ```sql
 select 
 rahmenvertrag_id,
@@ -762,15 +854,75 @@ gueltig_bis >= to_date('20050401', 'YYYYMMDD')
 and ABLOCAL(dwh$ta_c_vertrag)
 ```
 
-### Read File [file]
-- Reads the raw transaction CSV file containing payload lines (Nutzdaten) and processing trailer blocks.
+### DWH$TA_F_RPOS_CARM (Source 1)
+- **Label**: `DWH$TA_F_RPOS_CARM`
+- **Kind**: select
+- **SQL**:
+```sql
+select rechnung_id, rechnung_datum, standardvertrags_id, vertrags_id, rech_leistung_id_carm from DWH$TA_F_RPOS_CARM
+```
+
+### DWH$TA_F_RPOS_CARM (Source 2)
+- **Label**: `DWH$TA_F_RPOS_CARM-2`
+- **Kind**: select
+- **SQL**:
+```sql
+select rechnung_id, rechnung_datum, standardvertrags_id, vertrags_id, rech_leistung_id_carm, debitor_id from DWH$TA_F_RPOS_CARM
+```
+
+### DWH$TA_F_RPOS_FACT_CARM (Source 1)
+- **Label**: `DWH$TA_F_RPOS_FACT_CARM`
+- **Kind**: select
+- **SQL**:
+```sql
+select rechnung_datum, rechnung_id, standardvertrags_id, vertrags_id, rech_leistung_id_carm from DWH$TA_F_RPOS_FACT_CARM
+```
+
+### DWH$TA_F_RPOS_FACT_CARM (Source 2)
+- **Label**: `DWH$TA_F_RPOS_FACT_CARM - 2`
+- **Kind**: select
+- **SQL**:
+```sql
+select rechnung_datum, rechnung_id, standardvertrags_id, vertrags_id, rech_leistung_id_carm, debitor_id from DWH$TA_F_RPOS_FACT_CARM
+```
+
+### DWH$TA_F_RPOS_RESELLING_CARM (Source 1)
+- **Label**: `DWH$TA_F_RPOS_RESELLING_CARM`
+- **Kind**: select
+- **SQL**:
+```sql
+select rechnung_datum, rechnung_id, standardvertrags_id, vertrags_id, rech_leistung_id_carm from DWH$TA_F_RPOS_RESELLING_CARM
+```
+
+### DWH$TA_F_RPOS_RESELLING_CARM (Source 2)
+- **Label**: `DWH$TA_F_RPOS_RESELLING_CARM-1`
+- **Kind**: select
+- **SQL**:
+```sql
+select rechnung_datum, rechnung_id, standardvertrags_id, vertrags_id, rech_leistung_id_carm, debitor_id from DWH$TA_F_RPOS_RESELLING_CARM
+```
+
+### Read File (Incoming CSV Source File)
+- **Label**: `Read File`
+- **Kind**: file
+- **Path**: Path extracted via parent variable `/path/to/incoming/csv_file`
 
 ---
 
-## 3. TRANSFORMS
+# 3. TRANSFORMS
 
-### [Validate Records] (type=reformat)
-```dml
+### Reformat rechnung_datum to datetime for Delete
+- **Type**: `reformat`
+- **Expression**:
+```cozy
+out.* :: in.*;
+```
+- **Description**: Standard pass-through mapping used to align variables before a delete cycle.
+
+### Validate Records
+- **Type**: `reformat`
+- **Expression**:
+```cozy
   out.monats_id :: if(!is_valid(in.monats_id))
 force_error("Invalid data format in monats_id")
 else
@@ -801,34 +953,42 @@ else
 in.rechpos_mwst_eur;
   out.* :: in.*;
 ```
-*Ensures that essential fields contain valid values, raising a terminal run exception if validation fails.*
+- **Description**: Validates schema compliance of decimal/numeric fields in the input record, throwing a hard error if invalid formatting is found.
 
-### [replace ',' by '.'] (type=reformat)
-```dml
+### replace ',' by '.'
+- **Type**: `reformat`
+- **Expression**:
+```cozy
   out.kennzeichen :: in.kennzeichen;
   out.datensatz_rest :: string_replace(in.datensatz_rest, ',', '.');
 ```
-*Normalizes decimal data in raw strings by converting standard European comma separators into periods.*
+- **Description**: Sanitizes incoming line metadata by converting European decimal commas into standard points.
 
-### [Reformat Referencerecord] (type=reformat)
-```dml
+### Reformat Referencerecord
+- **Type**: `reformat`
+- **Expression**:
+```cozy
   out.kennzeichen :: in.kennzeichen;
   out.datensatz_rest :: in.datensatz_rest;
 ```
-*Passes raw CSV split payload lines to structural redefinition blocks.*
+- **Description**: Simple structure mapping of key and payload data.
 
-### [Reformat for delete] (type=reformat)
-```dml
+### Reformat for delete (Port 1 & 2)
+- **Type**: `reformat`
+- **Expression**:
+```cozy
   out.rechnung_id :: in.rechnung_id;
   out.rechnung_datum :: in.rechnung_datum;
   out.standardvertrags_id :: in.standardvertrags_id;
   out.vertrags_id :: in.vertrags_id;
   out.rech_leistung_id_carm :: in.rech_leistung_id_carm;
 ```
-*Extracts key logical fields from active streams to target records for key-based deletions.*
+- **Description**: Isolates primary key fields necessary for locating and deleting target records.
 
-### [Proof Join - criterias gueltig_von and gueltig_bis] (type=reformat)
-```dml
+### Proof Join - criterias gueltig_von and gueltig_bis
+- **Type**: `reformat`
+- **Expression**:
+```cozy
   let date("YYYYMMDD") month_last_day =(date('YYYYMMDD'))datetime_add(in.monats_id,date_month_end(date_month(in.monats_id),date_year(in.monats_id)));
   let integer(4) valid_flag =if ((is_null(in.gueltig_von) or month_last_day > in.gueltig_von) 
 and (is_null(in.gueltig_bis) or month_last_day <= in.gueltig_bis))
@@ -854,10 +1014,32 @@ in.zv_id;
   out.gueltig_von :: if(valid_flag == 0)
 in.gueltig_von;
 ```
-*Validates the mapping of master contract rows by ensuring their validity boundaries correspond with the processed month ending; resets matched attributes to null if validation fails.*
+- **Description**: Nullifies contract details if the transaction's month-end date falls outside the valid range specified by `gueltig_von` and `gueltig_bis`.
 
-### [Proof Join-criteriase gueltig_von and gueltig_bis] (type=reformat)
-```dml
+### Reformat for insert "fact data"
+- **Type**: `reformat`
+- **Expression**:
+```cozy
+  out.* :: in.*;
+  out.rahmenvertrag :: in.rahmenvertrag_id;
+```
+- **Description**: Prepares transactional factual data by mapping `rahmenvertrag_id` to its target database name `rahmenvertrag`.
+
+### Reformat for insert "temporary data"
+- **Type**: `reformat`
+- **Expression**:
+```cozy
+  let datetime("YYYYMMDDHH24MISS") mindate =(datetime('YYYYMMDDHH24MISS'))(string(14))'19000101000000';
+
+  out.* :: in.*;
+  out.bearbeitung_datum :: mindate;
+```
+- **Description**: Prepares temporary positions for insertions, setting metadata column `bearbeitung_datum` to standard epoch timestamp `1900-01-01 00:00:00`.
+
+### Proof Join-criteriase gueltig_von and gueltig_bis
+- **Type**: `reformat`
+- **Expression**:
+```cozy
   let date("YYYYMMDD") month_last_day =(date('YYYYMMDD')) datetime_add(in.monats_id,date_month_end(date_month(in.monats_id),date_year(in.monats_id)));
   let integer(4) valid_flag =if ((is_null(in.gueltig_von) or month_last_day > in.gueltig_von)
 and (is_null(in.gueltig_bis) or month_last_day <= in.gueltig_bis))
@@ -881,53 +1063,45 @@ in.vo_kenn;
   out.gueltig_von :: if(valid_flag == 0)
 in.gueltig_von;
 ```
-*Performs temporal boundaries verification for matched contracts (alternative interface without the `zv_id` mapping).*
+- **Description**: Alternate/paired validity proof join operation matching specific contract records.
 
-### [Reformat for insert "fact data"] (type=reformat)
-```dml
-  out.* :: in.*;
-  out.rahmenvertrag :: in.rahmenvertrag_id;
-```
-*Maps verified contract framework attributes for base targets insert processing.*
-
-### [Reformat for insert "temporary data"] (type=reformat)
-```dml
-  let datetime("YYYYMMDDHH24MISS") mindate =(datetime('YYYYMMDDHH24MISS'))(string(14))'19000101000000';
-
-  out.* :: in.*;
-  out.bearbeitung_datum :: mindate;
-```
-*Appends the baseline low-value timestamp to temporary business transactions.*
-
-### [Reformat for insert "Factoring Gutschriften"] (type=reformat)
-```dml
+### Reformat for insert "Factoring Gutschriften"
+- **Type**: `reformat`
+- **Expression**:
+```cozy
   out.* :: in.*;
   out.rech_leistung_id_carm :1: string_substring(in.rech_leistung_id_carm,1,9);
   out.rahmenvertrag :: in.rahmenvertrag_id;
   out.rech_leistung_id_carm :: in.rech_leistung_id_carm;
 ```
-*Trims performance service key identifiers to 9 characters and populates factoring credit master contract variables.*
+- **Description**: Limits `rech_leistung_id_carm` to 9 characters and assigns `rahmenvertrag_id` as the final insert attribute `rahmenvertrag`.
 
-### [Reformat for insert "Factoring Rechnungen"] (type=reformat)
-```dml
+### Reformat for insert "Factoring Rechnungen"
+- **Type**: `reformat`
+- **Expression**:
+```cozy
   out.* :: in.*;
   out.rech_leistung_id_carm :1: string_substring(in.rech_leistung_id_carm,1,9);
   out.rech_leistung_id_carm :: in.rech_leistung_id_carm;
   out.rahmenvertrag :: in.rahmenvertrag_id;
 ```
-*Maps invoice accounting details for Factoring target tables.*
+- **Description**: Standardizes Factoring Invoices attributes, applying a length constraint of 9 to the item code.
 
-### [Reformat for insert "Reselling"] (type=reformat)
-```dml
+### Reformat for insert "Reselling"
+- **Type**: `reformat`
+- **Expression**:
+```cozy
   out.* :: in.*;
   out.rech_leistung_id_carm :1: string_substring(in.rech_leistung_id_carm,1,9);
   out.rech_leistung_id_carm :: in.rech_leistung_id_carm;
   out.rahmenvertrag :: in.rahmenvertrag_id;
 ```
-*Structures processed variables to populate down-market reselling databases.*
+- **Description**: Standardizes Reselling items formatting for final ingestion.
 
-### [Reformat Enderecord for Processing] (type=reformat)
-```dml
+### Reformat Enderecord for Processing
+- **Type**: `reformat`
+- **Expression**:
+```cozy
   out.kennzeichen :: in.kennzeichen;
   out.bemerkung :: in.bemerkung;
   out.stichtag :: in.stichtag;
@@ -935,10 +1109,12 @@ in.gueltig_von;
   out.inhalt :: in.inhalt;
   out.erstellt_am :: (string_index(in.erstellt_am, ";") == 0) ? in.erstellt_am : string_substring(in.erstellt_am, 1, string_length(in.erstellt_am)-1);
 ```
-*Cleans up control metadata in trailer blocks by stripping out optional trailing separator delimiters.*
+- **Description**: Extracts and cleans the trailer/footer attributes, removing trailing semicolons if present in metadata attributes.
 
-### [Reformat for DB and Filter out where Kompl_Kennzeichen != L] (type=reformat)
-```dml
+### Reformat for DB and Filter out where Kompl_Kennzeichen != L
+- **Type**: `reformat`
+- **Expression**:
+```cozy
   out.monats_id :: (string(6))(date("YYYYMM"))date_add_months((date("YYYYMM")) string_substring(in.stichtag,1,6),-1);
   out.abs_grp :: string_substring(in.bemerkung,10,5) ;
   out.dateiname :: in.bemerkung;
@@ -946,105 +1122,145 @@ in.gueltig_von;
   out.rechnungsteil :: (string(1))"P";
   out.ladedatum :: now();
 ```
-*Prepares final job run control record states (calculates past accounting periods, structures file paths, and sets load datestamps).*
+- **Description**: Generates database run logging attributes, shifting target billing month (`monats_id`) one month back from the reporting deadline.
 
 ---
 
-## 4. IN-MEMORY LOOKUPS
-*(No static in-memory lookup files were extracted from the structural model graph definition.)*
+# 4. IN-MEMORY LOOKUPS
+
+*(No in-memory lookups were extracted from this graph config)*
 
 ---
 
-## 5. FILTERS (select_expr)
+# 5. FILTERS (select_expr)
 
-### Filter by Expression
-```dml
-rech_leistung_id_carm == "RABATT"
-```
-*Processes only transaction rows flagged specifically as rebate adjustments.*
+### Filter by Expression (Rabatt Filter)
+- **Label**: `Filter by Expression`
+- **Expression**: `rech_leistung_id_carm == "RABATT"`
+- **Effect**: Retains only rows representing active discounts.
 
 ### Split Data
-```dml
-kennzeichen == "${BHB_Nutzdatensatzkennung}"
-```
-*Isolates raw active data payloads from job execution boundaries.*
+- **Label**: `Split Data`
+- **Expression**: `kennzeichen == "${BHB_Nutzdatensatzkennung}"`
+- **Effect**: Routes payload records containing actual business data onwards.
 
-### Filter by Expression
-```dml
-delete_flag == 1
-```
-*Identifies rows targeted for removal from target tables.*
+### Filter by Expression (Delete filter)
+- **Label**: `Filter by Expression`
+- **Expression**: `delete_flag == 1`
+- **Effect**: Filters downstream pipeline datasets to locate elements explicitly flagged for deletion.
 
 ### Select "Positionen auf Debitorenebene" (temporary Data)
-```dml
-typ == 'T'
-```
-*Separates transient customer-level records from central invoice streams.*
+- **Label**: `Select "Positionen auf Debitorenebene" (temporary Data)`
+- **Expression**: `typ == 'T'`
+- **Effect**: Filters and redirects temporary items to designated target structures.
 
 ### Select "Factoring Gutschriften"
-```dml
-rpos_geschaeftsform_kenn == 'G'
-```
-*Routes data rows containing code 'G' to the Factoring Credit Memo pipeline.*
+- **Label**: `Select "Factoring Gutschriften"`
+- **Expression**: `rpos_geschaftsform_kenn == 'G'`
+- **Effect**: Routes business transaction positions containing credit indicators to factoring targets.
 
 ### Select "Factoring Rechnungen"
-```dml
-rpos_geschaeftsform_kenn == 'F'
-```
-*Routes data rows containing code 'F' to the Factoring Invoice pipeline.*
+- **Label**: `Select "Factoring Rechnungen"`
+- **Expression**: `rpos_geschaftsform_kenn == 'F'`
+- **Effect**: Isolates traditional invoice items from other processing formats.
 
 ### Select "Reselling"
-```dml
-rpos_geschaeftsform_kenn == 'R'
-```
-*Routes data rows containing code 'R' to the Reselling pipeline.*
+- **Label**: `Select "Reselling"`
+- **Expression**: `rpos_geschaftsform_kenn == 'R'`
+- **Effect**: Isolates reselling activities from traditional commercial invoices.
 
 ### Split Metadata
-```dml
-kennzeichen == "${BHB_Endedatensatzkennung}"
-```
-*Isolates file summary and validation trailers from the invoice streams.*
+- **Label**: `Split Metadata`
+- **Expression**: `kennzeichen == "${BHB_Endedatensatzkennung}"`
+- **Effect**: Isolates files metadata footer row for control validation.
 
 ---
 
-## 6. OUTPUT TARGETS
+# 6. OUTPUT TARGETS
 
-This graph uses a **DELETE-before-INSERT** pattern. In order to avoid incremental duplicate appends, current stream business keys determine the records to be purged from each respective database target prior to inserting the newly computed dataset.
+### Paired Reload Operations (Full Refresh Pattern)
 
-### PAIRED TARGET 1: [DWH$TA_F_RPOS_CARM]
-- **Kind:** Delete + Insert
-- **Table:** `dwh_ta_f_rpos_carm`
-- **Execution Order:** DELETE must execute before INSERT
-- **Purge/Identify Key Sets:** Match on `rechnung_id`, `rechnung_datum`, `standardvertrags_id`, `vertrags_id`, `rech_leistung_id_carm`.
+The following tables follow a paired **DELETE-then-INSERT** reload sequence. For each paired target, rows matching the incoming keys (isolated via `Reformat for delete` / `Reformat`) are deleted from the destination database tables prior to inserting the new record batches.
 
-### PAIRED TARGET 2: [DWH$TA_F_RPOS_FACT_CARM]
-- **Kind:** Delete + Insert
-- **Table:** `dwh_ta_f_rpos_fact_carm`
-- **Execution Order:** DELETE must execute before INSERT
-- **Purge/Identify Key Sets:** Match on `rechnung_id`, `rechnung_datum`, `standardvertrags_id`, `vertrags_id`, `rech_leistung_id_carm`.
+#### Paired Target 1: dwh_ta_f_rpos_carm
+- **Label**: `DWH$TA_F_RPOS_CARM`
+- **Kind**: delete + insert
+- **Table**: `dwh_ta_f_rpos_carm`
+- **Execution Order**: Delete matching keys before performing insertions.
+- **SQL (Delete)**:
+```sql
+DELETE FROM dwh_ta_f_rpos_carm 
+WHERE (rechnung_id, rechnung_datum, standardvertrags_id, vertrags_id, rech_leistung_id_carm) IN (
+  SELECT rechnung_id, rechnung_datum, standardvertrags_id, vertrags_id, rech_leistung_id_carm FROM incoming_deletes
+)
+```
+- **SQL (Insert)**: Explicit insert of processed payload streams.
 
-### PAIRED TARGET 3: [DWH$TA_F_RPOS_RESELLING_CARM]
-- **Kind:** Delete + Insert
-- **Table:** `dwh_ta_f_rpos_reselling_carm`
-- **Execution Order:** DELETE must execute before INSERT
-- **Purge/Identify Key Sets:** Match on `rechnung_id`, `rechnung_datum`, `standardvertrags_id`, `vertrags_id`, `rech_leistung_id_carm`.
+#### Paired Target 2: dwh_ta_f_rpos_fact_carm
+- **Label**: `DWH$TA_F_RPOS_FACT_CARM`
+- **Kind**: delete + insert
+- **Table**: `dwh_ta_f_rpos_fact_carm`
+- **Execution Order**: Delete matching keys before performing insertions.
+- **SQL (Delete)**:
+```sql
+DELETE FROM dwh_ta_f_rpos_fact_carm 
+WHERE (rechnung_id, rechnung_datum, standardvertrags_id, vertrags_id, rech_leistung_id_carm) IN (
+  SELECT rechnung_id, rechnung_datum, standardvertrags_id, vertrags_id, rech_leistung_id_carm FROM incoming_deletes
+)
+```
+- **SQL (Insert)**: Ingestion of Factoring Invoice records.
 
-### PAIRED TARGET 4: [DWH$TA_T_RPOS_CARM]
-- **Kind:** Delete + Insert
-- **Table:** `dwh_ta_t_rpos_carm`
-- **Execution Order:** DELETE must execute before INSERT
-- **Purge/Identify Key Sets:** Match on keys mapped via `Reformat für testzwecke` and `Reformat for delete`.
+#### Paired Target 3: dwh_ta_f_gpos_fact_carm
+- **Label**: `DWH$TA_F_GPOS_FACT_CARM`
+- **Kind**: delete + insert
+- **Table**: `dwh_ta_f_gpos_fact_carm`
+- **Execution Order**: Delete matching keys before performing insertions.
+- **SQL (Delete)**:
+```sql
+DELETE FROM dwh_ta_f_gpos_fact_carm 
+WHERE (rechnung_id, rechnung_datum, standardvertrags_id, vertrags_id, rech_leistung_id_carm) IN (
+  SELECT rechnung_id, rechnung_datum, standardvertrags_id, vertrags_id, rech_leistung_id_carm FROM incoming_deletes
+)
+```
+- **SQL (Insert)**: Ingestion of Factoring Credit Notes (Gutschriften).
 
-### TARGET 5: [DWH$TA_F_GPOS_FACT_CARM]
-- **Kind:** Delete + Insert
-- **Table:** `dwh_ta_f_gpos_fact_carm`
-- **Execution Order:** DELETE must execute before INSERT
-- **Purge/Identify Key Sets:** Match on keys derived via factoring credit note properties.
+#### Paired Target 4: dwh_ta_f_rpos_reselling_carm
+- **Label**: `DWH$TA_F_RPOS_RESELLING_CARM`
+- **Kind**: delete + insert
+- **Table**: `dwh_ta_f_rpos_reselling_carm`
+- **Execution Order**: Delete matching keys before performing insertions.
+- **SQL (Delete)**:
+```sql
+DELETE FROM dwh_ta_f_rpos_reselling_carm 
+WHERE (rechnung_id, rechnung_datum, standardvertrags_id, vertrags_id, rech_leistung_id_carm) IN (
+  SELECT rechnung_id, rechnung_datum, standardvertrags_id, vertrags_id, rech_leistung_id_carm FROM incoming_deletes
+)
+```
+- **SQL (Insert)**: Ingestion of Reselling records.
 
-### TARGET 6: [Update DWH$TA_K_MELDUNGEN]
-- **Kind:** update
-- **Table:** `dwh$ta_k_meldungen`
-- **Query:**
+#### Paired Target 5: dwh_ta_t_rpos_carm
+- **Label**: `DWH$TA_T_RPOS_CARM`
+- **Kind**: delete + insert
+- **Table**: `dwh_ta_t_rpos_carm`
+- **Execution Order**: Delete matching keys before performing insertions.
+- **SQL (Delete)**:
+```sql
+DELETE FROM dwh_ta_t_rpos_carm 
+WHERE (rechnung_id, rechnung_datum, standardvertrags_id, vertrags_id, rech_leistung_id_carm) IN (
+  SELECT rechnung_id, rechnung_datum, standardvertrags_id, vertrags_id, rech_leistung_id_carm FROM incoming_deletes
+)
+```
+- **SQL (Insert)**: Ingestion of Temporary transaction entries.
+
+---
+
+### Update Operational Targets
+
+#### Update DWH$TA_K_MELDUNGEN
+- **Label**: `Update DWH$TA_K_MELDUNGEN`
+- **Kind**: update
+- **Table**: `dwh$ta_k_meldungen`
+- **SQL Statement**:
 ```sql
 update dwh$ta_k_meldungen 
 set anzahl_ds_eof = :anzahl
@@ -1054,10 +1270,11 @@ set anzahl_ds_eof = :anzahl
 where entrynr = :eintragsnr
 ```
 
-### TARGET 7: [Update / Insert DWH$TA_K_RECH_ABSGRP]
-- **Kind:** update
-- **Table:** `DWH$TA_K_RECH_ABSGRP`
-- **Query:**
+#### Update / Insert DWH$TA_K_RECH_ABSGRP
+- **Label**: `Update / Insert DWH$TA_K_RECH_ABSGRP`
+- **Kind**: update
+- **Table**: `DWH$TA_K_RECH_ABSGRP`
+- **SQL Statement**:
 ```sql
 UPDATE DWH$TA_K_RECH_ABSGRP
 SET   rechnung_datum = :rechnung_datum, 
@@ -1070,89 +1287,81 @@ AND    rechnungsteil = :rechnungsteil
 
 ---
 
-## 7. DB JOINS
-*(No live DB Lookup / "Join with DB" parameterized SQL blocks were extracted from the structural model graph definition.)*
+# 7. DB JOINS
+
+*(No external Parameterized DB joins found in the extraction)*
 
 ---
 
-## 8. BUSINESS SUMMARY
-* **Ingestion & Classification:** The graph parses incoming files, isolating payload records (`${BHB_Nutzdatensatzkennung}`) from job execution and control verification footer lines (`${BHB_Endedatensatzkennung}`).
-* **Data Cleansing:** The payload data is standardized by normalizing numeric formats (replacing comma decimals with dot notations) and validated to prevent null parameters in primary invoice keys.
-* **Master Mapping:** Active payloads are joined with contract structures (`dwh$ta_c_vertrag`). Matches undergo date-boundary validation: if a matched contract's active range does not align with the transaction month's end date, the contract mapping is nullified.
-* **Priority Matching:** The matches are sorted by effective start dates and unique IDs to select the most relevant matched record (where `rankindex = 1`).
-* **Multi-Channel Distribution:** Verified records are divided into distinct tables based on business type (e.g., temporary storage, Reselling, Factoring Invoices, or Factoring Credit notes).
-* **Purge and Reload Execution:** To prevent duplicate entries, matching keys are first deleted from the target tables before inserting the fresh batch of processed invoice records.
+# 8. BUSINESS SUMMARY
+
+1. **Source Parsing and File Split**: The graph ingests an incoming CSV data stream. It replaces decimal commas with points, and splits the stream into payload transaction records (where `kennzeichen` matches the system-configured `BHB_Nutzdatensatzkennung`) and operational file footer metadata (where `kennzeichen` matches `BHB_Endedatensatzkennung`).
+2. **Contract History Synchronization**: Payload data is integrated with the historical master ledger `dwh$ta_c_vertrag`. To handle overlapping valid-to and valid-from dates, the master ledger is grouped by key and ranked, taking the most recent version. A chronological validation check (`Proof Join`) confirms whether the transaction month-end date fits within the active window of the assigned contract history range. If valid, contract mappings are retained; if invalid, they are set to null.
+3. **Business Stream Categorization**: Validated transactions are categorized based on indicators:
+   - Records with `typ == 'T'` are identified as temporary.
+   - Factoring indicators `rpos_geschaftsform_kenn` classify transactions as Gutschriften ('G') or Rechnungen ('F').
+   - Reselling indicators classify transactions as 'R'.
+   - Remaining elements flow to general commercial outputs.
+4. **Target Clearance and Full-Refresh Loading**: To ensure data consistency and prevent duplication, a full-refresh reload cycle is triggered: matching keys are isolated from the processed records, deleted from the active target tables (`dwh_ta_f_rpos_carm`, `dwh_ta_f_rpos_fact_carm`, `dwh_ta_f_gpos_fact_carm`, `dwh_ta_f_rpos_reselling_carm`, `dwh_ta_t_rpos_carm`), and then the freshly computed entries are appended.
+5. **Metadata Verification and Control Ingestion**: Concurrently, the operational footer metadata is parsed to extract record tallies, creation dates, and descriptions. These metrics are persisted to audit targets `dwh$ta_k_meldungen` and `DWH$TA_K_RECH_ABSGRP` to log the process run execution details.
 
 ---
 
-# PYSPARK PYSPARK SQL PSEUDOCODE OUTLINE
+# SPARK SQL PSEUDOCODE OUTLINE
 
 ```python
-# tmp47qvv8ul - PySpark Ingestion and Processing Pipeline
+# Setup BigQuery Sources
+df_c_vertrag_src = spark.read.format("bigquery").load("BIGQUERY_SOURCE_DS.dwh_ta_c_vertrag")
+df_rpos_carm_src = spark.read.format("bigquery").load("BIGQUERY_SOURCE_DS.dwh_ta_f_rpos_carm")
+df_rpos_fact_src = spark.read.format("bigquery").load("BIGQUERY_SOURCE_DS.dwh_ta_f_rpos_fact_carm")
+df_rpos_reselling_src = spark.read.format("bigquery").load("BIGQUERY_SOURCE_DS.dwh_ta_f_rpos_reselling_carm")
 
-# Read primary CSV stream source
+# Read Input CSV file
 df_raw_file = spark.read.format("csv") \
     .option("header", "false") \
     .option("delimiter", ";") \
-    .load("BIGQUERY_SOURCE_DS.raw_invoice_input_file")
-df_raw_file.createOrReplaceTempView("vw_raw_file")
+    .load("/path/to/incoming/csv_file")
 
-# Step 1: Split active data rows (Nutzdaten)
-df_nutzdaten = spark.sql("""
+df_raw_file.createOrReplaceTempView("raw_file_view")
+
+# Step 1: replace ',' by '.' to sanitize decimals
+df_sanitized = spark.sql("""
     SELECT 
         _c0 AS kennzeichen,
-        _c1 AS monats_id,
-        _c2 AS rechnung_datum,
-        _c3 AS standardvertrags_id,
-        _c4 AS vertrags_id,
-        _c5 AS rech_leistung_id_carm,
-        _c6 AS rechpos_brutto_eur,
-        _c7 AS rechpos_netto_eur,
-        _c8 AS rechpos_mwst_eur,
-        _c9 AS rpos_geschaeftsform_kenn,
-        _c10 AS typ,
-        _c11 AS datensatz_rest
-    FROM vw_raw_file
-    WHERE _c0 = '${BHB_Nutzdatensatzkennung}'
+        replace(_c1, ',', '.') AS datensatz_rest,
+        _c2 AS monats_id,
+        _c3 AS rechnung_datum,
+        _c4 AS standardvertrags_id,
+        _c5 AS vertrags_id,
+        _c6 AS rech_leistung_id_carm,
+        _c7 AS rechpos_brutto_eur,
+        _c8 AS rechpos_netto_eur,
+        _c9 AS rechpos_mwst_eur,
+        _c10 AS rpos_geschaftsform_kenn,
+        _c11 AS typ,
+        _c12 AS stichtag,
+        _c13 AS bemerkung,
+        _c14 AS anzahl,
+        _c15 AS inhalt,
+        _c16 AS erstellt_am
+    FROM raw_file_view
 """)
-df_nutzdaten.createOrReplaceTempView("vw_nutzdaten")
+df_sanitized.createOrReplaceTempView("sanitized_view")
 
-# Step 2: Split control footer records (Metadaten)
-df_metadata = spark.sql("""
-    SELECT 
-        _c0 AS kennzeichen,
-        _c1 AS bemerkung,
-        _c2 AS stichtag,
-        _c3 AS anzahl,
-        _c4 AS inhalt,
-        _c5 AS erstellt_am,
-        _c6 AS entrynr
-    FROM vw_raw_file
-    WHERE _c0 = '${BHB_Endedatensatzkennung}'
+# Step 2: Split Payload and Metadata Trailer
+df_payload = spark.sql("""
+    SELECT * FROM sanitized_view 
+    WHERE kennzeichen = '${BHB_Nutzdatensatzkennung}'
 """)
-df_metadata.createOrReplaceTempView("vw_metadata")
+df_payload.createOrReplaceTempView("payload_view")
 
-# Step 3: Numeric normalization (decimal comma replace)
-df_normalized = spark.sql("""
-    SELECT 
-        kennzeichen,
-        monats_id,
-        rechnung_datum,
-        standardvertrags_id,
-        vertrags_id,
-        rech_leistung_id_carm,
-        rechpos_brutto_eur,
-        rechpos_netto_eur,
-        rechpos_mwst_eur,
-        rpos_geschaeftsform_kenn,
-        typ,
-        regexp_replace(datensatz_rest, ',', '.') AS datensatz_rest
-    FROM vw_nutzdaten
+df_trailer = spark.sql("""
+    SELECT * FROM sanitized_view 
+    WHERE kennzeichen = '${BHB_Endedatensatzkennung}'
 """)
-df_normalized.createOrReplaceTempView("vw_normalized")
+df_trailer.createOrReplaceTempView("trailer_view")
 
-# Step 4: Strict validation checks
-# If any required field is invalid, we flag the run (mimics force_error)
+# Step 3: Validate Records on Payload
 df_validated = spark.sql("""
     SELECT 
         CASE WHEN monats_id IS NULL THEN raise_error("Invalid data format in monats_id") ELSE monats_id END AS monats_id,
@@ -1162,39 +1371,36 @@ df_validated = spark.sql("""
         CASE WHEN rechpos_brutto_eur IS NULL THEN raise_error("Invalid data format in rechpos_brutto_eur") ELSE rechpos_brutto_eur END AS rechpos_brutto_eur,
         CASE WHEN rechpos_netto_eur IS NULL THEN raise_error("Invalid data format in rechpos_netto_eur") ELSE rechpos_netto_eur END AS rechpos_netto_eur,
         CASE WHEN rechpos_mwst_eur IS NULL THEN raise_error("Invalid data format in rechpos_mwst_eur") ELSE rechpos_mwst_eur END AS rechpos_mwst_eur,
+        rpos_geschaftsform_kenn,
         rech_leistung_id_carm,
-        rpos_geschaeftsform_kenn,
-        typ,
-        datensatz_rest
-    FROM vw_normalized
+        typ
+    FROM payload_view
 """)
-df_validated.createOrReplaceTempView("vw_validated")
+df_validated.createOrReplaceTempView("validated_view")
 
-# Step 5: Read master contract database history (dwh$ta_c_vertrag)
-df_vertrag = spark.read.format("bigquery").option("table", "BIGQUERY_SOURCE_DS.dwh_ta_c_vertrag").load()
-df_vertrag.createOrReplaceTempView("vw_vertrag_src")
+# Step 4: Process and Dedup Master Contract Ledger (dwh_ta_c_vertrag)
+df_c_vertrag_filtered = df_c_vertrag_src.filter("gueltig_bis >= to_date('20050401', 'yyyyMMdd')")
+df_c_vertrag_filtered.createOrReplaceTempView("c_vertrag_raw")
 
-df_vertrag_filtered = spark.sql("""
-    SELECT 
-        rahmenvertrag_id,
-        vertrag_id_carmen,
-        dwh_vertrag_id,
-        dwh_gp_id,
-        dwh_konto_id,
-        dwh_tarifgr_id,
-        vo_kenn,
-        zv_id,
-        gueltig_von, 
-        gueltig_bis
-    FROM vw_vertrag_src
-    WHERE gueltig_bis >= CAST('2005-04-01' AS DATE)
+df_contract_ranked = spark.sql("""
+    SELECT *,
+           row_number() OVER (
+               PARTITION BY vertrag_id_carmen 
+               ORDER BY gueltig_von DESC, dwh_vertrag_id DESC
+           ) as rankindex
+    FROM c_vertrag_raw
 """)
-df_vertrag_filtered.createOrReplaceTempView("vw_vertrag_filtered")
+df_contract_ranked.createOrReplaceTempView("contract_ranked_view")
 
-# Step 6: Map contracts (Left Join)
-df_mapped_vertrag = spark.sql("""
+df_contract_dedup = spark.sql("""
+    SELECT * FROM contract_ranked_view WHERE rankindex = 1
+""")
+df_contract_dedup.createOrReplaceTempView("contract_dedup_view")
+
+# Step 5: Join Payload with Deduped Master Ledger and Apply Proof Join Date Ranges
+df_joined_payload = spark.sql("""
     SELECT 
-        i.*,
+        p.*,
         v.rahmenvertrag_id,
         v.dwh_vertrag_id,
         v.dwh_gp_id,
@@ -1204,502 +1410,361 @@ df_mapped_vertrag = spark.sql("""
         v.zv_id,
         v.gueltig_von,
         v.gueltig_bis
-    FROM vw_validated i
-    LEFT JOIN vw_vertrag_filtered v ON i.vertrags_id = v.vertrag_id_carmen
+    FROM validated_view p
+    LEFT JOIN contract_dedup_view v ON p.vertrags_id = v.vertrag_id_carmen
 """)
-df_mapped_vertrag.createOrReplaceTempView("vw_mapped_vertrag")
+df_joined_payload.createOrReplaceTempView("joined_payload_view")
 
-# Step 7: Proof Join temporal ranges verification
-df_proofed = spark.sql("""
-    WITH prep_proof AS (
-        SELECT *,
-            last_day(to_date(concat(monats_id, '01'), 'yyyyMMdd')) AS month_last_day
-        FROM vw_mapped_vertrag
-    ),
-    flagged_proof AS (
-        SELECT *,
-            CASE WHEN (gueltig_von IS NULL OR month_last_day > gueltig_von)
-                      AND (gueltig_bis IS NULL OR month_last_day <= gueltig_bis)
-                 THEN 0 ELSE 1 END AS valid_flag
-        FROM prep_proof
-    )
+# Apply proof validation ranges mapping
+df_proofed_payload = spark.sql("""
     SELECT 
-        monats_id,
-        rechnung_datum,
-        standardvertrags_id,
-        vertrags_id,
-        rech_leistung_id_carm,
-        rechpos_brutto_eur,
-        rechpos_netto_eur,
-        rechpos_mwst_eur,
-        rpos_geschaeftsform_kenn,
-        typ,
-        datensatz_rest,
-        CASE WHEN valid_flag = 0 THEN rahmenvertrag_id ELSE NULL END AS rahmenvertrag_id,
-        CASE WHEN valid_flag = 0 THEN dwh_vertrag_id ELSE NULL END AS dwh_vertrag_id,
-        CASE WHEN valid_flag = 0 THEN dwh_gp_id ELSE NULL END AS dwh_gp_id,
-        CASE WHEN valid_flag = 0 THEN dwh_konto_id ELSE NULL END AS dwh_konto_id,
-        CASE WHEN valid_flag = 0 THEN dwh_tarifgr_id ELSE NULL END AS dwh_tarifgr_id,
-        CASE WHEN valid_flag = 0 THEN vo_kenn ELSE NULL END AS vo_kenn,
-        CASE WHEN valid_flag = 0 THEN zv_id ELSE NULL END AS zv_id,
-        CASE WHEN valid_flag = 0 THEN gueltig_von ELSE NULL END AS gueltig_von,
-        CASE WHEN valid_flag = 0 THEN gueltig_bis ELSE NULL END AS gueltig_bis
-    FROM flagged_proof
+        j.*,
+        CASE 
+            WHEN (j.gueltig_von IS NULL OR last_day(to_date(j.monats_id, 'yyyyMM')) > j.gueltig_von)
+                 AND (j.gueltig_bis IS NULL OR last_day(to_date(j.monats_id, 'yyyyMM')) <= j.gueltig_bis)
+            THEN j.rahmenvertrag_id 
+            ELSE NULL 
+        END AS checked_rahmenvertrag_id
+    FROM joined_payload_view j
 """)
-df_proofed.createOrReplaceTempView("vw_proofed")
+df_proofed_payload.createOrReplaceTempView("proofed_payload_view")
 
-# Step 8: Priority Deduplication (Ranking contract matches)
-df_ranked = spark.sql("""
+# Step 6: Split Payload into Destination Streams
+# Stream A: Factoring Gutschriften (G)
+df_factoring_g = spark.sql("""
+    SELECT *, 
+           substring(rech_leistung_id_carm, 1, 9) AS rech_leistung_id_carm_short,
+           checked_rahmenvertrag_id AS rahmenvertrag
+    FROM proofed_payload_view
+    WHERE rpos_geschaftsform_kenn = 'G'
+""")
+df_factoring_g.createOrReplaceTempView("factoring_g_view")
+
+# Stream B: Factoring Rechnungen (F)
+df_factoring_f = spark.sql("""
     SELECT *,
-        row_number() OVER (
-            PARTITION BY vertrags_id, monats_id, rechnung_datum, standardvertrags_id
-            ORDER BY gueltig_von DESC, dwh_vertrag_id DESC
-        ) AS rankindex
-    FROM vw_proofed
+           substring(rech_leistung_id_carm, 1, 9) AS rech_leistung_id_carm_short,
+           checked_rahmenvertrag_id AS rahmenvertrag
+    FROM proofed_payload_view
+    WHERE rpos_geschaftsform_kenn = 'F'
 """)
-df_ranked.createOrReplaceTempView("vw_ranked")
+df_factoring_f.createOrReplaceTempView("factoring_f_view")
 
-df_clean_active_records = spark.sql("""
-    SELECT * FROM vw_ranked WHERE rankindex = 1
-""")
-df_clean_active_records.createOrReplaceTempView("vw_clean_active_records")
-
-
-# --- ROUTING TARGET 1: Temporary Storage Debitor Accounts ('T') ---
-
-df_temp_records = spark.sql("""
-    SELECT *,
-        CAST('1900-01-01 00:00:00' AS TIMESTAMP) AS bearbeitung_datum
-    FROM vw_clean_active_records
-    WHERE typ = 'T'
-""")
-df_temp_records.createOrReplaceTempView("vw_temp_records")
-
-
-# --- ROUTING TARGET 2: Factoring Credit Notes ('G') ---
-
-df_factoring_gutschriften = spark.sql("""
-    SELECT *,
-        substring(rech_leistung_id_carm, 1, 9) AS trimmed_leistung_id,
-        rahmenvertrag_id AS rahmenvertrag
-    FROM vw_clean_active_records
-    WHERE rpos_geschaeftsform_kenn = 'G'
-""")
-df_factoring_gutschriften.createOrReplaceTempView("vw_factoring_gutschriften")
-
-
-# --- ROUTING TARGET 3: Factoring Invoices ('F') ---
-
-df_factoring_rechnungen = spark.sql("""
-    SELECT *,
-        substring(rech_leistung_id_carm, 1, 9) AS trimmed_leistung_id,
-        rahmenvertrag_id AS rahmenvertrag
-    FROM vw_clean_active_records
-    WHERE rpos_geschaeftsform_kenn = 'F'
-""")
-df_factoring_rechnungen.createOrReplaceTempView("vw_factoring_rechnungen")
-
-
-# --- ROUTING TARGET 4: Downmarket Reselling Contracts ('R') ---
-
+# Stream C: Reselling (R)
 df_reselling = spark.sql("""
     SELECT *,
-        substring(rech_leistung_id_carm, 1, 9) AS trimmed_leistung_id,
-        rahmenvertrag_id AS rahmenvertrag
-    FROM vw_clean_active_records
-    WHERE rpos_geschaeftsform_kenn = 'R'
+           substring(rech_leistung_id_carm, 1, 9) AS rech_leistung_id_carm_short,
+           checked_rahmenvertrag_id AS rahmenvertrag
+    FROM proofed_payload_view
+    WHERE rpos_geschaftsform_kenn = 'R'
 """)
-df_reselling.createOrReplaceTempView("vw_reselling")
+df_reselling.createOrReplaceTempView("reselling_view")
 
-
-# --- ROUTING TARGET 5: Base Invoice Transactions (Remaining Standard Records) ---
-
-df_base_invoice = spark.sql("""
+# Stream D: Temporary positions
+df_temp_data = spark.sql("""
     SELECT *,
-        rahmenvertrag_id AS rahmenvertrag
-    FROM vw_clean_active_records
-    WHERE typ != 'T' AND rpos_geschaeftsform_kenn NOT IN ('G', 'F', 'R')
+           to_timestamp('19000101000000', 'yyyyMMddHHmmss') AS bearbeitung_datum
+    FROM proofed_payload_view
+    WHERE typ = 'T'
 """)
-df_base_invoice.createOrReplaceTempView("vw_base_invoice")
+df_temp_data.createOrReplaceTempView("temp_data_view")
+
+# Stream E: General RPOS CARM Ingestion
+df_general_carm = spark.sql("""
+    SELECT *,
+           checked_rahmenvertrag_id AS rahmenvertrag
+    FROM proofed_payload_view
+""")
+df_general_carm.createOrReplaceTempView("general_carm_view")
 
 
 # ==========================================
-# TRANSACTIONAL RELOAD: DELETE BEFORE INSERT
+# PARED RELOAD OPERATIONS (DELETE THEN INSERT)
 # ==========================================
 
-# -- TRANSACTION 1: Target dwh_ta_t_rpos_carm --
-df_existing_temp = spark.read.format("bigquery").option("table", "BIGQUERY_TARGET_DS.dwh_ta_t_rpos_carm").load()
-df_existing_temp.createOrReplaceTempView("vw_existing_temp")
-
-df_target_temp_post_delete = spark.sql("""
-    SELECT e.* 
-    FROM vw_existing_temp e
-    LEFT ANTI JOIN vw_temp_records n ON 
-        e.vertrags_id = n.vertrags_id AND 
-        e.monats_id = n.monats_id
+# Target 1: dwh_ta_f_rpos_carm Reload Cycle
+df_keys_to_delete_carm = spark.sql("""
+    SELECT DISTINCT rechnung_id, rechnung_datum, standardvertrags_id, vertrags_id, rech_leistung_id_carm 
+    FROM general_carm_view
 """)
-df_target_temp_post_delete.createOrReplaceTempView("vw_target_temp_post_delete")
+# Execute deletion logic on target dwh_ta_f_rpos_carm via Left Anti Join
+df_active_target_carm = spark.read.format("bigquery").load("BIGQUERY_SOURCE_DS.dwh_ta_f_rpos_carm")
+df_cleared_carm = df_active_target_carm.join(
+    df_keys_to_delete_carm,
+    on=["rechnung_id", "rechnung_datum", "standardvertrags_id", "vertrags_id", "rech_leistung_id_carm"],
+    how="leftanti"
+)
+df_final_insert_carm = df_cleared_carm.unionByName(df_general_carm, allowMissingColumns=True)
+write_to_bq(df_final_insert_carm, "dwh_ta_f_rpos_carm")
 
-df_final_temp_write = spark.sql("""
-    SELECT * FROM vw_target_temp_post_delete
-    UNION ALL
-    SELECT 
-        vertrags_id,
-        monats_id,
-        bearbeitung_datum
-    FROM vw_temp_records
+
+# Target 2: dwh_ta_f_rpos_fact_carm Reload Cycle (Factoring Rechnungen)
+df_keys_to_delete_fact_f = spark.sql("""
+    SELECT DISTINCT rechnung_id, rechnung_datum, standardvertrags_id, vertrags_id, rech_leistung_id_carm 
+    FROM factoring_f_view
 """)
-write_to_bq(df_final_temp_write, "BIGQUERY_TARGET_DS.dwh_ta_t_rpos_carm")
+df_active_target_fact_f = spark.read.format("bigquery").load("BIGQUERY_SOURCE_DS.dwh_ta_f_rpos_fact_carm")
+df_cleared_fact_f = df_active_target_fact_f.join(
+    df_keys_to_delete_fact_f,
+    on=["rechnung_id", "rechnung_datum", "standardvertrags_id", "vertrags_id", "rech_leistung_id_carm"],
+    how="leftanti"
+)
+df_final_insert_fact_f = df_cleared_fact_f.unionByName(df_factoring_f, allowMissingColumns=True)
+write_to_bq(df_final_insert_fact_f, "dwh_ta_f_rpos_fact_carm")
 
 
-# -- TRANSACTION 2: Target dwh_ta_f_gpos_fact_carm --
-df_existing_gpos = spark.read.format("bigquery").option("table", "BIGQUERY_TARGET_DS.dwh_ta_f_gpos_fact_carm").load()
-df_existing_gpos.createOrReplaceTempView("vw_existing_gpos")
-
-df_target_gpos_post_delete = spark.sql("""
-    SELECT e.* 
-    FROM vw_existing_gpos e
-    LEFT ANTI JOIN vw_factoring_gutschriften n ON 
-        e.rechnung_id = n.rechnung_id AND
-        e.rechnung_datum = n.rechnung_datum AND
-        e.standardvertrags_id = n.standardvertrags_id AND
-        e.vertrags_id = n.vertrags_id AND
-        e.rech_leistung_id_carm = n.rech_leistung_id_carm
+# Target 3: dwh_ta_f_gpos_fact_carm Reload Cycle (Factoring Gutschriften)
+df_keys_to_delete_fact_g = spark.sql("""
+    SELECT DISTINCT rechnung_id, rechnung_datum, standardvertrags_id, vertrags_id, rech_leistung_id_carm 
+    FROM factoring_g_view
 """)
-df_target_gpos_post_delete.createOrReplaceTempView("vw_target_gpos_post_delete")
+df_active_target_fact_g = spark.read.format("bigquery").load("BIGQUERY_SOURCE_DS.dwh_ta_f_gpos_fact_carm")
+df_cleared_fact_g = df_active_target_fact_g.join(
+    df_keys_to_delete_fact_g,
+    on=["rechnung_id", "rechnung_datum", "standardvertrags_id", "vertrags_id", "rech_leistung_id_carm"],
+    how="leftanti"
+)
+df_final_insert_fact_g = df_cleared_fact_g.unionByName(df_factoring_g, allowMissingColumns=True)
+write_to_bq(df_final_insert_fact_g, "dwh_ta_f_gpos_fact_carm")
 
-df_final_gpos_write = spark.sql("""
-    SELECT * FROM vw_target_gpos_post_delete
-    UNION ALL
-    SELECT 
-        rechnung_id,
-        rechnung_datum,
-        standardvertrags_id,
-        vertrags_id,
-        trimmed_leistung_id AS rech_leistung_id_carm,
-        rahmenvertrag
-    FROM vw_factoring_gutschriften
+
+# Target 4: dwh_ta_f_rpos_reselling_carm Reload Cycle (Reselling)
+df_keys_to_delete_reselling = spark.sql("""
+    SELECT DISTINCT rechnung_id, rechnung_datum, standardvertrags_id, vertrags_id, rech_leistung_id_carm 
+    FROM reselling_view
 """)
-write_to_bq(df_final_gpos_write, "BIGQUERY_TARGET_DS.dwh_ta_f_gpos_fact_carm")
+df_active_target_reselling = spark.read.format("bigquery").load("BIGQUERY_SOURCE_DS.dwh_ta_f_rpos_reselling_carm")
+df_cleared_reselling = df_active_target_reselling.join(
+    df_keys_to_delete_reselling,
+    on=["rechnung_id", "rechnung_datum", "standardvertrags_id", "vertrags_id", "rech_leistung_id_carm"],
+    how="leftanti"
+)
+df_final_insert_reselling = df_cleared_reselling.unionByName(df_reselling, allowMissingColumns=True)
+write_to_bq(df_final_insert_reselling, "dwh_ta_f_rpos_reselling_carm")
 
 
-# -- TRANSACTION 3: Target dwh_ta_f_rpos_fact_carm --
-df_existing_rpos_fact = spark.read.format("bigquery").option("table", "BIGQUERY_TARGET_DS.dwh_ta_f_rpos_fact_carm").load()
-df_existing_rpos_fact.createOrReplaceTempView("vw_existing_rpos_fact")
-
-df_target_rpos_fact_post_delete = spark.sql("""
-    SELECT e.* 
-    FROM vw_existing_rpos_fact e
-    LEFT ANTI JOIN vw_factoring_rechnungen n ON 
-        e.rechnung_id = n.rechnung_id AND
-        e.rechnung_datum = n.rechnung_datum AND
-        e.standardvertrags_id = n.standardvertrags_id AND
-        e.vertrags_id = n.vertrags_id AND
-        e.rech_leistung_id_carm = n.rech_leistung_id_carm
+# Target 5: dwh_ta_t_rpos_carm Reload Cycle (Temporary Data)
+df_keys_to_delete_temp = spark.sql("""
+    SELECT DISTINCT rechnung_id, rechnung_datum, standardvertrags_id, vertrags_id, rech_leistung_id_carm 
+    FROM temp_data_view
 """)
-df_target_rpos_fact_post_delete.createOrReplaceTempView("vw_target_rpos_fact_post_delete")
-
-df_final_rpos_fact_write = spark.sql("""
-    SELECT * FROM vw_target_rpos_fact_post_delete
-    UNION ALL
-    SELECT 
-        rechnung_id,
-        rechnung_datum,
-        standardvertrags_id,
-        vertrags_id,
-        trimmed_leistung_id AS rech_leistung_id_carm,
-        rahmenvertrag
-    FROM vw_factoring_rechnungen
-""")
-write_to_bq(df_final_rpos_fact_write, "BIGQUERY_TARGET_DS.dwh_ta_f_rpos_fact_carm")
-
-
-# -- TRANSACTION 4: Target dwh_ta_f_rpos_reselling_carm --
-df_existing_reselling = spark.read.format("bigquery").option("table", "BIGQUERY_TARGET_DS.dwh_ta_f_rpos_reselling_carm").load()
-df_existing_reselling.createOrReplaceTempView("vw_existing_reselling")
-
-df_target_reselling_post_delete = spark.sql("""
-    SELECT e.* 
-    FROM vw_existing_reselling e
-    LEFT ANTI JOIN vw_reselling n ON 
-        e.rechnung_id = n.rechnung_id AND
-        e.rechnung_datum = n.rechnung_datum AND
-        e.standardvertrags_id = n.standardvertrags_id AND
-        e.vertrags_id = n.vertrags_id AND
-        e.rech_leistung_id_carm = n.rech_leistung_id_carm
-""")
-df_target_reselling_post_delete.createOrReplaceTempView("vw_target_reselling_post_delete")
-
-df_final_reselling_write = spark.sql("""
-    SELECT * FROM vw_target_reselling_post_delete
-    UNION ALL
-    SELECT 
-        rechnung_id,
-        rechnung_datum,
-        standardvertrags_id,
-        vertrags_id,
-        trimmed_leistung_id AS rech_leistung_id_carm,
-        rahmenvertrag
-    FROM vw_reselling
-""")
-write_to_bq(df_final_reselling_write, "BIGQUERY_TARGET_DS.dwh_ta_f_rpos_reselling_carm")
-
-
-# -- TRANSACTION 5: Target dwh_ta_f_rpos_carm --
-df_existing_rpos_carm = spark.read.format("bigquery").option("table", "BIGQUERY_TARGET_DS.dwh_ta_f_rpos_carm").load()
-df_existing_rpos_carm.createOrReplaceTempView("vw_existing_rpos_carm")
-
-df_target_rpos_carm_post_delete = spark.sql("""
-    SELECT e.* 
-    FROM vw_existing_rpos_carm e
-    LEFT ANTI JOIN vw_base_invoice n ON 
-        e.rechnung_id = n.rechnung_id AND
-        e.rechnung_datum = n.rechnung_datum AND
-        e.standardvertrags_id = n.standardvertrags_id AND
-        e.vertrags_id = n.vertrags_id AND
-        e.rech_leistung_id_carm = n.rech_leistung_id_carm
-""")
-df_target_rpos_carm_post_delete.createOrReplaceTempView("vw_target_rpos_carm_post_delete")
-
-df_final_rpos_carm_write = spark.sql("""
-    SELECT * FROM vw_target_rpos_carm_post_delete
-    UNION ALL
-    SELECT 
-        rechnung_id,
-        rechnung_datum,
-        standardvertrags_id,
-        vertrags_id,
-        rech_leistung_id_carm,
-        rahmenvertrag
-    FROM vw_base_invoice
-""")
-write_to_bq(df_final_rpos_carm_write, "BIGQUERY_TARGET_DS.dwh_ta_f_rpos_carm")
+df_active_target_temp = spark.read.format("bigquery").load("BIGQUERY_SOURCE_DS.dwh_ta_t_rpos_carm")
+df_cleared_temp = df_active_target_temp.join(
+    df_keys_to_delete_temp,
+    on=["rechnung_id", "rechnung_datum", "standardvertrags_id", "vertrags_id", "rech_leistung_id_carm"],
+    how="leftanti"
+)
+df_final_insert_temp = df_cleared_temp.unionByName(df_temp_data, allowMissingColumns=True)
+write_to_bq(df_final_insert_temp, "dwh_ta_t_rpos_carm")
 
 
 # ==========================================
-# METADATA & OPERATIONAL LOGGING UPDATES
+# METADATA TRAILER / OPERATIONAL TARGETS
 # ==========================================
 
-# Clean metadata ends (stripping semicolons)
-df_metadata_clean = spark.sql("""
+# Step 7: Reformat Enderecord Metadata for processing
+df_trailer_processed = spark.sql("""
     SELECT 
         kennzeichen,
-        bemerkung,
-        stichtag,
-        anzahl,
-        inhalt,
-        CASE WHEN instr(erstellt_am, ';') = 0 THEN erstellt_am
-             ELSE substring(erstellt_am, 1, length(erstellt_am) - 1)
-        END AS erstellt_am,
-        entrynr
-    FROM vw_metadata
-""")
-df_metadata_clean.createOrReplaceTempView("vw_metadata_clean")
-
-# Reformat trailer row parameters for accounting logging update
-df_meta_calculated = spark.sql("""
-    SELECT 
-        -- monats_id: Subtract 1 month from stichtag
-        CAST(add_months(to_date(substring(stichtag, 1, 6), 'yyyyMM'), -1) AS STRING) AS monats_id,
-        substring(bemerkung, 10, 5) AS abs_grp,
         bemerkung AS dateiname,
+        bemerkung AS zusatzinfo,
+        stichtag,
+        anzahl AS anzahl_ds_eof,
+        inhalt AS enderecord_text,
+        CASE 
+            WHEN instr(erstellt_am, ';') = 0 THEN erstellt_am 
+            ELSE substring(erstellt_am, 1, length(erstellt_am) - 1) 
+        END AS erstellt_am
+    FROM trailer_view
+""")
+df_trailer_processed.createOrReplaceTempView("trailer_processed_view")
+
+# Step 8: Update Operational Run Logging Table (DWH$TA_K_MELDUNGEN)
+df_meldungen_update = spark.sql("""
+    SELECT 
+        t.anzahl_ds_eof,
+        t.dateiname,
+        t.enderecord_text,
+        t.zusatzinfo,
+        m.entrynr
+    FROM BIGQUERY_SOURCE_DS.dwh_ta_k_meldungen m
+    CROSS JOIN trailer_processed_view t
+""")
+# Update logic writeback
+write_to_bq(df_meldungen_update, "dwh_ta_k_meldungen")
+
+# Step 9: Process and Save Run Logging (DWH$TA_K_RECH_ABSGRP)
+df_absgrp_processed = spark.sql("""
+    SELECT 
+        date_format(add_months(to_date(substring(stichtag, 1, 6), 'yyyyMM'), -1), 'yyyyMM') AS monats_id,
+        substring(dateiname, 10, 5) AS abs_grp,
+        dateiname,
         to_date(stichtag, 'yyyyMMdd') AS rechnung_datum,
         'P' AS rechnungsteil,
-        current_timestamp() AS ladedatum,
-        anzahl,
-        inhalt,
-        bemerkung,
-        entrynr
-    FROM vw_metadata_clean
+        current_timestamp() AS ladedatum
+    FROM trailer_processed_view
 """)
-df_meta_calculated.createOrReplaceTempView("vw_meta_calculated")
+df_absgrp_processed.createOrReplaceTempView("absgrp_processed_view")
 
-# Update 1: Update log table dwh$ta_k_meldungen
-df_existing_meldungen = spark.read.format("bigquery").option("table", "BIGQUERY_TARGET_DS.dwh_ta_k_meldungen").load()
-df_existing_meldungen.createOrReplaceTempView("vw_existing_meldungen")
-
-df_updated_meldungen = spark.sql("""
-    SELECT 
-        e.entrynr,
-        coalesce(m.anzahl, e.anzahl_ds_eof) AS anzahl_ds_eof,
-        coalesce(m.dateiname, e.dateiname) AS dateiname,
-        coalesce(m.inhalt, e.enderecord_text) AS enderecord_text,
-        coalesce(m.bemerkung, e.zusatzinfo) AS zusatzinfo
-    FROM vw_existing_meldungen e
-    LEFT JOIN vw_meta_calculated m ON e.entrynr = m.entrynr
-""")
-write_to_bq(df_updated_meldungen, "BIGQUERY_TARGET_DS.dwh_ta_k_meldungen")
-
-# Update 2: Update/Insert DWH$TA_K_RECH_ABSGRP run markers
-df_existing_rech_absgrp = spark.read.format("bigquery").option("table", "BIGQUERY_TARGET_DS.dwh_ta_k_rech_absgrp").load()
-df_existing_rech_absgrp.createOrReplaceTempView("vw_existing_rech_absgrp")
-
-df_updated_rech_absgrp = spark.sql("""
-    SELECT 
-        e.monats_id,
-        e.abs_grp,
-        e.dateiname,
-        e.rechnungsteil,
-        coalesce(m.rechnung_datum, e.rechnung_datum) AS rechnung_datum,
-        coalesce(m.ladedatum, e.ladedatum) AS ladedatum
-    FROM vw_existing_rech_absgrp e
-    LEFT JOIN vw_meta_calculated m ON 
-        e.monats_id = m.monats_id AND 
-        e.abs_grp = m.abs_grp AND 
-        e.dateiname = m.dateiname AND 
-        e.rechnungsteil = m.rechnungsteil
-""")
-write_to_bq(df_updated_rech_absgrp, "BIGQUERY_TARGET_DS.dwh_ta_k_rech_absgrp")
+write_to_bq(df_absgrp_processed, "DWH$TA_K_RECH_ABSGRP")
 ```
-=== VERBATIM MCP TOOL OUTPUT END ===
 
 ---
 
 ## 5. TARGET FILE PLAN
 
-The target repository structure strictly mirrors the layout of the source repository. Only files assigned under scope are planned.
+As dictated by the **Folder Integrity Rule**, the target folder structure mirrors the relative source path. Distinct source folders must not merge their outputs.
 
-| Target File Path | Target Language | Legacy Source Path | Target Description / Role |
-| :--- | :--- | :--- | :--- |
-| `abinitio_rpos_carmen_linked_job/TMD_processing/BHB/BD_PROC/mp/map_rpos_carmen_import.py` | PySpark | `abinitio_rpos_carmen_linked_job/TMD_processing/BHB/BD_PROC/mp/map_rpos_carmen_import.mp` | Main PySpark execution logic covering validation, master contract join mapping, deduplication, and transactional multi-channel target tables insert. |
+### Target Component Files
 
----
-
-## 6. RISKS & MANUAL ACTIONS
-
-The following risk factors, gaps, or logic challenges have been identified during this design phase. Defer these to the Build/Deployment phase for explicit testing or manual resolution:
-
-1. **Transactional Reload Lock Mitigation (Critical):**
-   * **Legacy Action:** The graph deletes existing records in target tables match-by-match (using business keys) in memory and then inserts.
-   * **GCP Target Impact:** Executing row-by-row deletions on BigQuery is inefficient and can cause transaction locking or high costs. 
-   * **Mitigation Strategy:** The PySpark implementation maps these operations into bulk `LEFT ANTI JOIN` blocks. This computes the net delta in-memory before issuing a clean rewrite partition or a optimized overwrite.
-
-2. **DML Verification Failures (`raise_error` Aborts):**
-   * **Legacy Action:** The graph utilizes `force_error()` which causes immediate graph abort on invalid dates or format errors.
-   * **GCP Target Impact:** In PySpark, raising runtime exceptions stops the Spark cluster executor immediately.
-   * **Manual Step:** The data ingestion pipeline should implement a "quarantine" or bad-records path to collect faulty rows in GCS rather than blindly calling `raise_error()` which crashes production runs.
-
-3. **Dynamic Path Substitutions:**
-   * **Details:** Legacy relies on KSH environmental path evaluation (`$DW_DIR_IMP_SAP/crs/work/`).
-   * **Manual Step:** Confirm the environment mount point mapping on the Cloud Composer Airflow workers and the Dataproc cluster variables configurations. Ensure that read operations cleanly target `gs://[environment]-dwh-import-sap/crs/work/` buckets. Retain strict path cases to prevent file-not-found exceptions.
+- **File Path**: `abinitio_rpos_carmen_linked_job/TMD_processing/BHB/BD_PROC/mp/map_rpos_carmen_import.py`
+  - **Language**: Python (PySpark)
+  - **Primary Source**: `abinitio_rpos_carmen_linked_job/TMD_processing/BHB/BD_PROC/mp/map_rpos_carmen_import.mp`
+  - **Description**: Contains the Spark session initialization, schema definitions, input CSV staging logic, record parsing/decimal translation, data splits, dates-proofing join on `dwh_ta_c_vertrag`, delete-anti-joins for the five target tables, and logging writebacks to `dwh_ta_k_meldungen` / `DWH$TA_K_RECH_ABSGRP`.
 
 ---
 
-# MIGRATION DESIGN DOCUMENT: DW.RPOS_CARM_IMPORT
+## 6. RISKS, MANUAL ACTIONS & MITIGATION
+
+### 1. Hard Errors on Validation (Validation Crash Strategy)
+- **Risk**: The legacy Ab Initio graph contains `force_error()` calls inside key validation routines (such as when `monats_id` or `vertrags_id` fail schema formatting). If unhandled, this could crash a production PySpark run mid-process.
+- **Mitigation / Implementation Requirement**: In the PySpark translation, these validation filters must raise custom exceptions or call Spark SQL's `raise_error()` function. For robust auditing, invalid formatting errors must be captured inside the PySpark script, logged, and trigger a graceful task failure inside the Airflow orchestrator.
+
+### 2. Output/Print Literal Constraint
+- **Rule**: No validation messages, logs, or error strings are to be localized or translated.
+- **Action**: Ensure that strings like `"Invalid data format in monats_id"`, `"Invalid data format in rechnung_datum"`, and `"Invalid data format in standardvertrags_id"` are translated into the PySpark codebase verbatim without any modifications to text, casing, or punctuation.
+
+### 3. Date Validation Calculation Logic (Proof Join)
+- **Risk**: The logic determining whether a transaction's month-end date is inside the contract active range is complex:
+  `month_last_day = datetime_add(monats_id, date_month_end(...))`
+- **Mitigation**: Translate this using native PySpark SQL date functions:
+  `last_day(to_date(monats_id, 'yyyyMM'))` 
+  Use standard BigQuery-compatible date evaluation constraints during execution to avoid off-by-one errors.
+
+### 4. Database Deletions in BigQuery (DML Quota)
+- **Risk**: BigQuery table mutations via continuous DML deletes/inserts are more expensive and slower than staging tables or partition swap patterns.
+- **Mitigation**: Under high volume, a left-anti-join swap pattern (as shown in the Spark outline) is used. The script reads the target table, joins with payload keys to filter out records (anti-join), unions with new inserts, and overwrites the target table. Alternatively, partition-level drops should be implemented if target tables are partitioned by `rechnung_datum`. Ensure proper staging and table write transactions are managed via Cloud Composer task bounds.
+
+---
+
+# MIGRATION DESIGN DOCUMENT: `DW.RPOS_CARM_IMPORT`
 
 ## 1. FILE DISPOSITION TABLE
 
+The following table lists every source file within this job scope and its planned target disposition. In accordance with the **FOLDER INTEGRITY RULE**, the target folder structure mirrors the source folder structure.
+
 | Source File Path | Target File / Action | Purpose / Reason for Action |
 | :--- | :--- | :--- |
-| `abinitio_rpos_carmen_linked_job/TMD_processing/BHB/BD_PROC/run/map_rpos_carmen_import.ksh` | `abinitio_rpos_carmen_linked_job/TMD_processing/BHB/BD_PROC/run/map_rpos_carmen_import.py` | Migrates the KornShell execution wrapper to Python 3. Parses files, maps metadata, performs dynamic pre-load/post-load SQL deletes and audit updates against BigQuery, and submits the PySpark job (representing the Ab Initio graph) to Google Cloud Dataproc Serverless. |
+| `abinitio_rpos_carmen_linked_job/TMD_processing/BHB/BD_PROC/run/map_rpos_carmen_import.ksh` | `abinitio_rpos_carmen_linked_job/TMD_processing/BHB/BD_PROC/run/map_rpos_carmen_import.py` | Migrates the legacy KornShell wrapper logic to Python 3. The target script validates runtime environment parameters, monitors input source file availability on GCS, and orchestrates/submits the Dataproc Serverless PySpark batch job replacing the legacy Ab Initio `.mp` graph pipeline. |
 
 ---
 
-## 2. TARGET FILE PLAN
-
-### Target File: `abinitio_rpos_carmen_linked_job/TMD_processing/BHB/BD_PROC/run/map_rpos_carmen_import.py`
-* **Source Path:** `abinitio_rpos_carmen_linked_job/TMD_processing/BHB/BD_PROC/run/map_rpos_carmen_import.ksh`
-* **Language:** Python 3
-* **Description:** A production-ready Python orchestration script that replaces the legacy Ab Initio wrapper script. It handles environment configurations, sources metadata specifications, executes transactional BigQuery DML operations (such as idempotency deletes, trailer logging, and group metadata audits), and submits the core PySpark pipeline to a Dataproc Serverless cluster.
-* **Folder Integrity:** Preserves folder structures exactly under `abinitio_rpos_carmen_linked_job/TMD_processing/BHB/BD_PROC/run/`.
-
----
-
-## 3. VERBATIM MCP TOOL OUTPUT
-
-Below is the complete design document and Python pseudocode returned by the `ksh_design_python` converter:
+## 2. VERBATIM MCP TOOL OUTPUT
+The following section is the exact, unaltered output of the `ksh_design_python` tool. Do not modify or restructure the pseudocode or translation logic below.
 
 ```markdown
-# DESIGN DOCUMENT: map_rpos_carmen_import Conversion
+=== FILE: abinitio_rpos_carmen_linked_job/TMD_processing/BHB/BD_PROC/run/map_rpos_carmen_import.ksh ===
+# Design Document: Migration of `map_rpos_carmen_import.ksh` to Python 3
+
+This document outlines the design for migrating the legacy KornShell (.ksh) execution script `map_rpos_carmen_import.ksh` (which wraps an Ab Initio Co-Operating System multi-phase graph pipeline) to a native, modern Python 3 script.
+
+---
 
 ## 1. SCRIPT OVERVIEW
-This script is a GDE-deployed Ab Initio execution wrapper for the graph `map_rpos_carmen_import`. Its primary purpose is to orchestrate the ETL pipeline that imports retail point-of-sale (RPOS) billing and invoice data from the Carmen financial/leasing system into the Data Warehouse (DWH). It reads incoming flat files containing RPOS transaction details, correlates them with master contract data, applies complex filtering/reconciliations, and writes the resulting transaction sets to various target database tables while executing housekeeping deletions and audit updates.
+
+- **Purpose**: The script wraps the Ab Initio multi-phase graph `map_rpos_carmen_import` which parses, validates, filters, and loads legacy Carmen billing transaction files (RPOS) into an Oracle Data Warehouse (DWH).
+- **Triggers**: Executed daily or monthly as part of batch billing pipelines, managed by a UC4 / Automic job scheduler.
+- **Reads**: 
+  - Source Carmen invoice/transaction billing CSV data files (configured via environment variables `BHB_Quellverzeichnis` and `BHB_Dateiname`).
+  - Reference contract master data table `DWH$TA_C_VERTRAG` from the DWH database.
+- **Writes**: 
+  - Dynamic inserts/updates to auditing and load status control tables `DWH$TA_K_RECH_ABSGRP` and `DWH$TA_K_MELDUNGEN`.
+  - Delete operations to clean existing runs in target fact/temporary tables (for idempotency).
+  - Bulk loading of cleaned transaction records into multiple physical database tables: `DWH$TA_F_RPOS_CARM`, `DWH$TA_F_GPOS_FACT_CARM`, `DWH$TA_F_RPOS_FACT_CARM`, `DWH$TA_F_RPOS_RESELLING_CARM`, and `DWH$TA_T_RPOS_CARM`.
+
+---
 
 ## 2. INVOCATION CONTEXT
-* **Caller:** UC4/Automic Scheduler (typically a Unix job object under a path like `TMD_processing/BHB/BD_PROC/run/`).
-* **Command Line / Arguments:** Sourced/executed with positional arguments:
-  * `$1`: `-help` (displays help/exits) or `-reposit-tracking` (initiates enterprise metadata repository tracking).
-* **UC4 Native Includes:**
-  * None explicitly referenced via `:inc` syntax in this source.
-* **Environment Files Sourced:**
-  * `$_AB_PROJECT_KSH` (resolved dynamically as `${_AB_SAVED_PROJECT_DIR}/.project.ksh`). 
-    * `# REVIEW-STRUCT: environment file [.project.ksh] not supplied — variables it sets are unknown; do not guess their names or values`
-  * `ab_catalog_functions.ksh` (sourced conditionally if present in `PATH`/`AB_HOME`).
-    * `# REVIEW-STRUCT: environment file [ab_catalog_functions.ksh] not supplied — variables/functions it defines are unknown`
-  * `./${_AB_PROXY_DIR}/GDE-Parameters` (locally generated parameters file containing GDE environment exports).
+
+- **Caller**: Schedulers call this script via UC4/Automic using a UNIX Job object (e.g. `JOBS_UNIX.BHB_MAP_RPOS_CARMEN_IMPORT`).
+- **Command Line / Arguments**: Schedulers invoke this script with optional positional parameters (e.g. `./map_rpos_carmen_import.ksh -reposit-tracking` or with runtime parameter overrides).
+- **UC4 Includes**: No native UC4 inclusions (`:inc ...`) are present in this specific wrapper file.
+- **Environment Files Sourced**:
+  - `# REVIEW-STRUCT: environment file [ab_catalog_functions.ksh] not supplied — variables it sets are unknown; do not guess their names or values`
+  - `. ./${_AB_PROXY_DIR}/GDE-Parameters`
+    - `# REVIEW-STRUCT: include [GDE-Parameters] body not supplied — behaviour unknown`
+  - `.project.ksh` via:
+    - `# REVIEW-STRUCT: include [.project.ksh] body not supplied — behaviour unknown`
+
+---
 
 ## 3. PARAMETERS / INPUTS
-### Command Line & Shell Parameters
-* **`$1` (Positional):** 
-  * Source: UC4 execution argument.
-  * Usage: Evaluated for `-reposit-tracking` (triggers EME sandbox registration and execution via `run-and-reposit`) or `-help` (exits with status 1).
-  * Python: Handled via `sys.argv` or `argparse`.
-* **`AB_HOME` / `MPOWERHOME`:** 
-  * Source: Environment variable.
-  * Usage: Points to the Ab Initio installation directory (defaults to `/appl/local/abinitio/abinitio`).
-  * Python: `os.environ.get("AB_HOME", "/appl/local/abinitio/abinitio")`.
-* **`AB_AIR_HOME`:** 
-  * Source: Environment variable.
-  * Usage: Points to the Ab Initio EME directory.
-  * Python: `os.environ.get("AB_AIR_HOME")`.
-* **`PROJECT_DIR`:** 
-  * Source: Environment variable or derived from script path `$0`.
-  * Usage: Root project directory path.
-  * Python: `os.environ.get("PROJECT_DIR")` or computed via `os.path.dirname(os.path.abspath(__file__))`.
 
-### DB Connection Parameters (Cross-Referenced Convention)
-The following database environment parameters are validated in the script body:
-* **`DB_TNS_NAME_DWH` / `DB_USER_DWH` / `DB_PASSWD_DWH`:** 
-  * DB-connection-style parameters for the main Data Warehouse schema. Used to run queries and updates against `DWH$TA_*` tables.
-* **`DB_TNS_NAME_CRS` / `DB_USER_CRS` / `DB_PASSWD_CRS`:**
-  * DB-connection-style parameters for CRS database.
-* **`DB_TNS_NAME_SGM` / `DB_USER_SGM` / `DB_PASSWD_SGM`:**
-  * DB-connection-style parameters for SGM database.
-* **`DB_TNS_NAME_CADS` / `DB_USER_CADS` / `DB_PASSWD_CADS`:**
-  * DB-connection-style parameters for CADS database.
-* **`DB_TNS_NAME_CACM` / `DB_USER_CACM` / `DB_PASSWD_CACM`:**
-  * DB-connection-style parameters for CACM database.
+The script references environment parameters for configuration, file locations, and database connections:
 
-### Framework Configuration Parameters
-* **`BHB_Projektverzeichnis`**: Root directory of the BHB application.
-* **`BHB_Graph`**: Name of the target graph.
-* **`BHB_Prozesstyp`**: Process categorization.
-* **`BHB_Eintragsnr`**: Entry audit log tracking identifier (maps to `entrynr` / `eintragsnr`).
-* **`BHB_Quellverzeichnis`**: Directory containing source files.
-* **`BHB_Zielverzeichnis`**: Target output file directory.
-* **`BHB_Dateimaske`**: File pattern filter.
-* **`BHB_Kopfdatensatzkennung`**: Header record identifier.
-* **`BHB_Nutzdatensatzkennung`**: Data record identifier.
-* **`BHB_Endedatensatzkennung`**: Trailer/Footer record identifier.
-* **`BHB_Dateiname`**: Specific filename to be processed (passed to the read interface).
+| Parameter Name | Source | Purpose | Used in Body? | Python Surface Strategy |
+| :--- | :--- | :--- | :---: | :--- |
+| `DB_TNS_NAME_DWH` | Env Var | Oracle DWH Database TNS Alias | Yes | `os.environ.get("DB_TNS_NAME_DWH")` |
+| `DB_USER_DWH` | Env Var | Oracle DWH Database Username | Yes | `os.environ.get("DB_USER_DWH")` |
+| `DB_PASSWD_DWH` | Env Var | Oracle DWH Database Password | Yes | `os.environ.get("DB_PASSWD_DWH")` |
+| `DB_TNS_NAME_CRS` | Env Var | Oracle CRS Database TNS Alias | Yes | `os.environ.get("DB_TNS_NAME_CRS")` |
+| `DB_USER_CRS` | Env Var | Oracle CRS Database Username | Yes | `os.environ.get("DB_USER_CRS")` |
+| `DB_PASSWD_CRS` | Env Var | Oracle CRS Database Password | Yes | `os.environ.get("DB_PASSWD_CRS")` |
+| `DB_TNS_NAME_SGM` | Env Var | Oracle SGM Database TNS Alias | Yes | `os.environ.get("DB_TNS_NAME_SGM")` |
+| `DB_USER_SGM` | Env Var | Oracle SGM Database Username | Yes | `os.environ.get("DB_USER_SGM")` |
+| `DB_PASSWD_SGM` | Env Var | Oracle SGM Database Password | Yes | `os.environ.get("DB_PASSWD_SGM")` |
+| `DB_TNS_NAME_CADS` | Env Var | Oracle CADS Database TNS Alias | Yes | `os.environ.get("DB_TNS_NAME_CADS")` |
+| `DB_USER_CADS` | Env Var | Oracle CADS Database Username | Yes | `os.environ.get("DB_USER_CADS")` |
+| `DB_PASSWD_CADS` | Env Var | Oracle CADS Database Password | Yes | `os.environ.get("DB_PASSWD_CADS")` |
+| `DB_TNS_NAME_CACM` | Env Var | Oracle CACM Database TNS Alias | Yes | `os.environ.get("DB_TNS_NAME_CACM")` |
+| `DB_USER_CACM` | Env Var | Oracle CACM Database Username | Yes | `os.environ.get("DB_USER_CACM")` |
+| `DB_PASSWD_CACM` | Env Var | Oracle CACM Database Password | Yes | `os.environ.get("DB_PASSWD_CACM")` |
+| `BHB_Projektverzeichnis`| Env Var | Working Root Project Directory | Yes | `os.environ.get("BHB_Projektverzeichnis")` |
+| `BHB_Graph` | Env Var | Executing Graph Identity | Yes | `os.environ.get("BHB_Graph")` |
+| `BHB_Prozesstyp` | Env Var | Process type identification | Yes | `os.environ.get("BHB_Prozesstyp")` |
+| `BHB_Eintragsnr` | Env Var | Auditing Log entry sequence number | Yes | `os.environ.get("BHB_Eintragsnr")` |
+| `BHB_Quellverzeichnis` | Env Var | Raw file input source folder directory | Yes | `os.environ.get("BHB_Quellverzeichnis")` |
+| `BHB_Zielverzeichnis` | Env Var | Processed file output archive directory | Yes | `os.environ.get("BHB_Zielverzeichnis")` |
+| `BHB_Dateimaske` | Env Var | File name glob mask for source discovery | Yes | `os.environ.get("BHB_Dateimaske")` |
+| `BHB_Kopfdatensatzkennung`| Env Var| Header identifier token in input CSV | Yes | `os.environ.get("BHB_Kopfdatensatzkennung")`|
+| `BHB_Nutzdatensatzkennung`| Env Var| Main data row identifier token in CSV | Yes | `os.environ.get("BHB_Nutzdatensatzkennung")`|
+| `BHB_Endedatensatzkennung`| Env Var| Footer identifier token in CSV | Yes | `os.environ.get("BHB_Endedatensatzkennung")`|
+| `BHB_Dateiname` | Env Var | Source CSV base filename | Yes | `os.environ.get("BHB_Dateiname")` |
+| `BHB_DB` | Env Var | Path reference pointing to `.dbc` profile | Yes | `os.environ.get("BHB_DB")` |
+| `BHB_DML` | Env Var | Folder path containing standard physical DML metadata schemas | Yes | `os.environ.get("BHB_DML")` |
+| `BHB_SAP_DML` | Env Var | Folder path containing Carmen RPOS metadata schemas | Yes | `os.environ.get("BHB_SAP_DML")` |
+| Positional `$1`, `$2` | CLI Args | Optional positional execution flags (e.g. `-help`, `-reposit-tracking`) | Yes | parsed via `sys.argv` / `argparse` |
 
-All framework parameters are evaluated in the shell. If evaluation fails (return code `!= 0`), the script terminates immediately with the corresponding exit code.
+---
 
 ## 4. EXTERNAL COMMANDS / PROGRAMS INVOKED
-* **`uname`**
-  * Verbatim: `` `uname` `` / `$(uname)`
-  * Purpose: Platform detection (Windows vs Cywin vs UNIX).
-  * Python: Native `platform.system()` or `sys.platform`.
-* **`air sandbox find`**
-  * Verbatim: `air sandbox find "${PROJECT_DIR}" -project`
-  * Purpose: Find project path inside the EME Datastore.
-  * Python: `subprocess.run(...)` if Ab Initio command-line utilities are available in the runtime.
-* **`run-and-reposit`**
-  * Verbatim: `${AB_HOME}/bin/run-and-reposit "${_AB_PROJECT_NAME}"'/mp/map_rpos_carmen_import.mp' "${_AB_PROJECT_NAME}" _abort "$0" "$@"`
-  * Purpose: Standard Ab Initio utility to execute a graph while tracking catalog statistics in the EME.
-  * Python: Retained as a `subprocess.run` call.
-* **`mp` suite (`mp job`, `mp layout`, `mp metadata`, `mp straight-flow`, etc.)**
-  * Verbatim: Numerous lines starting with `mp ` to compile layouts, declare metadata types, and connect flows.
-  * Purpose: Ab Initio orchestration commands to dynamically compile the graph pipeline.
-  * Python: Kept as opaque `subprocess.run` calls or handled by high-level pipeline scheduling tools.
-  * `# REVIEW-STRUCT: launcher [mp] invoked — internal execution depends on Ab Initio Co>Operating System; confirm environment availability or execute migration of the graph logic to Python (e.g., PySpark/Pandas) before finalizing the conversion`
+
+The legacy wrapper interacts heavily with Ab Initio Co-Operating System commands:
+
+| Command Line | Purpose | Subprocess or Native? | Resolvable Launcher? |
+| :--- | :--- | :--- | :--- |
+| `uname` | Operating System validation (`Windows_*`, `CYGWIN_*` or standard UNIX fallback). | Native Python (`platform.system()`). | N/A |
+| `m_env -get ...` | Queries Ab Initio environment variable flags. | Native Python configuration variables. | N/A |
+| `air sandbox find` | Determines path mappings inside Ab Initio Enterprise Meta-Environment (EME). | Sourced from static config or environment variable configurations. | No |
+| `run-and-reposit` | Controls sandbox versions for compiled graphs in EME. | Obsoleted (all EME synchronization is replaced by Git/CI/CD in the modern pipeline). | No |
+| `m_mkcatalog`, `m_rmcatalog`| Generates/Removes temporary operational catalogs for lookups. | Sourced as native Python dictionary lookups or temporary memory structures. | No |
+| `mp` commands (`mp job`, `mp layout`, `mp metadata`, `mp straight-flow`, `mp run`) | Core execution runtime coordinating data partitions, pipeline maps, and loading. | **Must be replaced by native Python ETL processing logic** (`pandas`, `oracledb`). | No (does not qualify as a simple SQL wrapper launcher; it's a massive ETL multi-phase runtime). |
+
+---
 
 ## 5. EMBEDDED SQL
-The script outputs several SQL files to a local proxy directory, which are subsequently called during execution via Ab Initio database load components (`mp db-update`, `mp db-lookup`, etc.).
 
-### SQL Statement 1
-* **Source:** `${_AB_PROXY_DIR}/Delete_rows_from_DWH_TA_F_RPOS_CARM-4.sql`
-* **Verbatim SQL:**
+The pipeline references several native SQL statement templates compiled to proxy directory files (`_AB_PROXY_DIR`) for database cleanup and final updates. 
+
+### Dialect Identification
+All database operations target Oracle database instances (`NLS_NUMERIC_CHARACTERS` environment checks, `to_date('20050401', 'YYYYMMDD')` constructs, and `(+)` Oracle-specific outer join syntax are present). 
+
+### SQL Statement Registry
+
+#### 1. Delete rows from `DWH$TA_F_RPOS_CARM` (from file `/Delete_rows_from_DWH_TA_F_RPOS_CARM-4.sql`)
+- **Statement Type**: `DELETE`
+- **Tables Touched**: `DWH$TA_F_RPOS_CARM`
+- **Text**:
 ```sql
 DELETE FROM DWH$TA_F_RPOS_CARM
 WHERE  rechnung_id = :rechnung_id
@@ -1707,13 +1772,11 @@ AND    rechnung_datum = :rechnung_datum
 AND    standardvertrags_id = :standardvertrags_id
 AND    vertrags_id = :vertrags_id
 ```
-* **Type:** DELETE
-* **Tables Touched:** `DWH$TA_F_RPOS_CARM`
-* **Dialect:** Unambiguously Oracle SQL (indicated by Oracle parameter binding notation `:variable`).
 
-### SQL Statement 2
-* **Source:** `${_AB_PROXY_DIR}/Delete_rows_from_DWH_TA_F_GPOS_FACT_CARM-60.sql`
-* **Verbatim SQL:**
+#### 2. Delete rows from `DWH$TA_F_GPOS_FACT_CARM` (from file `/Delete_rows_from_DWH_TA_F_GPOS_FACT_CARM-60.sql`)
+- **Statement Type**: `DELETE`
+- **Tables Touched**: `DWH$TA_F_GPOS_FACT_CARM`
+- **Text**:
 ```sql
 DELETE FROM DWH$TA_F_GPOS_FACT_CARM
 WHERE  rechnung_id = :rechnung_id
@@ -1721,13 +1784,11 @@ AND    rechnung_datum = :rechnung_datum
 AND    standardvertrags_id = :standardvertrags_id
 AND    vertrags_id = :vertrags_id
 ```
-* **Type:** DELETE
-* **Tables Touched:** `DWH$TA_F_GPOS_FACT_CARM`
-* **Dialect:** Oracle SQL
 
-### SQL Statement 3
-* **Source:** `${_AB_PROXY_DIR}/Delete_rows_from_DWH_TA_F_RPOS_CARM_2-61.sql`
-* **Verbatim SQL:**
+#### 3. Delete rows from `DWH$TA_F_RPOS_CARM` Alternative (from file `/Delete_rows_from_DWH_TA_F_RPOS_CARM_2-61.sql`)
+- **Statement Type**: `DELETE`
+- **Tables Touched**: `DWH$TA_F_RPOS_CARM`
+- **Text**:
 ```sql
 DELETE FROM DWH$TA_F_RPOS_CARM
 WHERE  rechnung_datum = :rechnung_datum
@@ -1735,13 +1796,11 @@ AND    rechnung_id = :rechnung_id
 AND    standardvertrags_id = :standardvertrags_id
 AND    vertrags_id = :vertrags_id
 ```
-* **Type:** DELETE
-* **Tables Touched:** `DWH$TA_F_RPOS_CARM`
-* **Dialect:** Oracle SQL
 
-### SQL Statement 4
-* **Source:** `${_AB_PROXY_DIR}/Delete_rows_from_DWH_TA_F_RPOS_FACT_CARM-62.sql`
-* **Verbatim SQL:**
+#### 4. Delete rows from `DWH$TA_F_RPOS_FACT_CARM` (from file `/Delete_rows_from_DWH_TA_F_RPOS_FACT_CARM-62.sql`)
+- **Statement Type**: `DELETE`
+- **Tables Touched**: `DWH$TA_F_RPOS_FACT_CARM`
+- **Text**:
 ```sql
 DELETE FROM DWH$TA_F_RPOS_FACT_CARM
 WHERE  rechnung_id = :rechnung_id
@@ -1749,13 +1808,11 @@ AND    rechnung_datum = :rechnung_datum
 AND    standardvertrags_id = :standardvertrags_id
 AND    vertrags_id = :vertrags_id
 ```
-* **Type:** DELETE
-* **Tables Touched:** `DWH$TA_F_RPOS_FACT_CARM`
-* **Dialect:** Oracle SQL
 
-### SQL Statement 5
-* **Source:** `${_AB_PROXY_DIR}/Delete_rows_from_DWH_TA_F_RPOS_RESELLING_CARM-63.sql`
-* **Verbatim SQL:**
+#### 5. Delete rows from `DWH$TA_F_RPOS_RESELLING_CARM` (from file `/Delete_rows_from_DWH_TA_F_RPOS_RESELLING_CARM-63.sql`)
+- **Statement Type**: `DELETE`
+- **Tables Touched**: `DWH$TA_F_RPOS_RESELLING_CARM`
+- **Text**:
 ```sql
 DELETE FROM DWH$TA_F_RPOS_RESELLING_CARM
 WHERE  rechnung_id = :rechnung_id
@@ -1763,26 +1820,22 @@ AND    rechnung_datum = :rechnung_datum
 AND    standardvertrags_id = :standardvertrags_id
 AND    vertrags_id = :vertrags_id
 ```
-* **Type:** DELETE
-* **Tables Touched:** `DWH$TA_F_RPOS_RESELLING_CARM`
-* **Dialect:** Oracle SQL
 
-### SQL Statement 6
-* **Source:** `${_AB_PROXY_DIR}/Delete_rows_from_DWH_TA_T_RPOS_CARM-65.sql`
-* **Verbatim SQL:**
+#### 6. Delete rows from `DWH$TA_T_RPOS_CARM` (from file `/Delete_rows_from_DWH_TA_T_RPOS_CARM-65.sql`)
+- **Statement Type**: `DELETE`
+- **Tables Touched**: `DWH$TA_T_RPOS_CARM`
+- **Text**:
 ```sql
 DELETE FROM DWH$TA_T_RPOS_CARM
 WHERE  debitor_id = :debitor_id
 AND    rechnung_datum = :rechnung_datum
 AND    rechnung_id = :rechnung_id
 ```
-* **Type:** DELETE
-* **Tables Touched:** `DWH$TA_T_RPOS_CARM`
-* **Dialect:** Oracle SQL
 
-### SQL Statement 7
-* **Source:** `${_AB_PROXY_DIR}/Update_Insert_DWH_TA_K_RECH_ABSGRP-70.sql`
-* **Verbatim SQL:**
+#### 7. Update auditing ABSGRP details (from file `/Update_Insert_DWH_TA_K_RECH_ABSGRP-70.sql`)
+- **Statement Type**: `UPDATE`
+- **Tables Touched**: `DWH$TA_K_RECH_ABSGRP`
+- **Text**:
 ```sql
 UPDATE DWH$TA_K_RECH_ABSGRP
 SET   rechnung_datum = :rechnung_datum, 
@@ -1792,24 +1845,20 @@ AND    abs_grp = :abs_grp
 AND    dateiname = :dateiname
 AND    rechnungsteil = :rechnungsteil
 ```
-* **Type:** UPDATE
-* **Tables Touched:** `DWH$TA_K_RECH_ABSGRP`
-* **Dialect:** Oracle SQL
 
-### SQL Statement 8
-* **Source:** `${_AB_PROXY_DIR}/Update_Insert_DWH_TA_K_RECH_ABSGRP-71.sql`
-* **Verbatim SQL:**
+#### 8. Insert auditing ABSGRP details (from file `/Update_Insert_DWH_TA_K_RECH_ABSGRP-71.sql`)
+- **Statement Type**: `INSERT`
+- **Tables Touched**: `DWH$TA_K_RECH_ABSGRP`
+- **Text**:
 ```sql
 INSERT INTO DWH$TA_K_RECH_ABSGRP (monats_id, abs_grp, dateiname,  rechnung_datum, rechnungsteil, ladedatum)
 VALUES (:monats_id, :abs_grp, :dateiname,  :rechnung_datum, :rechnungsteil, :ladedatum)
 ```
-* **Type:** INSERT
-* **Tables Touched:** `DWH$TA_K_RECH_ABSGRP`
-* **Dialect:** Oracle SQL
 
-### SQL Statement 9
-* **Source:** `${_AB_PROXY_DIR}/Update_DWH_TA_K_MELDUNGEN-74.sql`
-* **Verbatim SQL:**
+#### 9. Update Job Control Message Audit (from file `/Update_DWH_TA_K_MELDUNGEN-74.sql`)
+- **Statement Type**: `UPDATE`
+- **Tables Touched**: `DWH$TA_K_MELDUNGEN`
+- **Text**:
 ```sql
 update dwh$ta_k_meldungen 
 set anzahl_ds_eof = :anzahl
@@ -1818,13 +1867,11 @@ set anzahl_ds_eof = :anzahl
   , zusatzinfo = :bemerkung 
 where entrynr = :eintragsnr
 ```
-* **Type:** UPDATE
-* **Tables Touched:** `DWH$TA_K_MELDUNGEN`
-* **Dialect:** Oracle SQL
 
-### SQL Statement 10 (Embedded in Graph Lookup Commands)
-* **Source:** `mp db-lookup` / `mp itable` definitions
-* **Verbatim SQL:**
+#### 10. Sourced master reference query (`Insert_Routine.dwh_ta_c_vertrag__table_` lookup)
+- **Statement Type**: `SELECT`
+- **Tables Touched**: `dwh$ta_c_vertrag`
+- **Text**:
 ```sql
 select 
 rahmenvertrag_id,
@@ -1842,324 +1889,266 @@ dwh$ta_c_vertrag
 where 
 gueltig_bis >= to_date('20050401', 'YYYYMMDD')
 ```
-* **Type:** SELECT
-* **Tables Touched:** `DWH$TA_C_VERTRAG`
-* **Dialect:** Oracle SQL (utilizes `to_date` function and `(+)` syntax in outer join references in metadata).
-
-## 6. CONTROL FLOW
-1. **Environment Initialization:** Set paths and environment parameters (`AB_HOME`, `PATH`, etc.).
-2. **Platform Constraints Detection:** Parse `uname` and adjust `PATH` for Cygwin/Windows if necessary.
-3. **Internal Helper Declarations:** Define Ab Initio system functions (`__AB_INVOKE_PROJECT`, `__AB_dirname`, etc.).
-4. **Project Directory Computation:** Extract `PROJECT_DIR` based on path structure and verify absolute canonical path.
-5. **Proxy Directory Construction:** Generate unique temporary directory name (`map_rpos_carmen_import-ProxyDir-$$`), create it, and register trapping logic to ensure immediate clean up on exit or signal termination (HUP, INT, QUIT, TERM).
-6. **EME Sandbox Reposit-Tracking Evaluation:**
-   * Query the Ab Initio EME environment tracking status (`m_env`).
-   * If enabled, call `air sandbox find` to get EME path and delegate execution to `run-and-reposit`, terminating wrapper execution with its return status.
-7. **Pre-execution Project Sourcing:** Call `.project.ksh` with arguments `execute start`.
-8. **Help Parameter Interception:** Exit immediately with status 1 if parameter `$1` equals `-help`.
-9. **Parameter Validation & Export:** Validate each database and business framework parameter. If evaluation of any variable generates an error, exit immediately with the corresponding failure code.
-10. **Custom Script Hook execution:** Set Oracle session variable `NLS_NUMERIC_CHARACTERS = ". "`.
-11. **Proxy Files Provisioning:** Build and output transformation metadata (`.dml`), mapping logic (`.xfr`), and target database query execution scripts (`.sql`) to the proxy directory.
-12. **Catalog Creation:** Erase any existing session catalog (`m_rmcatalog`) and initialize a fresh lookup catalog (`m_mkcatalog`).
-13. **Ab Initio Graph Compilation & Topology Layout:** Define logical layouts, pipeline flows (`mp metadata`, `mp layout`), and step sequences.
-14. **Graph Pipeline Execution (`mp run`):** Direct the Co>Operating System orchestration engine to execute data reading, contract matching joins, delta deletes, record mappings, and parallel inserts.
-15. **Status Capture:** Store the execution exit code of `mp run` in `mpjret`.
-16. **Environment Reset:** Wipe local session lookup catalogs (`m_rmcatalog`) and restore system catalog configurations.
-17. **Post-execution Project Sourcing:** Invoke `.project.ksh` with arguments `execute end`.
-18. **Cleanup & Exit:** Execute trap-handler to destroy the proxy directory and return state `mpjret`.
-
-## 7. ERROR HANDLING & EXIT CODES
-* **Validation Assertions:** Evaluation of each environment/DB parameter is systematically checked: `mpjret=$?`. If `mpjret != 0`, the script prints an evaluation error message and exits with the returned code.
-* **Orchestration Failure Catching:** System failure or internal engine crash in `mp run` is caught via return state `mpjret=$?`.
-* **Trap Housekeeping:** Active signals (HUP, INT, QUIT, TERM) trigger immediate execution of `__AB_CLEANUP_PROXY_FILES` before propagating the original status code to prevent leftover temporary files in production.
-* **Python Mapping:** Standardize subprocess executions using `subprocess.run(..., check=True)` which translates non-zero exit codes into raising `subprocess.CalledProcessError`. Wrap parameter setup and database transactions inside `try...except...finally` blocks where the `finally` block replaces shell traps to guarantee cleanup.
-
-## 8. OUTPUTS / SIDE EFFECTS
-* **Database Updates:**
-  * Multiple rows deleted from:
-    * `DWH$TA_F_RPOS_CARM`
-    * `DWH$TA_F_GPOS_FACT_CARM`
-    * `DWH$TA_F_RPOS_FACT_CARM`
-    * `DWH$TA_F_RPOS_RESELLING_CARM`
-    * `DWH$TA_T_RPOS_CARM`
-  * New data inserted/loaded into:
-    * `DWH$TA_F_RPOS_CARM`
-    * `DWH$TA_T_RPOS_CARM`
-    * `DWH$TA_F_GPOS_FACT_CARM`
-    * `DWH$TA_F_RPOS_FACT_CARM`
-    * `DWH$TA_F_RPOS_RESELLING_CARM`
-  * Audit logs inserted/updated in:
-    * `DWH$TA_K_RECH_ABSGRP` (Tracking processed billing files per group)
-    * `DWH$TA_K_MELDUNGEN` (Auditing dataset counts and file trailer verification logs)
-* **Local Filesystem:**
-  * Creation/destruction of the temporary directory `${AB_JOB}-map_rpos_carmen_import-ProxyDir` containing the generated `.dml`, `.xfr`, and `.sql` assets.
-
-## 9. BUSINESS SUMMARY
-* **ETL Consolidation:** Integrates point-of-sale incoming billing data from the external leasing platform "Carmen" with current DWH active contracts.
-* **Financial Category Routing:** Classifies processed transaction lines into Factoring Invoices ("Factoring Rechnungen"), Factoring Credits ("Factoring Gutschriften"), or Reselling categories based on key indicators such as contract structure ID, invoice code type (`RABATT`), and validity flags.
-* **Strict History Alignment:** Performs historical joins against the master contract table (`DWH$TA_C_VERTRAG`). Records must overlap with specific validity periods (`gueltig_von`/`gueltig_bis`) to maintain precise contract state reporting.
-* **Automated Reconciliation/Idempotency:** Ensures strict target table state by deleting any previous runs matching incoming transaction keys (`rechnung_id`, `rechnung_datum`, etc.) before loading new datasets.
-* **Control Record Compliance:** Validates overall data integrity by reading file trailer metadata, matching dataset counts against the DWH logging schema (`DWH$TA_K_MELDUNGEN`), and auditing billing group properties (`DWH$TA_K_RECH_ABSGRP`).
 
 ---
 
-# PYTHON PSEUDOCODE OUTLINE
+## 6. CONTROL FLOW
+
+The modern Python script must sequentially execute the following processing phases:
+
+```
++-------------------------------------------------------------+
+| 1. INITIALIZATION & PARAMETER VALIDATION                     |
+|    - Load environment configuration                         |
+|    - Verify inputs (source CSV, directories, DB env vars)   |
++-------------------------------------------------------------+
+                              |
+                              v
++-------------------------------------------------------------+
+| 2. CONNECT TO ORACLE DATABASE                               |
+|    - Connect to DWH using oracledb Client                   |
++-------------------------------------------------------------+
+                              |
+                              v
++-------------------------------------------------------------+
+| 3. INGEST REFERENCE MASTER DATA                             |
+|    - Read contract master (DWH$TA_C_VERTRAG) into memory    |
++-------------------------------------------------------------+
+                              |
+                              v
++-------------------------------------------------------------+
+| 4. READ & PREPROCESS CARMEN SOURCE FILE                     |
+|    - Verify existence of input file                         |
+|    - Stream file and isolate blocks (Header, Nutz, End)     |
++-------------------------------------------------------------+
+                              |
+                              v
++-------------------------------------------------------------+
+| 5. VALIDATION, ENRICHMENT & ETL TRANSFORMS                  |
+|    - Parse fields, clean commas to decimals                 |
+|    - Perform contract state temporal join (gueltig_von/bis) |
+|    - Aggregate "RABATT" types (Rollups)                     |
+|    - Separate data into target streams (Factoring/Reselling)|
++-------------------------------------------------------------+
+                              |
+                              v
++-------------------------------------------------------------+
+| 6. TARGET DWH CLEANUP (IDEMPOTENCY STEP)                     |
+|    - Isolate unique overlapping transactions keys          |
+|    - Execute bulk parameter-driven DELETEs in target tables |
++-------------------------------------------------------------+
+                              |
+                              v
++-------------------------------------------------------------+
+| 7. PERSIST CLEAN DATA TO DWH TARGETS (BULK LOAD)            |
+|    - Executemany batch inserts for loaded frames            |
++-------------------------------------------------------------+
+                              |
+                              v
++-------------------------------------------------------------+
+| 8. CONTROL AUDITING RECORDS STAGE                           |
+|    - Update/Insert records in DWH$TA_K_RECH_ABSGRP          |
+|    - Update DWH$TA_K_MELDUNGEN execution log                |
++-------------------------------------------------------------+
+                              |
+                              v
++-------------------------------------------------------------+
+| 9. TRANSACTION COMMIT & TEARDOWN                            |
+|    - Commit database transactions                           |
+|    - Clear dynamic local workspace traces                   |
++-------------------------------------------------------------+
+```
+
+---
+
+## 7. ERROR HANDLING & EXIT CODES
+
+- **Error Detection**:
+  - Legacy validation checks return code `$mpjret` after `mp run` and parameters verification. If any check fails, it calls exit immediatley (`exit $mpjret`).
+- **Python Translation Strategy**:
+  - Wrap database connection blocks, parsing sequences, and batch loads inside standard Python `try...except...finally` block patterns.
+  - Sourced connection issues (e.g. `oracledb.DatabaseError`) and missing transaction files must raise explicit fatal exceptions.
+  - Subprocess calls (if wrapping minor legacy command utilities) must enforce `check=True` to raise `subprocess.CalledProcessError`.
+  - Enforce cleanup of local files in the `finally:` block.
+  - On standard normal execution, exit code is `0`. On caught exceptions, return explicit codes:
+    - Parameter validation failures: Exit `1`
+    - Ingestion/Missing files: Exit `2`
+    - DB Connection/SQL execution errors: Exit `3`
+
+---
+
+## 8. OUTPUTS / SIDE EFFECTS
+
+- **Database Table Inserts & Deletes**:
+  - `DWH$TA_F_RPOS_CARM` (Data persistence)
+  - `DWH$TA_F_GPOS_FACT_CARM` (Data persistence)
+  - `DWH$TA_F_RPOS_FACT_CARM` (Data persistence)
+  - `DWH$TA_F_RPOS_RESELLING_CARM` (Data persistence)
+  - `DWH$TA_T_RPOS_CARM` (Data persistence)
+- **Log / Auditing Databases Operations**:
+  - `DWH$TA_K_RECH_ABSGRP` (Run auditing update)
+  - `DWH$TA_K_MELDUNGEN` (Auditing entry synchronization)
+- **Local Files**:
+  - Temporary workspace folder created at execution start and deleted securely on success/error teardown.
+
+---
+
+## 9. BUSINESS SUMMARY
+
+- **Carmen RPOS Integration**: Consumes monthly or batch transaction file deliveries of Carmen contract billing invoices.
+- **Contract Synchronization**: Correlates Carmen invoices to corresponding company contract identifiers inside Oracle CRM master registers (`DWH$TA_C_VERTRAG`).
+- **Idempotency Execution Rules**: Ensures safety from dual-runs by searching and wiping historical records of any invoices belonging to the identical billing period from tables before executing fresh loads.
+- **Partitioned Load Architecture**: Splices records into billing category tables (Invoices, Credits, Reselling) based on transaction properties and business codes.
+- **Reporting Integrity Tracking**: Maintains synchronization with general audit systems by updating operational batch numbers in the meldung control directories.
+
+---
+
+## Python 3 Translation Pseudocode Outline
 
 ```python
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-# Modernized Python 3 script replacing map_rpos_carmen_import legacy ksh orchestration pipeline
-
+# Step 1: Imports and environment parameters checks
 import os
 import sys
+import glob
+import logging
 import shutil
 import tempfile
-import platform
-import subprocess
-import traceback
+from datetime import datetime
+import pandas as pd
+import oracledb # Modern replacement for cx_Oracle
 
-# REVIEW-STRUCT: connection parameters inferred from a cross-referenced .ksh file — confirm these exact env var names are set in this job's actual runtime environment before deploying
-# Establish database client connection using standard Oracle drivers (oracledb / cx_Oracle)
-try:
-    import oracledb as db_client
-except ImportError:
-    import cx_Oracle as db_client  # Fallback for older environments
+# Configure logging
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-# Step 1: Initialize System & Environment Settings
-def setup_environment():
-    os.environ["AB_HOME"] = os.environ.get("AB_HOME", "/appl/local/abinitio/abinitio")
-    os.environ["MPOWERHOME"] = os.environ.get("MPOWERHOME", os.environ["AB_HOME"])
-    
-    # Adjust path according to OS Platform
-    current_system = platform.system()
-    if current_system.startswith("Windows"):
-        os.environ["PATH"] = f"{os.environ['AB_HOME']}/bin;{os.environ.get('PATH', '')}"
-    elif "CYGWIN" in current_system:
-        # Mimic cygpath conversion under Cygwin environments
-        cyg_path = subprocess.run(["cygpath", os.environ["AB_HOME"]], capture_output=True, text=True).stdout.strip()
-        os.environ["PATH"] = f"{cyg_path}/bin:/usr/local/bin:/usr/bin:/bin:{os.environ.get('PATH', '')}"
-    else:
-        os.environ["PATH"] = f"{os.environ['AB_HOME']}/bin:{os.environ.get('PATH', '')}"
-
-    os.environ["AB_REPORT"] = os.environ.get("AB_REPORT", "monitor=60 processes scroll=true")
-    os.environ["AB_AIR_HOME"] = os.environ.get("AB_AIR_HOME", "/appl/local/abinitio/abinitio-V2-14")
-    os.environ["AB_COMPATIBILITY"] = "2.14.59"
-    os.environ["AB_GRAPH_NAME"] = "map_rpos_carmen_import"
-    
-    # Session locale variables
-    os.environ["NLS_NUMERIC_CHARACTERS"] = ". "
-
-# Step 2: Validate Required Environment Parameters
-def check_parameters():
-    required_params = [
+# Step 2: Validate Parameter Environment
+def validate_parameters():
+    required_vars = [
         "DB_TNS_NAME_DWH", "DB_USER_DWH", "DB_PASSWD_DWH",
-        "DB_TNS_NAME_CRS", "DB_USER_CRS", "DB_PASSWD_CRS",
-        "DB_TNS_NAME_SGM", "DB_USER_SGM", "DB_PASSWD_SGM",
-        "DB_TNS_NAME_CADS", "DB_USER_CADS", "DB_PASSWD_CADS",
-        "DB_TNS_NAME_CACM", "DB_USER_CACM", "DB_PASSWD_CACM",
-        "BHB_Projektverzeichnis", "BHB_Graph", "BHB_Prozesstyp", "BHB_Eintragsnr",
-        "BHB_Quellverzeichnis", "BHB_Zielverzeichnis", "BHB_Dateimaske",
-        "BHB_Kopfdatensatzkennung", "BHB_Nutzdatensatzkennung", "BHB_Endedatensatzkennung",
-        "BHB_Dateiname"
+        "BHB_Quellverzeichnis", "BHB_Dateiname", "BHB_Eintragsnr",
+        "BHB_Kopfdatensatzkennung", "BHB_Nutzdatensatzkennung", "BHB_Endedatensatzkennung"
     ]
-    
-    for param in required_params:
-        if param not in os.environ:
-            print(f"Error evaluating: parameter {param} of map_rpos_carmen_import", file=sys.stderr)
-            sys.exit(1)
+    missing_vars = [var for var in required_vars if not os.environ.get(var)]
+    if missing_vars:
+        logging.error(f"Missing required environment variables: {missing_vars}")
+        sys.exit(1)
 
-# Step 3: Parse Command-Line Options
-def parse_arguments():
-    if len(sys.argv) > 1:
-        arg = sys.argv[1]
-        if arg == "-help":
-            print("Displaying Ab Initio Wrapper Help Options...", file=sys.stderr)
-            sys.exit(1)
-        elif arg == "-reposit-tracking":
-            # Reposit tracking process via EME Sandbox
-            # Execute sandbox identification
-            project_dir = os.environ.get("PROJECT_DIR", ".")
-            try:
-                # REVIEW-STRUCT: launcher [air] invoked — internal EME integration; confirm air CLI environment is valid
-                res = subprocess.run(["air", "sandbox", "find", project_dir, "-project"], capture_output=True, text=True, check=True)
-                project_name = res.stdout.strip()
-                
-                # Execute run-and-reposit pipeline
-                os.environ["AB_GRAPH_SCRIPT_REPOSIT_TRACKING"] = "false"
-                run_cmd = [
-                    f"{os.environ['AB_HOME']}/bin/run-and-reposit",
-                    f"{project_name}/mp/map_rpos_carmen_import.mp",
-                    project_name,
-                    sys.argv[0]
-                ] + sys.argv[2:]
-                
-                reposit_res = subprocess.run(run_cmd, check=True)
-                sys.exit(reposit_res.returncode)
-            except subprocess.CalledProcessError as e:
-                print(f"EME Sandbox Tracking Registration Failure: {e}", file=sys.stderr)
-                sys.exit(1)
-
-# Step 4: Write Generated SQL Files
-def generate_sql_files(proxy_dir):
-    # Statement 1 & 3: Delete RPOS records
-    delete_rpos_sql = """DELETE FROM DWH$TA_F_RPOS_CARM
-WHERE  rechnung_id = :rechnung_id
-AND    rechnung_datum = :rechnung_datum
-AND    standardvertrags_id = :standardvertrags_id
-AND    vertrags_id = :vertrags_id"""
-    with open(os.path.join(proxy_dir, "Delete_rows_from_DWH_TA_F_RPOS_CARM-4.sql"), "w") as f:
-        f.write(delete_rpos_sql)
-
-    with open(os.path.join(proxy_dir, "Delete_rows_from_DWH_TA_F_RPOS_CARM_2-61.sql"), "w") as f:
-        f.write(delete_rpos_sql)
-
-    # Statement 2: Delete Factoring GPOS Records
-    delete_gpos_fact_sql = """DELETE FROM DWH$TA_F_GPOS_FACT_CARM
-WHERE  rechnung_id = :rechnung_id
-AND    rechnung_datum = :rechnung_datum
-AND    standardvertrags_id = :standardvertrags_id
-AND    vertrags_id = :vertrags_id"""
-    with open(os.path.join(proxy_dir, "Delete_rows_from_DWH_TA_F_GPOS_FACT_CARM-60.sql"), "w") as f:
-        f.write(delete_gpos_fact_sql)
-
-    # Statement 4: Delete Factoring RPOS Records
-    delete_rpos_fact_sql = """DELETE FROM DWH$TA_F_RPOS_FACT_CARM
-WHERE  rechnung_id = :rechnung_id
-AND    rechnung_datum = :rechnung_datum
-AND    standardvertrags_id = :standardvertrags_id
-AND    vertrags_id = :vertrags_id"""
-    with open(os.path.join(proxy_dir, "Delete_rows_from_DWH_TA_F_RPOS_FACT_CARM-62.sql"), "w") as f:
-        f.write(delete_rpos_fact_sql)
-
-    # Statement 5: Delete Reselling RPOS Records
-    delete_reselling_sql = """DELETE FROM DWH$TA_F_RPOS_RESELLING_CARM
-WHERE  rechnung_id = :rechnung_id
-AND    rechnung_datum = :rechnung_datum
-AND    standardvertrags_id = :standardvertrags_id
-AND    vertrags_id = :vertrags_id"""
-    with open(os.path.join(proxy_dir, "Delete_rows_from_DWH_TA_F_RPOS_RESELLING_CARM-63.sql"), "w") as f:
-        f.write(delete_reselling_sql)
-
-    # Statement 6: Delete Temporary RPOS Records
-    delete_temp_rpos_sql = """DELETE FROM DWH$TA_T_RPOS_CARM
-WHERE  debitor_id = :debitor_id
-AND    rechnung_datum = :rechnung_datum
-AND    rechnung_id = :rechnung_id"""
-    with open(os.path.join(proxy_dir, "Delete_rows_from_DWH_TA_T_RPOS_CARM-65.sql"), "w") as f:
-        f.write(delete_temp_rpos_sql)
-
-    # Statement 7 & 8: Update and Insert Tracking Billing Group Information
-    update_absgrp_sql = """UPDATE DWH$TA_K_RECH_ABSGRP
-SET   rechnung_datum = :rechnung_datum, 
-      ladedatum = :ladedatum
-WHERE  monats_id = :monats_id
-AND    abs_grp = :abs_grp
-AND    dateiname = :dateiname
-AND    rechnungsteil = :rechnungsteil"""
-    with open(os.path.join(proxy_dir, "Update_Insert_DWH_TA_K_RECH_ABSGRP-70.sql"), "w") as f:
-        f.write(update_absgrp_sql)
-
-    insert_absgrp_sql = """INSERT INTO DWH$TA_K_RECH_ABSGRP (monats_id, abs_grp, dateiname,  rechnung_datum, rechnungsteil, ladedatum)
-VALUES (:monats_id, :abs_grp, :dateiname,  :rechnung_datum, :rechnungsteil, :ladedatum)"""
-    with open(os.path.join(proxy_dir, "Update_Insert_DWH_TA_K_RECH_ABSGRP-71.sql"), "w") as f:
-        f.write(insert_absgrp_sql)
-
-    # Statement 9: Update Audit Log Reporting State
-    update_meldungen_sql = """update dwh$ta_k_meldungen 
-set anzahl_ds_eof = :anzahl
-  , dateiname = :dateiname
-  , enderecord_text = :inhalt
-  , zusatzinfo = :bemerkung 
-where entrynr = :eintragsnr"""
-    with open(os.path.join(proxy_dir, "Update_DWH_TA_K_MELDUNGEN-74.sql"), "w") as f:
-        f.write(update_meldungen_sql)
-
-# Step 5: Execute Main Pipeline Execution
-def execute_pipeline(proxy_dir):
-    # Define Job ID context
-    ab_job = os.environ.get("AB_JOB_PREFIX", "") + "map_rpos_carmen_import"
-    os.environ["AB_JOB"] = ab_job
-    
-    # Rename tracking proxy directory for uniqueness in file access
-    final_proxy_dir = f"{ab_job}-map_rpos_carmen_import-ProxyDir"
-    if os.path.exists(final_proxy_dir):
-        shutil.rmtree(final_proxy_dir)
-    shutil.move(proxy_dir, final_proxy_dir)
-    
-    try:
-        # Setup lookup catalog files
-        subprocess.run(["m_rmcatalog", f"GDE-map_rpos_carmen_import-{ab_job}.cat"], capture_output=True)
-        subprocess.run(["m_mkcatalog", "-catalog", f"GDE-map_rpos_carmen_import-{ab_job}.cat"], check=True)
-        
-        # Sourcing catalog and layout properties
-        os.environ["AB_CATALOG"] = f"GDE-map_rpos_carmen_import-{ab_job}.cat"
-        
-        # Layout allocations via M-Power Command Suite
-        # REVIEW-STRUCT: launcher [mp] invoked — downstream graph execution orchestration
-        subprocess.run(["mp", "job", ab_job], check=True)
-        subprocess.run(["mp", "layout", "layout1", "-hosts"] + ["localhost"]*16, check=True)
-        subprocess.run(["mp", "layout", "layout2", "."], check=True)
-        
-        # Metadata allocation references mapping DML formats
-        subprocess.run(["mp", "metadata", "metadata1", "-file", f"{final_proxy_dir}/dwh_ta_c_vertrag-12.dml"], check=True)
-        # (... Subsequent layouts & metadata components mapping to mp executable configurations)
-        
-        # Trigger execution of the dynamically compiled pipeline graph
-        print("Executing Carmen Import ETL pipeline...", sys.stderr)
-        mp_run_result = subprocess.run(["mp", "run"], check=True)
-        return mp_run_result.returncode
-        
-    finally:
-        # Final session cleanup tasks
-        subprocess.run(["mp", "reset"], capture_output=True)
-        subprocess.run(["m_rmcatalog"], capture_output=True)
-        if os.path.exists(final_proxy_dir):
-            shutil.rmtree(final_proxy_dir)
-
-# Step 6: Master Orchestration Main Control
+# Step 3: Run Main Execution Flow
 def main():
-    # REVIEW-STRUCT: environment file [.project.ksh] not supplied — variables it sets are unknown
-    # Setup baseline configurations and arguments checking
-    setup_environment()
-    parse_arguments()
-    check_parameters()
+    validate_parameters()
     
-    # Establish local isolated temp state folder
-    base_temp_dir = tempfile.mkdtemp(prefix="map_rpos_carmen_import-ProxyDir-")
+    # Configure oracle numeric environment
+    os.environ["NLS_NUMERIC_CHARACTERS"] = ". "
     
-    exit_code = 0
+    # Get parameters
+    dwh_tns = os.environ.get("DB_TNS_NAME_DWH")
+    dwh_user = os.environ.get("DB_USER_DWH")
+    dwh_passwd = os.environ.get("DB_PASSWD_DWH")
+    
+    source_dir = os.environ.get("BHB_Quellverzeichnis")
+    filename_base = os.environ.get("BHB_Dateiname")
+    source_path = os.path.join(source_dir, filename_base)
+    
+    entry_nr = os.environ.get("BHB_Eintragsnr")
+    
+    # Temp workspace allocation
+    temp_dir = tempfile.mkdtemp(prefix="map_rpos_carmen_import_")
+    logging.info(f"Created secure processing workspace: {temp_dir}")
+    
+    connection = None
     try:
-        # Sourcing project variables
-        project_ksh = os.path.join(os.environ.get("PROJECT_DIR", "."), ".project.ksh")
-        if os.path.exists(project_ksh):
-            # REVIEW-STRUCT: environment file [.project.ksh] not supplied — variables it sets are unknown
-            subprocess.run([project_ksh, os.environ.get("PROJECT_DIR", "."), "execute", "start"], check=True)
+        # Step 4: Establish DB Session
+        logging.info("Connecting to DWH Target Oracle Database...")
+        connection = oracledb.connect(user=dwh_user, password=dwh_passwd, dsn=dwh_tns)
+        cursor = connection.cursor()
         
-        # Generate processing metadata artifacts
-        generate_sql_files(base_temp_dir)
+        # Step 5: Read and Cache DWH Contract Master Data
+        logging.info("Caching Contract Master Table reference (DWH$TA_C_VERTRAG)...")
+        reference_query = """
+            SELECT 
+                rahmenvertrag_id, vertrag_id_carmen, dwh_vertrag_id, dwh_gp_id, 
+                dwh_konto_id, dwh_tarifgr_id, vo_kenn, zv_id, gueltig_von, gueltig_bis
+            FROM dwh$ta_c_vertrag
+            WHERE gueltig_bis >= TO_DATE('20050401', 'YYYYMMDD')
+        """
+        cursor.execute(reference_query)
+        df_vertrag = pd.DataFrame(cursor.fetchall(), columns=[col[0] for col in cursor.description])
         
-        # Run import graph operations
-        exit_code = execute_pipeline(base_temp_dir)
-        
-        # Post-execution status sourcing hook
-        if os.path.exists(project_ksh):
-            # REVIEW-STRUCT: environment file [.project.ksh] not supplied — variables it sets are unknown
-            subprocess.run([project_ksh, os.environ.get("PROJECT_DIR", "."), "execute", "end"], check=True)
+        # Step 6: Load and Split Carmen Input Source
+        if not os.path.exists(source_path):
+            raise FileNotFoundError(f"Missing transaction billing file: {source_path}")
             
-    except subprocess.CalledProcessError as err:
-        print(f"Pipeline Stage execution failed: {err}", file=sys.stderr)
-        traceback.print_exc()
-        exit_code = err.returncode if err.returncode is not None else 1
-    except Exception as general_err:
-        print(f"Execution Error occurred: {general_err}", file=sys.stderr)
-        traceback.print_exc()
-        exit_code = 1
+        header_indicator = os.environ.get("BHB_Kopfdatensatzkennung")
+        data_indicator = os.environ.get("BHB_Nutzdatensatzkennung")
+        footer_indicator = os.environ.get("BHB_Endedatensatzkennung")
+        
+        raw_data_rows = []
+        footer_rows = []
+        
+        # Parse stream
+        with open(source_path, "r", encoding="latin1") as f:
+            for line in f:
+                stripped_line = line.strip()
+                if stripped_line.startswith(data_indicator):
+                    raw_data_rows.append(stripped_line)
+                elif stripped_line.startswith(footer_indicator):
+                    footer_rows.append(stripped_line)
+                    
+        if not raw_data_rows:
+            logging.warning("No data transactions (Nutz) rows located in file!")
+            
+        # Step 7: Parse and Structure Ingest Dataframe
+        # Clean commas to periods, map formats
+        parsed_records = []
+        for raw_line in raw_data_rows:
+            # Custom split logic replacing Ab Initio DML parsing.
+            # Replace ',' to '.' inside decimal columns
+            fields = raw_line.split(";") 
+            # Implement validation schema parsing mapping to Reformat_for_DB details
+            parsed_records.append(fields)
+            
+        df_raw = pd.DataFrame(parsed_records)
+        # Perform transformations equivalent to `Reformat_for_DB-20.xfr` & `Validate_Records-22.xfr`
+        # Execute rolling aggregations and business rule splits (Factoring, Reselling etc.)
+        
+        # Step 8: Idempotent Deletion Phase
+        logging.info("Initiating historical target cleanups (Deletes)...")
+        # Isolate unique deletion keys from structured records: rechnung_id, rechnung_datum, standardvertrags_id, vertrags_id
+        # Execute transactional batches:
+        delete_sql = """
+            DELETE FROM DWH$TA_F_RPOS_CARM
+            WHERE rechnung_id = :1 AND rechnung_datum = :2 AND standardvertrags_id = :3 AND vertrags_id = :4
+        """
+        # Batch execute deletes: cursor.executemany(delete_sql, delete_keys_list)
+        
+        # Step 9: Bulk Persist Clean Target Frames
+        # Insert target Factoring Fact table
+        insert_fact_sql = """
+            INSERT INTO DWH$TA_F_RPOS_CARM (monats_id, debitor_id, rechnung_id, ...) VALUES (...)
+        """
+        # Batch load execution: cursor.executemany(insert_fact_sql, insert_records_list)
+        
+        # Step 10: Control Auditing Table Updates
+        logging.info("Updating Audit Track logs...")
+        # Update run variables into DWH$TA_K_RECH_ABSGRP & DWH$TA_K_MELDUNGEN
+        
+        # Commit transactional states
+        connection.commit()
+        logging.info("Data workflow loaded successfully. Committed transaction.")
+        
+    except Exception as e:
+        logging.error(f"Execution Error occurred: {str(e)}")
+        if connection:
+            logging.info("Rolling back open database transactions.")
+            connection.rollback()
+        sys.exit(3)
+        
     finally:
-        # Ensure temporary directories are wiped out regardless of execution state
-        if os.path.exists(base_temp_dir):
-            shutil.rmtree(base_temp_dir)
-            
-    sys.exit(exit_code)
+        # Step 11: Workspace Teardown
+        if connection:
+            connection.close()
+        if os.path.exists(temp_dir):
+            shutil.rmtree(temp_dir)
+            logging.info("Secure workspace purged.")
 
 if __name__ == "__main__":
     main()
@@ -2168,71 +2157,129 @@ if __name__ == "__main__":
 
 ---
 
-## 4. ADDED CONTEXT (ENVIRONMENT SPECIFICS)
+## 3. BIGQUERY / GCP TARGET PLATFORM ADAPTATION
 
-### A. Job Dependencies & Lineage Edges
-* **Upstream Job Dependencies:**
-  * **Shared File Dependency:** `abinitio_pyspark_linked_job/isccr/abinitio/bin` has already been migrated and merged (GitHub PR: `https://github.com/gurunathan-prodapt/pi-agents/pull/764`). Specifically, the utility script `abinitio_pyspark_linked_job/isccr/abinitio/bin/r_ai_start` is imported/referenced rather than re-designed.
-  * In the Google Cloud environment, the translated Python orchestration script references this shared utility using Cloud Composer Airflow imports or common PySpark utility paths.
-* **Downstream Job Dependencies:**
-  * None discovered in the legacy job dependencies context.
+This section describes how the Oracle-specific and local-filesystem execution context from the legacy KornShell script maps into a GCP native stack (**Cloud Composer** orchestrating **Dataproc Serverless PySpark** pipelines and **BigQuery**).
 
-### B. Execution Sequence & Preservation
-The target pipeline MUST execute the logical components in the following chronological sequence to match legacy dependency execution order:
-1. **UC4 Orchestration Layer:** Sourced/Scheduled by Google Cloud Composer DAG (`DW.RPOS_CARM_IMPORT`).
-2. **Parameters Loading:** Reads and validates properties equivalent to `abinitio_rpos_carmen_linked_job/isdwh/abinitio/cfg/bd_proc/map_rpos_carmen_import.cfg` (translated as Airflow DAG `params` or runtime configuration dictionaries).
-3. **Idempotency Actions (Wrapper):** Performs delete operations on BigQuery (`DWH$TA_F_RPOS_CARM`, `DWH$TA_F_GPOS_FACT_CARM`, `DWH$TA_F_RPOS_FACT_CARM`, `DWH$TA_F_RPOS_RESELLING_CARM`, `DWH$TA_T_RPOS_CARM`) to clean up records for the active period.
-4. **PySpark core ETL Job Execution:** Launches the PySpark transformation (migrated from the Ab Initio Graph `map_rpos_carmen_import.mp`) via a Dataproc Serverless Operator task in the DAG.
-5. **Auditing and Housekeeping Updates:** Sourced files metadata and trailer verification checks write metrics back to metadata logging tables (`DWH$TA_K_RECH_ABSGRP` and `DWH$TA_K_MELDUNGEN`).
+### 3.1 Orchestration and Run Architecture
+- **Legacy Framework**: KornShell script initialized variables, processed input text blocks, and executed an Ab Initio graph (`map_rpos_carmen_import.mp`) which performed high-throughput parsing and loading into Oracle.
+- **GCP Target Architecture**:
+  1. **Airflow Orchestrator**: A Cloud Composer DAG (migrated separately from the UC4 orchestration XML) triggers this job.
+  2. **GCP Storage**: The input transaction billing files are stored in a GCS bucket instead of the local unix filesystem directory (`$DW_DIR_IMP_SAP/crs/work/`).
+  3. **Dataproc Serverless PySpark**: The Python wrapper script (`map_rpos_carmen_import.py`) submits a PySpark batch application executing on Google Cloud Dataproc Serverless. This PySpark program encapsulates the data processing graph logic (migrated from the `.mp` graph file).
+  4. **BigQuery target loading**: The PySpark script processes records in parallel, caches reference data from BigQuery tables, performs the joins and aggregations, and writes clean results using the Spark BigQuery connector.
 
-### C. Scheduling & Trigger Mechanisms
-* **Schedule Context:** Sourced by the upstream UC4 coordinator.
-* **Target Scheduling Construct:** Converted to an Airflow Cron-based schedule or event-based trigger sensor in Cloud Composer depending on global orchestration guidelines (e.g. daily/monthly triggers matching incoming Carmen pos file arrival events).
+### 3.2 SQL & Query Translation
+Oracle SQL scripts and statements must be adapted to Standard BigQuery SQL:
+- **Binding Variables**: Oracle syntax `:rechnung_id`, `:rechnung_datum` maps to named query parameters `@rechnung_id`, `@rechnung_datum` or BigQuery scripting variable substitutions.
+- **Idempotency Deletion**: BigQuery supports `DELETE` syntax, but standard practice in BigQuery DWH pipelines uses a split/merge or partition overwriting mechanism. Given that transaction tables are likely partitioned by date, we can either:
+  - Run a DML `DELETE` statement in BigQuery prior to appending the new batch.
+  - Use `MERGE` statements or overwrite targeted partitions directly.
+- **Join Syntax**: Oracle-specific outer join shorthand `(+)` must be completely rewritten to standard explicit `LEFT OUTER JOIN` syntax in BigQuery.
 
-### D. External System Replacements
-* **Legacy Flat File Directories:**
-  * Source Directory (`$DW_DIR_IMP_SAP/crs/work/`) maps to a GCS work bucket path: `gs://{GCS_BUCKET}/crs/work/`.
-  * Target/Archive Directory (`$DW_DIR_IMP_SAP/crs/store/`) maps to a GCS store bucket path: `gs://{GCS_BUCKET}/crs/store/`.
-* **Legacy Databases / Connection SIDs:**
-  * Oracle TNS Connection names (`DB_TNS_NAME_DWH`, `DB_TNS_NAME_CRS`, `DB_TNS_NAME_SGM`, `DB_TNS_NAME_CADS`, `DB_TNS_NAME_CACM`) are decommissioned and unified inside BigQuery dataset structures. All SQL operations execute natively on BigQuery schemas.
-
-### E. Environment-Specific Values (Global vs. Job-Specific)
-
-Following the environment variables classification policy, variables used by the legacy shell script are mapped to target mechanisms below:
-
-#### 1. GLOBAL (Environment-Wide Infrastructure Constants)
-The values below remain the same for every job in this deployment environment (Dev/Test/Prod). They are resolved dynamically at runtime:
-* **`GCP_PROJECT`**: The target Google Cloud Project ID.
-* **`GCS_BUCKET`**: Shared Cloud Storage Bucket replacing `$DW_DIR_IMP_SAP` paths.
-* **`BQ_DATASET`**: Target BigQuery Dataset where the warehouse tables (`DWH$TA_*`) reside. Sourced using native Airflow variables or parameter bindings.
-* **`DATAPROC_REGION` / `DATAPROC_CLUSTER`**: Target region and cluster information for executing the serverless PySpark execution engine.
-
-*Source Mechanism:*
-* In Python tasks: `os.environ.get("GCP_PROJECT")`, etc.
-* In Cloud Composer Airflow DAG: Sourced from `from airflow.models import Variable` using `Variable.get("GCP_PROJECT")`.
-* In BigQuery SQL tasks: Substituted dynamically by the calling Python script using parameterized query formatting (e.g., `@{gcp_project}`).
-
-#### 2. JOB-SPECIFIC (Parameters Particular to This Job)
-The values below are particular to `map_rpos_carmen_import` and are stored inside Composer DAG params or job config objects:
-* **`BHB_Projektverzeichnis`**: `/Projects/TMD/processing/BHB/BD_PROC`
-* **`BHB_Graph`**: `map_rpos_carmen_import`
-* **`BHB_Prozesstyp`**: `D`
-* **`BHB_Dateimaske`**: `CARMEN_B_*_pos.fix`
-* **`BHB_Kopfdatensatzkennung`**: `H`
-* **`BHB_Nutzdatensatzkennung`**: `P`
-* **`BHB_Endedatensatzkennung`**: `X`
-* **`BHB_Eintragsnr`**: Provided at runtime by Composer orchestration trigger.
-* **`BHB_Dateiname`**: Provided dynamically based on GCS file list match.
+### 3.3 Text Logging & Standard Outputs
+In accordance with the **OUTPUT/PRINT LITERAL RULE**, all terminal and logging text remains character-for-character identical in terms of literal text, wrapping inside Python's native `logging` or print routines:
+- `"Error evaluating: 'parameter DB_TNS_NAME_DWH of map_rpos_carmen_import', interpretation 'shell'"` is retained verbatim.
+- `"Internal error: '$0' is a symlink and some problem occurred expanding it..."` is retained verbatim (with `$0` mapped to python `sys.argv[0]`).
 
 ---
 
-## 5. RISKS & MANUAL ACTIONS
+## 4. ENVIRONMENT VARIABLE CLASSIFICATION
 
-* **SOURCE: DECOMMISSIONED/NOT REQUIRED — `AB_CATALOG_FUNCTIONS.KSH` — no candidate**
-  * *Notes:* Lineage indicates reference to `AB_CATALOG_FUNCTIONS.KSH`. This has been reviewed by domain experts and confirmed as **not needed** (Resolution signed off by guru on 2026-07-24). No manual conversion is required.
-* **SOURCE: DECOMMISSIONED/NOT REQUIRED — `.project.ksh` / `.project` environment scripts**
-  * *Notes:* Legacys project-level shell scripts are decommissioned. Sourced environment variables are mapped to BigQuery parameter overrides and Cloud Composer Airflow parameters.
-* **Ab Initio Graph Code Decoupling:**
-  * *Notes:* The wrapper executes an Ab Initio graph `map_rpos_carmen_import.mp` via `mp run`. Designing and converting the graph's internal transformation components to PySpark forms a separate, independent design pass. The target Python script must call this PySpark pipeline via Dataproc Serverless Operators. Ensure that the separate PySpark migration design is completed before integration testing.
-* **Language/Literal String Retention Compliance:**
-  * *Notes:* To comply with the Output/Print Literal Rule, all German error descriptions and trailer comments printed by the graph metadata mapping blocks (e.g., `"Invalid data format in monats_id"`, `"Invalid Data in field debitor_id"`, etc.) are retained character-for-character inside the PySpark mapping logic without any translation.
+The parameters referenced in the legacy KornShell and parameter files (`.cfg`) are mapped to the target environment as follows:
+
+### 4.1 GLOBAL Environment Variables
+These variables define target Cloud infrastructure and are uniform across all jobs in the environment (Dev, Test, Prod). In Python execution contexts, they are sourced at runtime via `os.environ.get()` or via Airflow variables `Variable.get()`.
+
+| Canonical Target Variable | Sourced From / Legacy Name | Purpose / Target Value | Python Sourcing Strategy |
+| :--- | :--- | :--- | :--- |
+| `GCP_PROJECT` | `DB_TNS_NAME_DWH` | GCP Project ID housing BigQuery datasets. | `os.environ.get("GCP_PROJECT")` |
+| `GCS_BUCKET` | `DW_DIR_IMP_SAP` | Root Cloud Storage Bucket for file arrivals. | `os.environ.get("GCS_BUCKET")` |
+| `BQ_LOCATION` | N/A (New Infra) | Target BigQuery Region (e.g. `EU`, `US`). | `os.environ.get("BQ_LOCATION")` |
+| `DATAPROC_REGION`| N/A (New Infra) | GCP Region for Dataproc Serverless. | `os.environ.get("DATAPROC_REGION")` |
+
+### 4.2 JOB-SPECIFIC Variables
+These variables are specific to this workload and should be supplied via function parameters, Airflow DAG `params`, or stored in job-level config objects. No prose placeholders are used.
+
+| Target Variable | Legacy Sourced Name | Context Value (Verbatim) | Target Handling |
+| :--- | :--- | :--- | :--- |
+| `BHB_Projektverzeichnis` | `BHB_Projektverzeichnis` | `/Projects/TMD/processing/BHB/BD_PROC` | Transformed to GCS subdirectory paths. |
+| `BHB_Quellverzeichnis` | `BHB_Quellverzeichnis` | `$DW_DIR_IMP_SAP/crs/work/` | Maps to `gs://{GCS_BUCKET}/crs/work/` |
+| `BHB_Zielverzeichnis` | `BHB_Zielverzeichnis` | `$DW_DIR_IMP_SAP/crs/store/` | Maps to `gs://{GCS_BUCKET}/crs/store/` |
+| `BHB_Dateimaske` | `BHB_Dateimaske` | `CARMEN_B_*_pos.fix` | File search wildcard within GCS prefix. |
+| `BHB_Kopfdatensatzkennung` | `BHB_Kopfdatensatzkennung` | `H` | Row split control filter. |
+| `BHB_Nutzdatensatzkennung` | `BHB_Nutzdatensatzkennung` | `P` | Row split control filter. |
+| `BHB_Endedatensatzkennung` | `BHB_Endedatensatzkennung` | `X` | Row split control filter. |
+| `BHB_Prozesstyp` | `BHB_Prozesstyp` | `D` | Process type category tracker. |
+| `BHB_Graph` | `BHB_Graph` | `map_rpos_carmen_import` | Sourced graph identity metadata. |
+
+---
+
+## 5. TARGET FILE PLAN
+
+In compliance with the **YOUR SCOPE** rule, we generate target file plans exclusively for the source files assigned to this design pass.
+
+### 5.1 Python Wrapper Orchestration Script
+- **Target Path**: `abinitio_rpos_carmen_linked_job/TMD_processing/BHB/BD_PROC/run/map_rpos_carmen_import.py`
+- **Language**: Python 3
+- **Primary Purpose**: Replaces the KornShell execution logic. Sourced environmental metadata, sets up runtime parameters, scans for transaction file updates matched against `BHB_Dateimaske` in the GCS path `gs://{GCS_BUCKET}/crs/work/`, and triggers the Dataproc Serverless PySpark batch process representing the graph logic.
+
+---
+
+## 6. EXTERNAL SYSTEM REPLACEMENTS
+
+The legacy script's dependencies on local system files and database servers translate into cloud-native equivalents:
+- **Filesystem storage (Input/Output)**: Local storage directories (e.g. `/appl/local/`, `$DW_DIR_IMP_SAP/`) are replaced with Google Cloud Storage (`GCS`) buckets.
+- **Oracle Database**: Traditional Oracle database references (DWH, CRS, SGM datasets) are migrated to standard **BigQuery** tables:
+  - `DWH$TA_F_RPOS_CARM` -> `bq_dataset.ta_f_rpos_carm`
+  - `DWH$TA_F_GPOS_FACT_CARM` -> `bq_dataset.ta_f_gpos_fact_carm`
+  - `DWH$TA_F_RPOS_FACT_CARM` -> `bq_dataset.ta_f_rpos_fact_carm`
+  - `DWH$TA_F_RPOS_RESELLING_CARM` -> `bq_dataset.ta_f_rpos_reselling_carm`
+  - `DWH$TA_T_RPOS_CARM` -> `bq_dataset.ta_t_rpos_carm`
+  - `DWH$TA_C_VERTRAG` -> `bq_dataset.ta_c_vertrag`
+  - `DWH$TA_K_RECH_ABSGRP` -> `bq_dataset.ta_k_rech_absgrp`
+  - `DWH$TA_K_MELDUNGEN` -> `bq_dataset.ta_k_meldungen`
+
+---
+
+## 7. JOB DEPENDENCIES, SCHEDULING, & EXECUTION
+
+### 7.1 Scheduling
+- **Trigger**: Schedulers invoke this job in response to file delivery events.
+- **GCP Schedulers Construct**: The Airflow Cloud Composer DAG will utilize a Google Cloud Storage sensor (`GCSObjectsWithPrefixPatternSensor`) matching the pattern `gs://{GCS_BUCKET}/crs/work/CARMEN_B_*_pos.fix` to trigger the Python wrapper logic automatically upon arrival.
+
+### 7.2 Job Lineage & Dependencies
+- **Upstream Dependencies**:
+  - `abinitio_pyspark_linked_job/isccr/abinitio/bin/r_ai_start` — This shared environment initialization file has already been converted to PySpark modules. The migrated Python script must import or reference this package initialization setup.
+- **Execution Ordering Sequence**:
+  - Task 1: Check source CSV arrival via Airflow GCS sensor.
+  - Task 2: Validate metadata parameters and setup GCS workspace.
+  - Task 3: Submit Dataproc Serverless PySpark ETL Job to process raw files and populate target BigQuery tables.
+  - Task 4: Execute final updates on audit and operational tracking tables in BigQuery.
+
+---
+
+## 8. FOLDER INTEGRITY & COMPONENT RESOLUTIONS
+
+In compliance with the **HUMAN-CONFIRMED RESOLUTIONS** checklist, the following unresolved/legacy utility references contained in the legacy shell script are confirmed by human review to be omitted or marked as not needed in the target environment:
+- `.CCR_INIT` (Not Needed)
+- `.DW_INIT` (Not Needed)
+- `AB_CATALOG_FUNCTIONS.KSH` (Not Needed)
+- `DW.DWH_ADM_PRUEFE_AB_INITIO_ENDE_INC` (Not Needed)
+- `DW.DWH_ADM_PRUEFE_AB_INITIO_START_INC` (Not Needed)
+- `DW.HOLE_PFAD` (Not Needed)
+- `DW.LESE_LOG` (Not Needed)
+- `H_ALIS_DATE.KSH` (Not Needed)
+- `H_ALIS_DATENOBJEKT.KSH` (Not Needed)
+- `H_ALIS_MELDUNGEN.KSH` (Not Needed)
+- `H_ALIS_PARAMETER.KSH` (Not Needed)
+
+These scripts represent old framework administration structures replaced natively by Composer task parameters and standard Python utility libraries.
+
+---
+
+## 9. RISKS & MANUAL ACTIONS
+
+1. **SOURCE: NOT FOUND** — `AB_CATALOG_FUNCTIONS.KSH` — no candidate (Confirmed by Human Resolution: NOT NEEDED. Sourced logging and setup variables are handled natively via Airflow environments).
+2. **Ab Initio Graph Migration Gap**: This design pass focuses solely on migrating the KSH wrapper script (`map_rpos_carmen_import.ksh`). The complete conversion of the main graph file (`map_rpos_carmen_import.mp`) to PySpark is handled by a separate design pass. Dataproc submission in our target Python code must be updated with the final compiled PySpark script path once that pass is complete.
+3. **Database Drivers Mapping**: BigQuery execution requires using the standard Python BigQuery library (`google-cloud-bigquery`) and PySpark BigQuery connector. The `oracledb` library referenced in the verbatim tool output is used only as an illustrative direct python-to-database outline; the actual build phase must target Standard BigQuery API protocols.
