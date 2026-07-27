@@ -1,178 +1,162 @@
 # Migration Notes: DW.RPOS_CARM_IMPORT
 
-This document details the migration of the legacy UC4 job `DW.RPOS_CARM_IMPORT`, its associated Ab Initio graph `map_rpos_carmen_import.mp`, and its KornShell wrapper `map_rpos_carmen_import.ksh` to a cloud-native architecture on Google Cloud Platform (GCP).
+This document provides comprehensive migration notes for transitioning the legacy UC4 UNIX job `DW.RPOS_CARM_IMPORT` and its associated Ab Initio graph `map_rpos_carmen_import` to a modern, cloud-native architecture on Google Cloud Platform (GCP).
 
 ---
 
 ## 1. Summary
 
-The `DW.RPOS_CARM_IMPORT` workflow has been migrated from an on-premises Ab Initio and UC4 environment to **Google Cloud Platform (GCP)**. 
+The `DW.RPOS_CARM_IMPORT` workflow has been migrated from a legacy on-premises environment orchestrated by UC4/Automic and processed via Ab Initio to **Google Cloud Composer (Apache Airflow)** and **Google Cloud Dataproc Serverless (PySpark)**. 
 
-* **Source Orchestration:** UC4 (`JOBS_UNIX` object executing a KornShell wrapper).
-* **Source Data Engine:** Ab Initio GDE (Graph `map_rpos_carmen_import.mp` executing via `mp run`).
-* **Target Orchestration:** Google Cloud Composer (Apache Airflow 2.x).
-* **Target Data Engine:** Dataproc Serverless (PySpark 3.x).
-* **Target Data Warehouse:** Google BigQuery.
+### Scope of Migration
+*   **Source Orchestrator:** UC4 UNIX Job (`DW.RPOS_CARM_IMPORT`)
+*   **Source Processing Engine:** Ab Initio Graph (`map_rpos_carmen_import.mp`) and KornShell Wrapper (`map_rpos_carmen_import.ksh`)
+*   **Target Orchestrator:** Apache Airflow (Cloud Composer)
+*   **Target Processing Engine:** PySpark (Dataproc Serverless)
+*   **Target Database:** Google Cloud BigQuery (replacing Oracle DWH)
+*   **Target File System:** Google Cloud Storage (GCS) (replacing local SAN mounts)
 
-### Business Purpose
-This pipeline ingests, validates, enriches, and routes Carmen RPOS billing and invoice transactional records. It performs lookups against contract master tables to align records with active contract periods, categorizes transactions into distinct business streams (Factoring Invoices, Factoring Credit Notes, Reselling, and Temporary positions), and enforces target ledger integrity via an idempotent "Delete-Then-Insert" pattern.
+The pipeline ingests raw retail point of sale (RPOS) Carmen billing flat files, performs strict schema validation, enriches the transactions with historical contract metadata, executes temporal boundary checks, and loads the processed records into BigQuery using an idempotent **Delete-then-Insert** pattern.
 
 ---
 
 ## 2. Generated Artifacts
 
-The migration process generated the following core artifacts:
+The migration process generated three primary files, each serving a distinct role in the target architecture:
 
-| Target File Path | Language / Type | Role / Description |
+| Artifact Path | Language / Type | Role & Description |
 | :--- | :--- | :--- |
-| `abinitio_rpos_carmen_linked_job/DWH_BD_PROC_JOB/dw_rpos_carm_import.py` | Python (Apache Airflow DAG) | Orchestrates the pipeline. It resolves environment variables, defines the execution DAG, and submits the PySpark job to Dataproc Serverless. |
-| `abinitio_rpos_carmen_linked_job/TMD_processing/BHB/BD_PROC/run/map_rpos_carmen_import.py` | Python (PySpark 3.x) | The primary production-ready data pipeline. It replaces the legacy KSH wrapper and Ab Initio graph logic. It handles file ingestion, validation, contract enrichment, pre-load deletions, routing, and audit logging. |
-| `abinitio_rpos_carmen_linked_job/TMD_processing/BHB/BD_PROC/mp/map_rpos_carmen_import.py` | Python (PySpark 3.x) | Consolidated/re-engineered PySpark module containing the core data transformation logic mapped directly from the Ab Initio `.mp` graph. |
+| `abinitio_rpos_carmen_linked_job/DWH_BD_PROC_JOB/dw_rpos_carm_import.py` | Python (Airflow DAG) | **Orchestration Layer:** Defines the Airflow DAG structure, default arguments, and schedules the Dataproc PySpark job. It maps legacy UC4 parameters to Airflow variables. |
+| `abinitio_rpos_carmen_linked_job/TMD_processing/BHB/BD_PROC/mp/map_rpos_carmen_import.py` | PySpark (Python 3) | **ETL Processing Layer:** Replaces the Ab Initio `.mp` graph. Handles GCS file ingestion, strict data validation, left-outer joins with BigQuery reference tables, ranking/deduplication, and transactional target writes. |
+| `abinitio_rpos_carmen_linked_job/TMD_processing/BHB/BD_PROC/run/map_rpos_carmen_import.py` | Python 3 | **Wrapper / Standalone Orchestrator:** Replaces the legacy `.ksh` wrapper. Provides a command-line interface to execute validations, manage pre-insert BigQuery deletions, and trigger the PySpark pipeline. |
 
 ---
 
 ## 3. Key Design Decisions
 
-### A. Dataproc Serverless vs. Persistent Clusters
-* **Decision:** Dataproc Serverless was selected to execute the PySpark pipeline.
-* **Reasoning:** The import job is batch-oriented and triggered externally or on-demand. Dataproc Serverless eliminates the operational overhead of managing VM clusters, scales dynamically based on input file sizes, and ensures a zero-cost idle state.
+### Standalone DAG Architecture
+Because the source extraction bundle contained no parent workflow (`JOBP`) or active schedule (`JSCH`), the migrated DAG is configured as **externally triggered** (`schedule_interval=None`). It is designed to be kicked off by an upstream file-arrival sensor or an external event trigger when a new billing file lands in GCS.
 
-### B. Idempotency via Pre-Load Deletes (Delete-Then-Insert)
-* **Decision:** Re-implemented the legacy Ab Initio pre-load deletion logic using BigQuery `MERGE` statements with a `WHEN MATCHED THEN DELETE` clause.
-* **Reasoning:** To prevent duplicate records upon job retries, the pipeline must clear existing records matching the natural keys (`rechnung_id`, `rechnung_datum`, `standardvertrags_id`, `vertrags_id`) of the incoming batch. Executing this via a staging table merge in BigQuery ensures transactional safety and high performance.
+### Dataproc Serverless (PySpark) for Scale
+Ab Initio's high-performance data processing has been mapped to **PySpark on Dataproc Serverless**. This eliminates the need to manage persistent cluster infrastructure, reduces operational overhead, and provides elastic scaling to handle large billing batches.
 
-### C. Analytical Windowing for Scan/Ranking
-* **Decision:** Replaced the legacy Ab Initio `Scan` component with PySpark Window functions.
-* **Reasoning:** The legacy graph ranked contract records over `gueltig_von desc` and `dwh_vertrag_id desc` to resolve overlapping contract periods. This is natively and efficiently handled in PySpark using:
-  ```python
-  Window.partitionBy("vertrags_id", "rechnung_id", ...).orderBy(col("gueltig_von").desc(), col("dwh_vertrag_id").desc())
-  ```
+### Idempotent Delete-then-Insert Pattern
+To prevent duplicate records on historical reruns, the pipeline identifies unique keys in the incoming batch and deletes matching records from target tables before appending new data. 
 
-### D. Decoupled Environment Configuration
-* **Decision:** Implemented a strict environment variable classification policy.
-* **Reasoning:** To ensure seamless portability across Dev, Test, and Prod environments, all infrastructure-specific parameters (GCP Project, GCS Bucket, BigQuery Dataset) are resolved dynamically at runtime via Airflow Variables. Job-specific constants (e.g., record identifiers like `H`, `P`, `X`) remain encapsulated within the job configuration.
+### STRUCT UNNEST Optimization for BigQuery Deletes
+Standard single-row DML deletes are highly inefficient in BigQuery and can hit rate limits. To optimize this, the PySpark script aggregates unique deletion keys into an array of structs and executes a single batch `DELETE` query using `STRUCT UNNEST`:
+```sql
+DELETE FROM `project.dataset.table` t
+WHERE EXISTS (
+    SELECT 1 FROM UNNEST([STRUCT(...), STRUCT(...)]) k
+    WHERE t.key = k.key
+)
+```
+This design decision significantly reduces BigQuery slot consumption and ensures transactional consistency.
 
-### E. Verbatim German Logging Preservation
-* **Decision:** All logging statements, audit messages, and console outputs from the legacy KornShell script and Ab Initio graph have been preserved verbatim in German.
-* **Reasoning:** This maintains operational continuity, allowing existing downstream log parsers and operations teams to monitor the pipeline without modifying their patterns.
+### ANSI SQL Translation
+Oracle-specific outer join syntax `(+)` used in the contract history lookup has been rewritten to standard ANSI `LEFT OUTER JOIN` in BigQuery.
 
 ---
 
 ## 4. Manual Steps Before Go-Live
 
-The following setup steps must be completed in the target GCP environment prior to executing the pipeline:
+Before deploying the DAG and running the pipeline in production, the following manual setup steps must be completed:
 
-### A. BigQuery Schema and Dataset Creation
-Ensure the target BigQuery dataset (defined by the `BQ_DATASET` variable) exists and contains the following tables with schemas matching the legacy Oracle definitions:
-* `DWH$TA_C_VERTRAG` (Contract Master Lookup Table)
-* `DWH$TA_F_RPOS_CARM` (General Invoice Positions)
-* `DWH$TA_F_GPOS_FACT_CARM` (Factoring Gross Positions)
-* `DWH$TA_F_RPOS_FACT_CARM` (Factoring Billing Positions)
-* `DWH$TA_F_RPOS_RESELLING_CARM` (Reselling Positions)
-* `DWH$TA_T_RPOS_CARM` (Temporary Invoicing Positions)
-* `DWH$TA_K_RECH_ABSGRP` (Reconciliation Log Table)
-* `DWH$TA_K_MELDUNGEN` (Job Metrics Log Table)
+### A. BigQuery Dataset & Schema Creation
+Ensure the target BigQuery dataset (configured via `BQ_DATASET`) exists. Create the following tables with schemas matching the legacy Oracle definitions:
+*   `DWH_TA_F_RPOS_CARM` (Core Fact Table)
+*   `DWH_TA_F_RPOS_FACT_CARM` (Factoring Invoices)
+*   `DWH_TA_F_GPOS_FACT_CARM` (Factoring Credit Notes)
+*   `DWH_TA_F_RPOS_RESELLING_CARM` (Reselling)
+*   `DWH_TA_T_RPOS_CARM` (Temporary Billing Positions)
+*   `DWH_TA_C_VERTRAG` (Contract Reference Table - must be populated with active contract data)
+*   `DWH_TA_K_RECH_ABSGRP` (Billing Status Log)
+*   `DWH_TA_K_MELDUNGEN` (System Audit Log)
 
-### B. IAM & Permissions
-The Cloud Composer Service Account and the Dataproc Serverless Execution Service Account must be granted the following IAM roles:
-* **Storage:** `roles/storage.objectAdmin` on the GCS bucket.
-* **BigQuery:** `roles/bigquery.dataEditor` and `roles/bigquery.jobUser` on the target dataset and project.
-* **Dataproc:** `roles/dataproc.worker` and `roles/dataproc.editor`.
+### B. GCS Bucket Structure
+Create the GCS bucket configured in `GCS_BUCKET` and establish the following directory structure:
+*   `gs://{GCS_BUCKET}/crs/work/` (Landing zone for incoming `CARMEN_B_*_pos.fix` files)
+*   `gs://{GCS_BUCKET}/crs/store/` (Archive zone for processed files)
+*   `gs://{GCS_BUCKET}/pyspark_scripts/` (Deployment location for `map_rpos_carmen_import.py`)
 
 ### C. Airflow Variables Configuration
 Configure the following Airflow Variables in the Cloud Composer environment:
-* `GCP_PROJECT`: The target GCP Project ID.
-* `GCP_REGION`: The target GCP Region (e.g., `europe-west3`).
-* `GCS_BUCKET`: The GCS bucket name used for staging and archiving (e.g., `my-company-dwh-bucket`).
-* `BQ_DATASET`: The target BigQuery dataset name (e.g., `dwh_billing`).
-* `DATAPROC_CLUSTER` *(Optional)*: Set only if executing on a persistent Dataproc cluster instead of Serverless.
 
-### D. GCS Directory Structure & Artifact Deployment
-1. Create the following directory structure in your GCS bucket:
-   ```
-   gs://{GCS_BUCKET}/pyspark_scripts/
-   gs://{GCS_BUCKET}/crs/work/
-   gs://{GCS_BUCKET}/crs/store/
-   ```
-2. Upload the PySpark script `map_rpos_carmen_import.py` to `gs://{GCS_BUCKET}/pyspark_scripts/`.
-3. Deploy the Airflow DAG `dw_rpos_carm_import.py` to the Composer DAGs folder.
+| Variable Key | Example Value | Description |
+| :--- | :--- | :--- |
+| `GCP_PROJECT` | `my-gcp-project-id` | GCP Project ID where resources reside. |
+| `GCP_REGION` | `europe-west3` | GCP Region for Composer and Dataproc. |
+| `DATAPROC_REGION` | `europe-west3` | Dataproc Serverless execution region. |
+| `DATAPROC_CLUSTER` | `dataproc-ephemeral-cluster` | Target Dataproc cluster name (if not using serverless). |
+| `GCS_BUCKET` | `my-billing-data-bucket` | GCS Bucket name for files and scripts. |
+| `DW_DIR_IMP_SAP` | `gs://my-billing-data-bucket` | Base GCS path replacing legacy `$DW_DIR_IMP_SAP`. |
+| `BQ_DATASET` | `billing_dwh` | Target BigQuery dataset name. |
+| `BQ_LOCATION` | `EU` | BigQuery dataset geographical location. |
+
+### D. IAM & Permissions
+Ensure the Cloud Composer / Cloud Dataflow service account has the following IAM roles:
+*   `BigQuery Admin` (or `BigQuery Data Editor` + `BigQuery Job User`)
+*   `Storage Object Admin` (on the configured GCS bucket)
+*   `Dataproc Worker`
 
 ---
 
 ## 5. Known Gaps & Unresolved References
 
-### A. Standalone DAG Orchestration
-* **Status:** The legacy UC4 job was exported as a standalone object without its parent workflow (`JOBP`) or scheduler.
-* **Resolution:** The migrated DAG is currently configured with `schedule=None` (triggered manually or externally). If this job must run as part of a larger daily/monthly sequence, it should be integrated into an orchestrating parent DAG or triggered via an `ExternalTaskSensor`.
+### High-Frequency BigQuery Deletes (Redesign B4 Item)
+While the `STRUCT UNNEST` batching pattern optimizes deletions, executing frequent DML deletes on BigQuery can still lead to table fragmentation and metadata overhead if run multiple times per hour. 
+*   *Recommendation:* For extreme scale, transition this pipeline to a **BigQuery Partition Swap** or a **Merge Staging Table** pattern in a future phase.
 
-### B. Retired Legacy Utilities
-* **Status:** Legacy shell utilities and includes (`.dw_init`, `DW.DWH_ADM_PRUEFE_AB_INITIO_START_INC`, `DW.HOLE_PFAD`, `DW.LESE_LOG`, `DW.DWH_ADM_PRUEFE_AB_INITIO_ENDE_INC`) have been retired.
-* **Resolution:** These utilities handled legacy log parsing, path detection, and environment initialization. In the target architecture, these are handled natively by Cloud Composer logging, Airflow task lifecycles, and GCS file detection.
+### Audit Logging Integration
+The legacy workflow logs audit tracking indicators to Oracle tables `DWH_TA_K_MELDUNGEN` and `DWH_TA_K_RECH_ABSGRP`. The migrated code emulates this via BigQuery updates.
+*   *Follow-up:* Integrate these audit logs with **Google Cloud Logging** and **Cloud Monitoring** to align with modern cloud operations standards.
 
-### C. Staging Table Concurrency
-* **Status:** The PySpark script utilizes a staging table named `DWH_TA_STAGE_RPOS_CARM` to perform pre-load delete comparisons.
-* **Resolution:** To prevent write collisions if multiple instances of this job run concurrently, `max_active_runs` is set to `1` in the Airflow DAG.
+### Dynamic Trigger Configuration
+The mechanism that passes the dynamic `BHB_Dateiname` and `BHB_Eintragsnr` from the upstream file-arrival event to the Airflow DAG run configuration (`dag_run.conf`) must be finalized during integration testing.
 
 ---
 
 ## 6. Validation
 
-To validate the migrated pipeline, perform the following steps:
+To validate the migrated pipeline, perform the following steps in a non-production environment:
 
-### A. How to Run the Test
-1. Place a sample Carmen RPOS flat file (e.g., `CARMEN_B_test_pos.fix`) into the GCS input directory: `gs://{GCS_BUCKET}/crs/work/`.
-2. Trigger the Airflow DAG `dw_rpos_carm_import` manually from the Airflow UI, or execute the PySpark script directly via the gcloud CLI:
-   ```bash
-   gcloud dataproc batches submit pyspark \
-       gs://{GCS_BUCKET}/pyspark_scripts/map_rpos_carmen_import.py \
-       --project {GCP_PROJECT} \
-       --region {GCP_REGION} \
-       --env-vars GCP_PROJECT={GCP_PROJECT},GCS_BUCKET={GCS_BUCKET},BQ_DATASET={BQ_DATASET} \
-       -- \
-       "gs://{GCS_BUCKET}/crs/work/CARMEN_B_test_pos.fix" "12345"
-   ```
+### A. How to Run the Tests
+1.  **Upload Test Data:** Place a sample billing file (e.g., `CARMEN_B_test_pos.fix`) into `gs://{GCS_BUCKET}/crs/work/`.
+2.  **Trigger the DAG:** Manually trigger the Airflow DAG `dw_rpos_carm_import` with the following JSON configuration:
+    ```json
+    {
+      "BHB_Dateiname": "CARMEN_B_test_pos.fix",
+      "BHB_Eintragsnr": "99999"
+    }
+    ```
+3.  **Monitor Execution:** Verify that the Airflow task completes successfully and check the Dataproc driver logs for any PySpark execution errors.
 
-### B. What "Passing" Looks Like
-A successful validation run must meet the following criteria:
-1. **Airflow Task Status:** The task `dw_rpos_carm_import_task` completes with a `SUCCESS` status.
-2. **File Archival:** The input file is successfully moved from `gs://{GCS_BUCKET}/crs/work/` to `gs://{GCS_BUCKET}/crs/store/`.
-3. **Idempotency Check:** If the same file is processed twice, no duplicate records are created in the target BigQuery tables (verified by checking row counts and `ladedatum` timestamps).
-4. **Data Routing:** Records are correctly routed to target tables based on business rules:
-   * Factoring Invoices (`decoded_geschaftsform = 'F'`) are written to `DWH$TA_F_RPOS_FACT_CARM`.
-   * Factoring Credit Notes (`decoded_geschaftsform = 'G'`) are written to `DWH$TA_F_GPOS_FACT_CARM`.
-   * Reselling Positions (`decoded_geschaftsform = 'R'`) are written to `DWH$TA_F_RPOS_RESELLING_CARM`.
-   * All records are appended to the general table `DWH$TA_F_RPOS_CARM`.
-5. **Audit Logging:** 
-   * `DWH$TA_K_RECH_ABSGRP` contains a new or updated row with the correct `monats_id`, `dateiname`, and `ladedatum`.
-   * `DWH$TA_K_MELDUNGEN` has its `anzahl_ds_eof` updated to match the exact number of payload records processed.
+### B. What "Passing" Means
+The migration is considered successful and ready for production when:
+*   The Airflow DAG and Dataproc Serverless jobs complete with a `SUCCESS` status.
+*   **Zero records are duplicated** in the target BigQuery tables.
+*   The row counts in `DWH_TA_F_RPOS_CARM` match the record count specified in the input file's trailer record.
+*   The audit tables `DWH_TA_K_RECH_ABSGRP` and `DWH_TA_K_MELDUNGEN` are updated with the correct run statistics and timestamp.
+*   The input file is successfully archived or moved to the GCS store directory.
 
 ---
 
 ## 7. Rollback Procedure
 
-If a critical failure occurs during deployment or post-go-live execution, execute the following rollback steps:
+If critical issues are encountered post-go-live, execute the following steps to roll back to the legacy environment:
 
-### Step 1: Pause the Airflow DAG
-Immediately pause the Airflow DAG to prevent subsequent scheduled or automated executions:
-```bash
-airflow dags pause dw_rpos_carm_import
-```
-
-### Step 2: Revert GCS Files
-If a file was partially processed or failed mid-execution, move the source file from the archive directory back to the active work directory:
-```bash
-gsutil mv gs://{GCS_BUCKET}/crs/store/CARMEN_B_failed_file_pos.fix gs://{GCS_BUCKET}/crs/work/
-```
-
-### Step 3: Clean Up Corrupted Target Data
-If the PySpark job failed after executing deletes but before completing the inserts (or vice versa), use BigQuery to remove the corrupted batch data using the load timestamp (`ladedatum`):
-```sql
-DELETE FROM `{GCP_PROJECT}.{BQ_DATASET}.DWH$TA_F_RPOS_CARM` 
-WHERE TIMESTAMP_TRUNC(ladedatum, MINUTE) = TIMESTAMP_TRUNC(CURRENT_TIMESTAMP(), MINUTE);
-```
-*(Repeat this delete query for all affected target tables using the appropriate timestamp or batch identifier).*
-
-### Step 4: Re-enable Legacy UC4 Job
-If reverting completely to the on-premises environment:
-1. Re-enable the legacy UC4 job `DW.RPOS_CARM_IMPORT`.
-2. Ensure the on-premises database connections and Ab Initio filesystems are active and synchronized.
+1.  **Pause the Airflow DAG:**
+    ```bash
+    gcloud composer environments run [COMPOSER_ENV] \
+        --location [REGION] dags pause -- dw_rpos_carm_import
+    ```
+2.  **Re-enable the UC4 Job:** Set the active flag to `1` on the UC4 `DW.RPOS_CARM_IMPORT` UNIX job.
+3.  **Data Cleanup (If Partial Run Occurred):**
+    If the migrated pipeline failed mid-transaction and left partial data in BigQuery:
+    *   Identify the `rechnung_id` and `rechnung_datum` keys from the failed batch.
+    *   Execute manual cleanup queries in BigQuery to remove the partially loaded records before restarting the legacy UC4 job:
+        ```sql
+        DELETE FROM `project.dataset.DWH_TA_F_RPOS_CARM` 
+        WHERE rechnung_id = 'FAILED_BATCH_ID' AND rechnung_datum = 'FAILED_BATCH_DATE';
+        ```
