@@ -1,450 +1,361 @@
 # Migration Validation Test Suite: DW.RPOS_CARM_IMPORT
 
-This document defines the comprehensive migration-validation test suite for the job `DW.RPOS_CARM_IMPORT`. These tests are designed to prove that the migrated Apache Airflow DAG and PySpark pipeline running on Dataproc Serverless are behaviorally equivalent to the legacy Ab Initio graph (`map_rpos_carmen_import.mp`) and KornShell wrapper (`map_rpos_carmen_import.ksh`).
+This document defines the comprehensive migration-validation test suite for the migrated `DW.RPOS_CARM_IMPORT` data pipeline. These tests are designed to prove behavioral equivalence between the legacy Ab Initio graph (`map_rpos_carmen_import.mp`) and the migrated PySpark application running on Google Cloud Dataproc Serverless with BigQuery.
 
 ---
 
-## Section 1: End-to-End Output Parity Test (Golden Dataset)
+## Test Case 1: End-to-End Output Parity (Golden Dataset Test)
 
 ### Purpose
-To prove that given the exact same input file and reference database state, the migrated PySpark pipeline produces identical target table states in BigQuery as the legacy Ab Initio job produced in Oracle.
+To prove that the migrated PySpark pipeline produces identical outputs to the legacy Ab Initio graph when processed with the same input file and reference database state.
 
 ### Setup
-1. **Reference Data**: Populate the BigQuery table `DWH$TA_C_VERTRAG` with a controlled set of contract records.
-2. **Input File**: Upload a mock input file `CARMEN_B_202305_pos.fix` to `gs://{GCS_BUCKET}/crs/work/` containing:
+1. **Reference Data**: Populate the BigQuery table `DWH_TA_C_VERTRAG` with a controlled set of contract records.
+2. **Input File**: Create a mock billing file `CARMEN_B_TEST_pos.fix` containing:
    * 1 Header record (`H`)
-   * 5 Payload records (`P`) representing different business routing scenarios (Factoring, Reselling, Temporary, and standard positions)
-   * 1 Trailer record (`X`)
-3. **Target Tables**: Ensure target BigQuery tables (`DWH$TA_F_RPOS_CARM`, `DWH$TA_F_RPOS_FACT_CARM`, `DWH$TA_F_GPOS_FACT_CARM`, `DWH$TA_F_RPOS_RESELLING_CARM`, `DWH$TA_T_RPOS_CARM`) are cleared of any pre-existing test data.
+   * 5 Nutzdaten records (`P`) representing different business scenarios (Factoring, Reselling, Temporary Rebates)
+   * 1 Endedatensatz record (`X`)
+3. **Target Tables**: Ensure target BigQuery tables (`DWH_TA_F_RPOS_CARM`, `DWH_TA_F_RPOS_FACT_CARM`, `DWH_TA_F_GPOS_FACT_CARM`, `DWH_TA_F_RPOS_RESELLING_CARM`, `DWH_TA_T_RPOS_CARM`) are empty or pre-cleared.
+4. **Environment Variables**: Set `GCP_PROJECT`, `BQ_DATASET`, and `GCS_BUCKET` in the test environment.
 
 ### Action
-Execute the Airflow DAG `dw_rpos_carm_import` via manual trigger, passing the target filename as a parameter:
-```json
-{
-  "BHB_Dateiname": "gs://YOUR_BUCKET_NAME/crs/work/CARMEN_B_202305_pos.fix",
-  "BHB_Eintragsnr": "9999"
-}
-```
+1. Upload the mock input file to `gs://{GCS_BUCKET}/crs/work/CARMEN_B_TEST_pos.fix`.
+2. Execute the migrated PySpark script `map_rpos_carmen_import.py` via spark-submit or a local Spark session.
+3. Extract the resulting records from all target BigQuery tables.
+4. Compare the results against a pre-calculated "golden" output dataset generated from the legacy Ab Initio run.
 
 ### Pass/Fail Criterion
-* **Pass**: The row counts and column values in all five target BigQuery tables match the expected golden output dataset exactly. No duplicate records are created. The source file is successfully moved to the archive directory `gs://{GCS_BUCKET}/crs/store/`.
-* **Fail**: Any row count mismatch, value mismatch (including decimal precision errors), failure to archive the file, or job execution failure.
-
-### Runnable Test Code (pytest + BigQuery)
+The test **passes** if the row counts and all column values (excluding system-generated timestamps like `ladedatum`) in the BigQuery target tables match the golden dataset exactly.
 
 ```python
-import os
 import pytest
+from pyspark.sql import SparkSession
 from google.cloud import bigquery
 
 @pytest.fixture(scope="module")
-def bq_client():
-    return bigquery.Client(project=os.environ.get("GCP_PROJECT"))
+def spark():
+    return SparkSession.builder.appName("E2E-Parity-Test").getOrCreate()
 
-@pytest.fixture(scope="module")
-def dataset_id():
-    return os.environ.get("BQ_DATASET", "DW_HOUSE_SCHEMA")
-
-def test_e2e_output_parity(bq_client, dataset_id):
-    # Define expected row counts for each target table based on the 5 mock payload records
-    expected_counts = {
-        "DWH$TA_F_RPOS_CARM": 5,            # All records route here
-        "DWH$TA_F_RPOS_FACT_CARM": 2,       # Decoded as Factoring 'F'
-        "DWH$TA_F_GPOS_FACT_CARM": 1,       # Decoded as Gutschriften 'G' (F + P30002)
-        "DWH$TA_F_RPOS_RESELLING_CARM": 1,  # Decoded as Reselling 'R'
-        "DWH$TA_T_RPOS_CARM": 1             # Temporary routing (pooling = 'P')
-    }
+def test_e2e_parity(spark):
+    client = bigquery.Client()
+    project = os.environ["GCP_PROJECT"]
+    dataset = os.environ["BQ_DATASET"]
     
-    for table_name, expected_count in expected_counts.items():
-        query = f"SELECT COUNT(*) as cnt FROM `{bq_client.project}.{dataset_id}.{table_name}`"
-        query_job = bq_client.query(query)
-        results = query_job.result()
-        row = next(results)
+    # Define target tables to validate
+    target_tables = [
+        "dwh_ta_f_rpos_carm",
+        "dwh_ta_f_rpos_fact_carm",
+        "dwh_ta_f_gpos_fact_carm",
+        "dwh_ta_f_rpos_reselling_carm",
+        "dwh_ta_t_rpos_carm"
+    ]
+    
+    for table in target_tables:
+        # Fetch migrated data from BigQuery
+        migrated_df = spark.read.format("bigquery") \
+            .option("table", f"{project}.{dataset}.{table}") \
+            .load() \
+            .drop("ladedatum")  # Exclude system timestamp from comparison
+            
+        # Fetch golden data (pre-loaded in a validation dataset)
+        golden_df = spark.read.format("bigquery") \
+            .option("table", f"{project}.validation_golden.{table}") \
+            .load() \
+            .drop("ladedatum")
+            
+        # Assert schema and data equivalence
+        assert migrated_df.schema == golden_df.schema, f"Schema mismatch on table {table}"
         
-        assert row.cnt == expected_count, f"Table {table_name} failed parity check. Expected {expected_count}, got {row.cnt}"
-
-def test_e2e_value_precision(bq_client, dataset_id):
-    # Verify monetary sum precision on the general target table
-    query = f"""
-        SELECT 
-            SUM(rechpos_brutto_eur) as total_brutto,
-            SUM(rechpos_netto_eur) as total_netto,
-            SUM(rechpos_mwst_eur) as total_mwst
-        FROM `{bq_client.project}.{dataset_id}.DWH$TA_F_RPOS_CARM`
-    """
-    query_job = bq_client.query(query)
-    row = next(query_job.result())
-    
-    # Expected values calculated from mock input file
-    assert float(row.total_brutto) == 1190.00
-    assert float(row.total_netto) == 1000.00
-    assert float(row.total_mwst) == 190.00
+        diff_count = migrated_df.subtract(golden_df).count() + golden_df.subtract(migrated_df).count()
+        assert diff_count == 0, f"Data mismatch on table {table}. Diff count: {diff_count}"
 ```
 
 ---
 
-## Section 2: Transformation & Routing Validation Tests
+## Test Case 2: Strict Field Validation and Error Handling
 
-### Test 2.1: Decimal Standardization & Type Validation
+### Purpose
+To verify that the migrated PySpark pipeline enforces the exact same strict validation rules as the legacy Ab Initio graph and raises the identical literal error messages when encountering invalid or blank fields.
 
-#### Purpose
-To verify that the PySpark pipeline correctly standardizes German decimal formats (replacing commas with periods) and raises a validation failure if mandatory fields are null or structurally malformed.
+### Setup
+1. **Input Files**: Prepare multiple malformed input files, each containing a single validation failure in a specific field (e.g., blank `monats_id`, blank `debitor_id`, etc.).
+2. **Reference Data**: Standard mock contract data in `DWH_TA_C_VERTRAG`.
 
-#### Setup
-1. Upload an input file `CARMEN_B_malformed_pos.fix` containing:
-   * A record with a comma decimal: `P;202305;1234567890123;;R123;20230515;10;20;RABATT;119,00;100,00;19,00;...`
-   * A record with a missing mandatory field (`rechnung_id` is empty).
+### Action
+1. Execute the PySpark pipeline for each malformed input file.
+2. Capture the raised exceptions and log outputs.
 
-#### Action
-Run the PySpark pipeline with the malformed file.
-
-#### Pass/Fail Criterion
-* **Pass**: The comma decimal record is successfully parsed as `119.00`, `100.00`, and `19.00`. The pipeline raises a `ValueError` with a clear error trace when encountering the record with the missing mandatory `rechnung_id`, halting execution before writing to BigQuery.
-* **Fail**: The pipeline silently ignores the missing mandatory field, or fails to parse the German comma decimal format, resulting in null values or casting exceptions.
-
-#### Runnable Test Code (PySpark Unit Test)
+### Pass/Fail Criterion
+The test **passes** if the pipeline crashes immediately with a `ValueError` containing the exact literal error message specified in the legacy design document for that specific field.
 
 ```python
-from decimal import Decimal
-from pyspark.sql import SparkSession
 import pytest
-from pyspark.sql import functions as F
+import subprocess
 
-def test_decimal_standardization_and_validation(spark_session):
-    # Mock raw input mimicking the comma replacement step
-    raw_data = [("P;202305;1234567890123;;R123;20230515;10;20;RABATT;119,00;100,00;19,00;BHB_G;P;123;P1;PROV1;1;1;F;P30002;B1",)]
-    df_raw = spark_session.createDataFrame(raw_data, ["value"])
+validation_cases = [
+    ("blank_monats_id.fix", "Invalid Data in field monats_id"),
+    ("blank_debitor_id.fix", "Invalid Data in field debitor_id"),
+    ("blank_rechnung_id.fix", "Invalid Data in field rechnung_id"),
+    ("blank_rechnung_datum.fix", "Invalid Data in field rechnung_datum"),
+    ("blank_standardvertrags_id.fix", "Invalid Data in field standardvertrags_id"),
+    ("blank_vertrags_id.fix", "Invalid Data in field vertrags_id"),
+    ("blank_rech_leistung_id_carm.fix", "Invalid Data in field rech_leistung_id_carm"),
+    ("blank_rechpos_brutto_eur.fix", "Invalid Data in field rechpos_brutto_eur"),
+    ("blank_rechpos_netto_eur.fix", "Invalid Data in field rechpos_netto_eur"),
+    ("blank_rechpos_mwst_eur.fix", "Invalid Data in field rechpos_mwst_eur"),
+]
+
+@pytest.mark.parametrize("filename,expected_error", validation_cases)
+def test_strict_field_validations(filename, expected_error):
+    # Set environment variables to point to the specific malformed file
+    env = os.environ.copy()
+    env["BHB_Dateiname"] = f"gs://{env['GCS_BUCKET']}/crs/work/validation_errors/{filename}"
     
-    # Apply comma replacement
-    df_replaced = df_raw.select(
-        F.substring(F.col("value"), 1, 1).alias("kennzeichen"),
-        F.regexp_replace(F.substring(F.col("value"), 2), ",", ".").alias("datensatz_rest")
+    # Run the PySpark script as a subprocess
+    process = subprocess.Popen(
+        ["python3", "abinitio_rpos_carmen_linked_job/TMD_processing/BHB/BD_PROC/mp/map_rpos_carmen_import.py"],
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE
     )
+    stdout, stderr = process.communicate()
     
-    # Parse fields
-    split_col = F.split(F.col("datensatz_rest"), ";")
-    df_parsed = df_replaced.select(
-        split_col.getItem(8).alias("rechpos_brutto_eur").cast("decimal(15,2)"),
-        split_col.getItem(9).alias("rechpos_netto_eur").cast("decimal(15,2)"),
-        split_col.getItem(10).alias("rechpos_mwst_eur").cast("decimal(15,2)")
-    )
-    
-    row = df_parsed.first()
-    assert row.rechpos_brutto_eur == Decimal("119.00")
-    assert row.rechpos_netto_eur == Decimal("100.00")
-    assert row.rechpos_mwst_eur == Decimal("19.00")
+    # Assert that the process failed and returned the exact error message
+    assert process.returncode != 0, f"Pipeline succeeded but was expected to fail with: {expected_error}"
+    assert expected_error in stderr.decode("utf-8") or expected_error in stdout.decode("utf-8"), \
+        f"Expected error message '{expected_error}' not found in output."
 ```
 
 ---
 
-### Test 2.2: Contract Join, Validity Proof & Ranking (Windowing)
-
-#### Purpose
-To verify that the PySpark pipeline correctly joins input records with `DWH$TA_C_VERTRAG`, applies the validity proof logic against the last day of the processing month, and correctly ranks multiple matching contracts using the window function.
-
-#### Setup
-1. **Reference Data (`DWH$TA_C_VERTRAG`)**:
-   * Contract A: `vertrag_id_carmen = '999'`, `gueltig_von = '2005-01-01'`, `gueltig_bis = '2005-12-31'`, `dwh_vertrag_id = 100`
-   * Contract B: `vertrag_id_carmen = '999'`, `gueltig_von = '2005-06-01'`, `gueltig_bis = '2005-12-31'`, `dwh_vertrag_id = 200` (Newer contract)
-2. **Input Record**: `vertrags_id = '999'`, `monats_id = '200507'` (Processing month July 2005. Last day is `2005-07-31`, which falls inside both contracts).
-
-#### Action
-Run the PySpark pipeline.
-
-#### Pass/Fail Criterion
-* **Pass**: The pipeline joins the record with Contract B (`dwh_vertrag_id = 200`) because it has a newer `gueltig_von` date, satisfying the window ranking specification (`gueltig_von DESC`, `dwh_vertrag_id DESC`).
-* **Fail**: The pipeline joins with Contract A, duplicates the record, or fails to join entirely.
-
-#### Runnable Test Code (SQL Assertion)
-
-```sql
--- Assert that the record with vertrags_id = '999' was enriched with the correct ranked contract ID (200)
-SELECT 
-  rechnung_id,
-  vertrags_id,
-  dwh_vertrag_id,
-  gueltig_von
-FROM 
-  `${GCP_PROJECT}.${BQ_DATASET}.DWH$TA_F_RPOS_CARM`
-WHERE 
-  vertrags_id = 999;
-
--- EXPECTED RESULT:
--- dwh_vertrag_id must be 200
--- gueltig_von must be '2005-06-01'
-```
-
----
-
-### Test 2.3: Business Form Decoding & Target Routing
-
-#### Purpose
-To verify that the pipeline decodes business forms correctly (specifically the conditional override of `F` to `G` when `vas_kenn = 'P30002'`) and routes records to the correct target tables.
-
-#### Setup
-1. **Input Records**:
-   * Record 1: `rpos_geschaftsform_kenn = 'F'`, `vas_kenn = 'P30002'` (Should decode to 'G')
-   * Record 2: `rpos_geschaftsform_kenn = 'F'`, `vas_kenn = 'OTHER'` (Should remain 'F')
-   * Record 3: `rpos_geschaftsform_kenn = 'R'` (Should remain 'R')
-
-#### Action
-Run the PySpark pipeline.
-
-#### Pass/Fail Criterion
-* **Pass**: 
-  * Record 1 is routed to `DWH$TA_F_GPOS_FACT_CARM` (Factoring Gutschriften) and `DWH$TA_F_RPOS_CARM`.
-  * Record 2 is routed to `DWH$TA_F_RPOS_FACT_CARM` (Factoring Invoices) and `DWH$TA_F_RPOS_CARM`.
-  * Record 3 is routed to `DWH$TA_F_RPOS_RESELLING_CARM` and `DWH$TA_F_RPOS_CARM`.
-* **Fail**: Any record is routed to the wrong table, or the conditional override fails to execute.
-
-#### Runnable Test Code (SQL Assertion)
-
-```sql
--- Assert correct routing of decoded 'G'
-SELECT COUNT(1) as cnt FROM `${GCP_PROJECT}.${BQ_DATASET}.DWH$TA_F_GPOS_FACT_CARM` 
-WHERE vas_kenn = 'P30002' AND rpos_geschaftsform_kenn = 'F';
--- Assert count is exactly 1
-
--- Assert correct routing of standard 'F'
-SELECT COUNT(1) as cnt FROM `${GCP_PROJECT}.${BQ_DATASET}.DWH$TA_F_RPOS_FACT_CARM` 
-WHERE vas_kenn = 'OTHER' AND rpos_geschaftsform_kenn = 'F';
--- Assert count is exactly 1
-
--- Assert correct routing of Reselling 'R'
-SELECT COUNT(1) as cnt FROM `${GCP_PROJECT}.${BQ_DATASET}.DWH$TA_F_RPOS_RESELLING_CARM` 
-WHERE rpos_geschaftsform_kenn = 'R';
--- Assert count is exactly 1
-```
-
----
-
-### Test 2.4: Temporary Table Routing (Rabatt & Pooling)
-
-#### Purpose
-To verify that records qualifying as temporary debit-level positions are correctly routed to `DWH$TA_T_RPOS_CARM`.
-
-#### Setup
-1. **Input Records**:
-   * Record 1: `rech_leistung_id_carm = 'RABATT'`, `vertrags_id = 0` (Qualifies)
-   * Record 2: `pooling = 'P'` (Qualifies)
-   * Record 3: `rech_leistung_id_carm = 'RABATT'`, `vertrags_id = 999` (Does NOT qualify)
-
-#### Action
-Run the PySpark pipeline.
-
-#### Pass/Fail Criterion
-* **Pass**: Only Record 1 and Record 2 are routed to `DWH$TA_T_RPOS_CARM`. Record 3 is excluded from the temporary table.
-* **Fail**: Record 3 is found in `DWH$TA_T_RPOS_CARM`, or Record 1/Record 2 are missing.
-
-#### Runnable Test Code (SQL Assertion)
-
-```sql
--- Assert temporary table contents
-SELECT 
-  rech_leistung_id_carm, 
-  vertrags_id, 
-  pooling 
-FROM 
-  `${GCP_PROJECT}.${BQ_DATASET}.DWH$TA_T_RPOS_CARM`;
-
--- EXPECTED ROWS:
--- Row 1: rech_leistung_id_carm = 'RABATT', vertrags_id = 0
--- Row 2: pooling = 'P'
--- Total Row Count must be exactly 2.
-```
-
----
-
-### Test 2.5: Rollup Aggregation Correctness
-
-#### Purpose
-To verify that the PySpark pipeline correctly aggregates monetary fields (`rechpos_brutto_eur`, `rechpos_netto_eur`, `rechpos_mwst_eur`) when multiple records share the same natural keys.
-
-#### Setup
-1. **Input Records**: Two records with identical natural keys:
-   * Record 1: `rechnung_id = 'R1'`, `vertrags_id = '123'`, `rechpos_netto_eur = 100.00`
-   * Record 2: `rechnung_id = 'R1'`, `vertrags_id = '123'`, `rechpos_netto_eur = 150.00`
-
-#### Action
-Run the PySpark pipeline.
-
-#### Pass/Fail Criterion
-* **Pass**: The target table `DWH$TA_F_RPOS_CARM` contains exactly one aggregated record with `rechnung_id = 'R1'`, `vertrags_id = '123'`, and `rechpos_netto_eur = 250.00`.
-* **Fail**: The target table contains two separate records (no aggregation), or the aggregated sum is incorrect.
-
-#### Runnable Test Code (SQL Assertion)
-
-```sql
-SELECT 
-  rechnung_id, 
-  vertrags_id, 
-  COUNT(*) as record_count, 
-  SUM(rechpos_netto_eur) as total_netto
-FROM 
-  `${GCP_PROJECT}.${BQ_DATASET}.DWH$TA_F_RPOS_CARM`
-WHERE 
-  rechnung_id = 'R1'
-GROUP BY 
-  rechnung_id, vertrags_id;
-
--- EXPECTED RESULT:
--- record_count = 1
--- total_netto = 250.00
-```
-
----
-
-## Section 3: Idempotency & Pre-Load Deletes Validation
+## Test Case 3: Contract Enrichment, Temporal Validation, and Ranking
 
 ### Purpose
-To prove that the pipeline is fully idempotent. Running the pipeline multiple times with the same input file must not result in duplicate records in the target tables. Pre-load deletes must clear existing records matching the composite keys before inserting.
+To verify the correctness of the left outer join with `DWH_TA_C_VERTRAG`, the temporal boundary checks (month-end vs. validity dates), the low-value imputation (`\000`), and the ranking logic (`rankindex == 1`).
 
 ### Setup
-1. Insert a dummy record directly into `DWH$TA_F_RPOS_CARM` with keys:
-   * `rechnung_id = 'IDEMP_001'`
-   * `rechnung_datum = '2023-05-15'`
-   * `standardvertrags_id = 9999`
-   * `vertrags_id = 8888`
-   * `rechpos_netto_eur = 500.00` (Old value)
-2. Prepare an input file containing a record with the exact same keys but `rechpos_netto_eur = 1000.00` (New value).
+1. **Reference Data**: Populate `DWH_TA_C_VERTRAG` with three overlapping versions of a contract for `vertrag_id_carmen = 12345`:
+   * Version A: `dwh_vertrag_id = 1001`, `gueltig_von = 2005-01-01`, `gueltig_bis = 2005-05-31`
+   * Version B: `dwh_vertrag_id = 1002`, `gueltig_von = 2005-06-01`, `gueltig_bis = 2005-12-31`
+   * Version C: `dwh_vertrag_id = 1003`, `gueltig_von = 2005-06-01`, `gueltig_bis = NULL` (Overlapping with Version B to test ranking)
+2. **Input File**: Create an input file with a transaction for `vertrags_id = 12345` and `monats_id = 200506` (Month end = `2005-06-30`).
 
 ### Action
-Run the PySpark pipeline.
+1. Run the PySpark pipeline.
+2. Query the target table `DWH_TA_F_RPOS_CARM` for the processed transaction.
 
 ### Pass/Fail Criterion
-* **Pass**: The old record with `rechpos_netto_eur = 500.00` is deleted. The target table contains exactly one record for `rechnung_id = 'IDEMP_001'` with `rechpos_netto_eur = 1000.00`.
-* **Fail**: Duplicate records exist for the composite key, or the old record is not deleted, or the new record is not inserted.
-
-#### Runnable Test Code (SQL Assertion)
+The test **passes** if:
+1. The transaction is enriched with Version C (`dwh_vertrag_id = 1003`) because it is the most active contract based on the ranking logic (`clean_gueltig_von DESC, clean_dwh_vertrag_id DESC`).
+2. If the transaction month end falls outside the contract validity boundaries, the contract fields are correctly nullified (`valid_flag = 1` logic).
 
 ```sql
-SELECT 
-  rechnung_id, 
-  COUNT(*) as record_count, 
-  SUM(rechpos_netto_eur) as total_netto
-FROM 
-  `${GCP_PROJECT}.${BQ_DATASET}.DWH$TA_F_RPOS_CARM`
-WHERE 
-  rechnung_id = 'IDEMP_001'
-GROUP BY 
-  rechnung_id;
+-- Assertion Query 1: Verify correct contract version (Version C) was selected
+SELECT dwh_vertrag_id, rahmenvertrag_id
+FROM `GCP_PROJECT.BQ_DATASET.dwh_ta_f_rpos_carm`
+WHERE vertrags_id = 12345 AND monats_id = '200506';
 
 -- EXPECTED RESULT:
--- record_count = 1
--- total_netto = 1000.00
+-- dwh_vertrag_id = 1003
+
+-- Assertion Query 2: Verify nullification of contract fields when month-end is out of bounds
+-- (e.g., transaction for monats_id = 200412, which is before the earliest contract start date of 2005-01-01)
+SELECT dwh_vertrag_id, rahmenvertrag_id, dwh_gp_id
+FROM `GCP_PROJECT.BQ_DATASET.dwh_ta_f_rpos_carm`
+WHERE vertrags_id = 12345 AND monats_id = '200412';
+
+-- EXPECTED RESULT:
+-- All contract fields (dwh_vertrag_id, rahmenvertrag_id, dwh_gp_id) must be NULL
 ```
 
 ---
 
-## Section 4: Audit Logging & Metadata Validation
+## Test Case 4: Business Logic Routing and Aggregation (Rollup)
 
 ### Purpose
-To verify that the pipeline correctly updates the audit log table `DWH$TA_K_RECH_ABSGRP` and the job execution log table `DWH$TA_K_MELDUNGEN` with correct metrics (record counts, filenames, and trailer information).
+To verify that:
+1. `rpos_geschaftsform_kenn` is correctly remapped from 'F' to 'G' when `vas_kenn` is 'P30002'.
+2. Transactions are correctly aggregated (rolled up) and routed to the correct target tables based on business codes and the `typ` flag.
 
 ### Setup
-1. Prepare an input file `CARMEN_B_202305_pos.fix` containing exactly 10 payload records.
-2. The trailer record is: `X;Some_Info_BHB_G;20230531;10;Trailer_Content_Text`
-3. Set the environment variable `BHB_Eintragsnr = 9999`.
+1. **Input File**: Prepare an input file with the following records:
+   * Row 1: `rpos_geschaftsform_kenn = 'F'`, `vas_kenn = 'P30002'` (Should map to 'G' and route to `DWH_TA_F_GPOS_FACT_CARM`).
+   * Row 2: `rpos_geschaftsform_kenn = 'F'`, `vas_kenn = 'OTHER'` (Should map to 'F' and route to `DWH_TA_F_RPOS_FACT_CARM`).
+   * Row 3: `rpos_geschaftsform_kenn = 'R'` (Should route to `DWH_TA_F_RPOS_RESELLING_CARM`).
+   * Row 4: `rech_leistung_id_carm = 'RABATT'`, `vertrags_id = 0` (Should set `typ = 'T'` and route to `DWH_TA_T_RPOS_CARM`).
+   * Row 5 & 6: Duplicate keys with different monetary values (Should be aggregated into a single row in `DWH_TA_F_GPOS_FACT_CARM`).
 
 ### Action
-Run the PySpark pipeline.
+1. Run the PySpark pipeline.
+2. Query the target tables to verify counts and routed values.
 
 ### Pass/Fail Criterion
-* **Pass**:
-  * `DWH$TA_K_RECH_ABSGRP` contains a record with `monats_id = '202305'`, `abs_grp = 'BHB_G'`, `dateiname = 'CARMEN_B_202305_pos.fix'`, and `rechnung_datum = '2023-05-31'`.
-  * `DWH$TA_K_MELDUNGEN` contains a record for `entrynr = 9999` with `anzahl_ds_eof = 10`, `dateiname = 'CARMEN_B_202305_pos.fix'`, and `enderecord_text = 'Trailer_Content_Text'`.
-* **Fail**: Audit tables are not updated, or contain incorrect record counts, filenames, or dates.
-
-#### Runnable Test Code (SQL Assertion)
+The test **passes** if all records are routed to their respective target tables with correct aggregations and remapped values.
 
 ```sql
--- Assert DWH$TA_K_RECH_ABSGRP update
-SELECT 
-  monats_id, 
-  abs_grp, 
-  dateiname, 
-  rechnung_datum
-FROM 
-  `${GCP_PROJECT}.${BQ_DATASET}.DWH$TA_K_RECH_ABSGRP`
-WHERE 
-  dateiname = 'CARMEN_B_202305_pos.fix';
+-- Assertion 1: Remapping 'F' + 'P30002' -> 'G' and routing to GPOS
+SELECT COUNT(1) as cnt 
+FROM `GCP_PROJECT.BQ_DATASET.dwh_ta_f_gpos_fact_carm` 
+WHERE rechnung_id = 'REC_ROW_1';
+-- EXPECTED: cnt = 1
 
--- EXPECTED RESULT:
--- monats_id = '202305'
--- abs_grp = 'BHB_G'
--- rechnung_datum = '2023-05-31'
+-- Assertion 2: Standard Factoring Invoice routing
+SELECT COUNT(1) as cnt 
+FROM `GCP_PROJECT.BQ_DATASET.dwh_ta_f_rpos_fact_carm` 
+WHERE rechnung_id = 'REC_ROW_2';
+-- EXPECTED: cnt = 1
 
--- Assert DWH$TA_K_MELDUNGEN update
-SELECT 
-  anzahl_ds_eof, 
-  dateiname, 
-  enderecord_text
-FROM 
-  `${GCP_PROJECT}.${BQ_DATASET}.DWH$TA_K_MELDUNGEN`
-WHERE 
-  entrynr = 9999;
+-- Assertion 3: Reselling routing
+SELECT COUNT(1) as cnt 
+FROM `GCP_PROJECT.BQ_DATASET.dwh_ta_f_rpos_reselling_carm` 
+WHERE rechnung_id = 'REC_ROW_3';
+-- EXPECTED: cnt = 1
 
--- EXPECTED RESULT:
--- anzahl_ds_eof = 10
--- dateiname = 'CARMEN_B_202305_pos.fix'
--- enderecord_text = 'Trailer_Content_Text'
+-- Assertion 4: Temporary Rebate routing (typ = 'T')
+SELECT COUNT(1) as cnt 
+FROM `GCP_PROJECT.BQ_DATASET.dwh_ta_t_rpos_carm` 
+WHERE rechnung_id = 'REC_ROW_4';
+-- EXPECTED: cnt = 1
+
+-- Assertion 5: Rollup Aggregation verification
+SELECT rechpos_brutto_eur, rechpos_netto_eur, rechpos_mwst_eur
+FROM `GCP_PROJECT.BQ_DATASET.dwh_ta_f_gpos_fact_carm`
+WHERE rechnung_id = 'REC_DUPLICATE';
+-- EXPECTED: Sum of Row 5 and Row 6 values
 ```
 
 ---
 
-## Section 5: Airflow DAG & Orchestration Validation
+## Test Case 5: Idempotency (Delete-Before-Insert)
 
 ### Purpose
-To verify that the Airflow DAG `dw_rpos_carm_import` correctly resolves environment variables from Airflow Variables, successfully submits the Dataproc Serverless job, and handles task retries on failure.
+To verify that the pipeline executes a clean transactional reload (Delete-then-Insert) pattern, ensuring that existing records with matching keys are purged before new ones are written, preventing duplicate key violations.
 
 ### Setup
-1. Configure the following Airflow Variables:
-   * `GCP_PROJECT` = `test-gcp-project`
-   * `GCP_REGION` = `europe-west3`
-   * `GCS_BUCKET` = `test-gcs-bucket`
-2. Mock the `DataprocSubmitJobOperator` to prevent actual GCP billing charges during DAG structural testing.
+1. **Target Tables**: Pre-populate `DWH_TA_F_RPOS_CARM` with a dummy record:
+   * `rechnung_id = 'INV999'`, `rechnung_datum = '2005-06-30'`, `standardvertrags_id = 99`, `vertrags_id = 99`, `rechpos_brutto_eur = 500.00`.
+2. **Input File**: Prepare an input file containing a record with the exact same keys but a different monetary value:
+   * `rechnung_id = 'INV999'`, `rechnung_datum = '2005-06-30'`, `standardvertrags_id = 99`, `vertrags_id = 99`, `rechpos_brutto_eur = 1200.00`.
 
 ### Action
-Run a DAG structural integrity test using `pytest`.
+1. Run the PySpark pipeline.
+2. Query `DWH_TA_F_RPOS_CARM` for `rechnung_id = 'INV999'`.
 
 ### Pass/Fail Criterion
-* **Pass**: The DAG loads without syntax errors, contains the task `dw_rpos_carm_import_task`, resolves the correct GCS script URI (`gs://test-gcs-bucket/pyspark_scripts/map_rpos_carmen_import.py`), and has retries set to `1` with a `5` minute delay.
-* **Fail**: DAG fails to parse, variables are unresolved, or task properties do not match the design specification.
+The test **passes** if only one record exists in the target table with `rechpos_brutto_eur = 1200.00`, proving the pre-existing record was successfully deleted before the new one was inserted.
 
-#### Runnable Test Code (Airflow DAG Unit Test)
+```sql
+-- Assertion Query: Check for duplicates and verify value update
+SELECT COUNT(1) as row_count, SUM(rechpos_brutto_eur) as total_brutto
+FROM `GCP_PROJECT.BQ_DATASET.dwh_ta_f_rpos_carm`
+WHERE rechnung_id = 'INV999' 
+  AND rechnung_datum = '2005-06-30'
+  AND standardvertrags_id = 99
+  AND vertrags_id = 99;
+
+-- EXPECTED RESULT:
+-- row_count = 1
+-- total_brutto = 1200.00
+```
+
+---
+
+## Test Case 6: Control Table Updates (ABSGRP and MELDUNGEN)
+
+### Purpose
+To verify that the footer record (`X`) is parsed correctly and updates the audit logging tables `DWH_TA_K_RECH_ABSGRP` and `DWH_TA_K_MELDUNGEN` accurately.
+
+### Setup
+1. **Input File**: Prepare an input file with a valid footer record:
+   * `X;CARMEN_B_200506_pos.fix;20050701;150;SUCCESS_RUN;20050701120000;`
+2. **Control Tables**:
+   * Pre-populate `DWH_TA_K_MELDUNGEN` with a record for `entrynr = 9999`.
+   * Ensure `DWH_TA_K_RECH_ABSGRP` is in a known state.
+3. **Environment Variables**: Set `BHB_Eintragsnr = 9999` and `BHB_Dateiname = CARMEN_B_200506_pos.fix`.
+
+### Action
+1. Run the PySpark pipeline.
+2. Query both control tables to verify the updates.
+
+### Pass/Fail Criterion
+The test **passes** if:
+1. `DWH_TA_K_MELDUNGEN` is updated with `anzahl_ds_eof = 150`, `enderecord_text = 'SUCCESS_RUN'`, and `zusatzinfo = 'CARMEN_B_200506_pos.fix'`.
+2. `DWH_TA_K_RECH_ABSGRP` contains a merged/upserted record with `monats_id = 200506` (calculated as stichtag `20050701` minus 1 month), `abs_grp = '20050'`, and `rechnungsteil = 'P'`.
+
+```sql
+-- Assertion Query 1: Verify dwh_ta_k_meldungen update
+SELECT anzahl_ds_eof, dateiname, enderecord_text, zusatzinfo
+FROM `GCP_PROJECT.BQ_DATASET.dwh_ta_k_meldungen`
+WHERE entrynr = 9999;
+
+-- EXPECTED RESULT:
+-- anzahl_ds_eof = 150
+-- dateiname = 'CARMEN_B_200506_pos.fix'
+-- enderecord_text = 'SUCCESS_RUN'
+-- zusatzinfo = 'CARMEN_B_200506_pos.fix'
+
+-- Assertion Query 2: Verify dwh_ta_k_rech_absgrp merge/upsert
+SELECT monats_id, abs_grp, dateiname, rechnungsteil, rechnung_datum
+FROM `GCP_PROJECT.BQ_DATASET.dwh_ta_k_rech_absgrp`
+WHERE dateiname = 'CARMEN_B_200506_pos.fix';
+
+-- EXPECTED RESULT:
+-- monats_id = 200506
+-- abs_grp = '20050'
+-- rechnungsteil = 'P'
+-- rechnung_datum = '2005-07-01'
+```
+
+---
+
+## Test Case 7: Airflow DAG and Dataproc Operator Validation
+
+### Purpose
+To verify that the migrated Airflow DAG is structurally sound, has no syntax errors, correctly resolves environment variables, and configures the `DataprocSubmitJobOperator` with the correct parameters.
+
+### Setup
+1. **Airflow Environment**: Ensure a local Airflow environment is active with mock Airflow Variables set for `GCP_PROJECT`, `GCP_REGION`, `DATAPROC_CLUSTER`, `GCS_BUCKET`, and `DW_DIR_IMP_SAP`.
+
+### Action
+1. Run a pytest suite against the DAG file `dw_rpos_carm_import.py`.
+
+### Pass/Fail Criterion
+The test **passes** if the DAG loads without import errors, contains the single task `rpos_carm_import`, and the task properties match the expected Dataproc configuration.
 
 ```python
 import pytest
 from airflow.models import DagBag, Variable
 
-@pytest.fixture(scope="module")
-def set_airflow_variables():
-    Variable.set("GCP_PROJECT", "test-gcp-project")
-    Variable.set("GCP_REGION", "europe-west3")
-    Variable.set("GCS_BUCKET", "test-gcs-bucket")
-    yield
-    Variable.delete("GCP_PROJECT")
-    Variable.delete("GCP_REGION")
-    Variable.delete("GCS_BUCKET")
+@pytest.fixture(autouse=True)
+def setup_airflow_variables(monkeypatch):
+    # Mock Airflow variables
+    variables = {
+        "GCP_PROJECT": "mock-project",
+        "GCP_REGION": "europe-west3",
+        "DATAPROC_REGION": "europe-west3",
+        "DATAPROC_CLUSTER": "mock-cluster",
+        "GCS_BUCKET": "mock-bucket",
+        "DW_DIR_IMP_SAP": "gs://mock-bucket/sap"
+    }
+    def mock_get(key, default_var=None):
+        return variables.get(key, default_var)
+    monkeypatch.setattr(Variable, "get", mock_get)
 
-def test_dag_integrity(set_airflow_variables):
-    dagbag = DagBag(dag_folder="abinitio_rpos_carmen_linked_job/DWH_BD_PROC_JOB", include_examples=False)
-    dag = dagbag.get_dag(dag_id="dw_rpos_carm_import")
+def test_dag_loads_with_no_errors():
+    dag_bag = DagBag(dag_folder="abinitio_rpos_carmen_linked_job/DWH_BD_PROC_JOB", include_examples=False)
+    dag = dag_bag.get_dag(dag_id="dw_rpos_carm_import")
     
-    assert dagbag.import_errors == {}, f"DAG import errors: {dagbag.import_errors}"
-    assert dag is not None, "Failed to load DAG dw_rpos_carm_import"
+    assert dag_bag.import_errors == {}
+    assert dag is not None
+    assert len(dag.tasks) == 1
     
-    # Verify Task configuration
-    task = dag.get_task("dw_rpos_carm_import_task")
-    assert task is not None
+    task = dag.get_task("rpos_carm_import")
+    assert task.region == "europe-west3"
+    assert task.project_id == "mock-project"
     
-    # Verify default args
-    assert task.retries == 1
-    assert task.retry_delay.total_seconds() == 300  # 5 minutes
-    
-    # Verify Dataproc job configuration resolution
+    # Verify PySpark job properties
     job_config = task.job
     pyspark_job = job_config["pyspark_job"]
-    assert pyspark_job["main_python_file_uri"] == "gs://test-gcs-bucket/pyspark_scripts/map_rpos_carmen_import.py"
-    assert "--job_kennung" in pyspark_job["args"]
+    assert pyspark_job["main_python_file_uri"] == "gs://mock-bucket/pyspark_scripts/map_rpos_carmen_import.py"
+    assert pyspark_job["properties"]["spark.yarn.appMasterEnv.DWH_JOB_KENNUNG"] == "RPOS_CARM_IMPORT"
 ```
