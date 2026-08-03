@@ -1,0 +1,1 @@
+ERROR: tests skipped for Shared Files — vobs/dw_source/istools/seu/template — build phase failed or produced no output.
