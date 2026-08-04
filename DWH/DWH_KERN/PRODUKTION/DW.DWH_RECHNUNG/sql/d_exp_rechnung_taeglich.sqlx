@@ -1,0 +1,21 @@
+config {
+  type: "view",
+  schema: "dwh_kern",
+  description: "Taeglicher Export der Rechnungsdaten (RECHNUNG) aus DWH_KERN"
+}
+
+SELECT
+  RECHNUNGSNUMMER,
+  VERTRAG,
+  KUNDE,
+  TARIF,
+  ABRECHNUNGSZEITRAUM,
+  RECHNUNGSBETRAG,
+  WAEHRUNG,
+  RECHNUNGSDATUM
+FROM
+  ${ref("T_RECHNUNG")}
+WHERE
+  RECHNUNGSDATUM = PARSE_DATE('%Y%m%d', @stichtag)
+ORDER BY
+  RECHNUNGSNUMMER
