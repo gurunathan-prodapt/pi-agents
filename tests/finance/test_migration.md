@@ -1,0 +1,1 @@
+ERROR: tests skipped for finance/finance_daily.json — build phase failed or produced no output.
