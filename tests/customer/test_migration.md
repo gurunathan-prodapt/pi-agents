@@ -1,273 +1,427 @@
 # Migration Validation Test Suite: CUSTOMER.HISTORIZATION_LOAD
 
-This document defines the migration-validation test suite to prove behavioral equivalence between the legacy UC4/Oracle/KornShell implementation and the migrated Apache Airflow/BigQuery/Python implementation of the `CUSTOMER.HISTORIZATION_LOAD` job.
+This document defines the migration-validation test suite for the `CUSTOMER.HISTORIZATION_LOAD` pipeline. The tests verify that the migrated Apache Airflow DAG, BigQuery SQL scripts, and Python orchestration scripts are behaviourally equivalent to the legacy UC4, Oracle SQL*Plus, and KornShell implementation.
+
+All BigQuery tests are designed to run against a designated test dataset (e.g., `TEST_ANALYTICS_SCHEMA`) to isolate validation from production data.
 
 ---
 
-## Section 1: End-to-End Pipeline & Orchestration Validation
+## Test Suite Overview
 
-### Test Case 1.1: Airflow DAG Parameter Propagation & Environment Resolution
-* **Purpose**: Verify that the Airflow DAG correctly resolves the execution date (`RUN_DATE`) and configuration parameters (`MAX_EXPECTED_CHANGE_PCT`), and propagates them to the execution environment of the Python tasks.
-* **Setup**:
-  * A test Airflow environment with the `customer_historization_load` DAG registered.
-  * Airflow Variables configured:
-    * `GCP_PROJECT` = `test-gcp-project`
-    * `BQ_DATASET` = `test_analytics_dataset`
-    * `CRM_HOME` = `/opt/etl/customer`
-* **Action**:
-  * Trigger the DAG manually via the Airflow CLI/API for a specific logical date (e.g., `2026-03-30`) with custom parameters:
-    ```bash
-    airflow dags trigger \
-      --conf '{"max_expected_change_pct": 15, "run_date": "2026-03-30"}' \
-      customer_historization_load
-    ```
-* **Pass/Fail Criterion**:
-  * The DAG run completes successfully.
-  * The task execution context receives `RUN_DATE` as `2026-03-30` and `MAX_EXPECTED_CHANGE_PCT` as `15`.
-  * The execution logs confirm that these values were successfully read and utilized by the underlying Python execution wrapper.
-
----
-
-### Test Case 1.2: Wrapper Script Execution and Error Propagation
-* **Purpose**: Verify that `r_historization_load.py` correctly wraps `k_historization_load.py`, captures its exit codes, and propagates failures to Airflow.
-* **Setup**:
-  * Configure the environment variable `CRM_HOME` to point to a mock directory.
-  * Create a failing mock version of `k_historization_load.py` that exits with code `1`.
-* **Action**:
-  * Execute `r_historization_load.py` in a test shell environment:
-    ```bash
-    export CRM_HOME="/tmp/mock_customer"
-    export RUN_DATE="2026-03-30"
-    python3 customer/r_historization_load.py
-    ```
-* **Pass/Fail Criterion**:
-  * The script must exit with status code `1`.
-  * Standard output must contain the log message: `ERROR: k_historization_load.ksh failed with rc=1` (or the Python equivalent `rc=1`).
+```
+                                 ┌─────────────────────────────────┐
+                                 │  1. Schema & Type Verification  │
+                                 └────────────────┬────────────────┘
+                                                  │
+                                                  ▼
+                                 ┌─────────────────────────────────┐
+                                 │  2. SCD2 Core Logic Validation  │
+                                 │     (New, Unchanged, Changed)   │
+                                 └────────────────┬────────────────┘
+                                                  │
+                                                  ▼
+                                 ┌─────────────────────────────────┐
+                                 │  3. Transaction & Rollback      │
+                                 └────────────────┬────────────────┘
+                                                  │
+                                                  ▼
+                                 ┌─────────────────────────────────┐
+                                 │  4. Quality Check & Thresholds  │
+                                 └────────────────┬────────────────┘
+                                                  │
+                                                  ▼
+                                 ┌─────────────────────────────────┐
+                                 │  5. Airflow E2E Integration     │
+                                 └─────────────────────────────────┘
+```
 
 ---
 
-## Section 2: SCD2 Core Transformation & Output Parity
+## Section 1: Schema & Data Type Assertions
 
-### Test Case 2.1: SCD2 State Transitions (Output Parity)
-* **Purpose**: Verify that the BigQuery-translated SCD2 merge logic behaves identically to the legacy Oracle MERGE for all standard SCD2 scenarios:
-  1. **New Customer**: Customer exists in staging but not in the dimension (Insert with `IS_CURRENT = 1`, `VALID_FROM = CURRENT_TIMESTAMP()`).
-  2. **Unchanged Customer**: Customer exists in both staging and dimension with identical segment and score (No action).
-  3. **Changed Customer**: Customer exists in both, but segment or score has changed (Expire existing row by setting `IS_CURRENT = 0`, `VALID_TO = CURRENT_TIMESTAMP()`, and insert a new row with `IS_CURRENT = 1`, `VALID_FROM = CURRENT_TIMESTAMP()`).
-  4. **Historical Version Preservation**: Ensure that only the active row (`IS_CURRENT = 1`) is expired, and older historical rows (`IS_CURRENT = 0`) remain untouched.
+### Test Case 1.1: Target and Staging Schema Structure Validation
+#### Purpose
+Verify that the migrated BigQuery tables (`DIM_CUSTOMER_SEGMENT` and `STG_CUSTOMER_SCORE_OUTPUT`) match the target schema specifications, ensuring correct data types, nullability, and precision (especially for `TIMESTAMP` and `NUMERIC` fields).
 
-* **Setup**:
-  * Deploy the translated BigQuery SQL scripts for `d_historization_load.sql` and `d_segment_quality_check.sql`.
-  * Populate the BigQuery staging table `STG_CUSTOMER_SCORE_OUTPUT` and dimension table `DIM_CUSTOMER_SEGMENT` with the following test dataset:
+#### Setup
+Ensure the target tables have been deployed to the test dataset `TEST_ANALYTICS_SCHEMA`.
+
+#### Action
+Execute the following BigQuery metadata query:
 
 ```sql
--- Clean up tables
-TRUNCATE TABLE test_analytics_dataset.STG_CUSTOMER_SCORE_OUTPUT;
-TRUNCATE TABLE test_analytics_dataset.DIM_CUSTOMER_SEGMENT;
-
--- Populate Staging
-INSERT INTO test_analytics_dataset.STG_CUSTOMER_SCORE_OUTPUT (CUSTOMER_ID, SEGMENT_CODE, SCORE_BAND, SCORE_VALUE, RUN_DATE) VALUES
-(101, 'GOLD', 'HIGH', 850, DATE '2026-03-30'), -- New Customer
-(102, 'SILVER', 'MED', 550, DATE '2026-03-30'), -- Unchanged Customer
-(103, 'BRONZE', 'LOW', 250, DATE '2026-03-30'); -- Changed Customer
-
--- Populate Dimension (Initial State)
-INSERT INTO test_analytics_dataset.DIM_CUSTOMER_SEGMENT (CUSTOMER_ID, SEGMENT_CODE, SCORE_BAND, SCORE_VALUE, IS_CURRENT, VALID_FROM, VALID_TO) VALUES
--- Customer 102: Active row matches staging
-(102, 'SILVER', 'MED', 550, 1, TIMESTAMP '2026-03-23 00:00:00 UTC', NULL),
--- Customer 103: Active row differs from staging (Segment was GOLD, now BRONZE)
-(103, 'GOLD', 'HIGH', 800, 1, TIMESTAMP '2026-03-23 00:00:00 UTC', NULL),
--- Customer 103: Old historical row (should remain untouched)
-(103, 'SILVER', 'MED', 500, 0, TIMESTAMP '2026-03-16 00:00:00 UTC', TIMESTAMP '2026-03-23 00:00:00 UTC');
-```
-
-* **Action**:
-  * Execute the Python test script which runs the SCD2 merge logic on BigQuery for `RUN_DATE = '2026-03-30'`.
-
-* **Concrete Pass/Fail Criterion (pytest code)**:
-  * Run the following pytest suite to validate the post-merge state of the BigQuery dimension table.
-
-```python
-import os
-import pytest
-from google.cloud import bigquery
-
-@pytest.fixture(scope="module")
-def bq_client():
-    project = os.environ.get("GCP_PROJECT", "test-gcp-project")
-    return bigquery.Client(project=project)
-
-def test_scd2_state_transitions(bq_client):
-    dataset = os.environ.get("BQ_DATASET", "test_analytics_dataset")
-    
-    # 1. Assert New Customer (101) was inserted correctly
-    query_101 = f"""
-        SELECT SEGMENT_CODE, SCORE_BAND, SCORE_VALUE, IS_CURRENT, VALID_TO 
-        FROM `{dataset}.DIM_CUSTOMER_SEGMENT` 
-        WHERE CUSTOMER_ID = 101
-    """
-    rows_101 = list(bq_client.query(query_101).result())
-    assert len(rows_101) == 1
-    assert rows_101[0]["SEGMENT_CODE"] == "GOLD"
-    assert rows_101[0]["SCORE_BAND"] == "HIGH"
-    assert rows_101[0]["SCORE_VALUE"] == 850
-    assert rows_101[0]["IS_CURRENT"] == 1
-    assert rows_101[0]["VALID_TO"] is None
-
-    # 2. Assert Unchanged Customer (102) remains untouched (no duplicate rows, still current)
-    query_102 = f"""
-        SELECT COUNT(*) as cnt, MAX(IS_CURRENT) as max_curr
-        FROM `{dataset}.DIM_CUSTOMER_SEGMENT` 
-        WHERE CUSTOMER_ID = 102
-    """
-    rows_102 = list(bq_client.query(query_102).result())
-    assert rows_102[0]["cnt"] == 1
-    assert rows_102[0]["max_curr"] == 1
-
-    # 3. Assert Changed Customer (103) has old row expired and new row inserted
-    query_103 = f"""
-        SELECT SEGMENT_CODE, SCORE_BAND, SCORE_VALUE, IS_CURRENT, VALID_TO 
-        FROM `{dataset}.DIM_CUSTOMER_SEGMENT` 
-        WHERE CUSTOMER_ID = 103
-        ORDER BY VALID_TO DESC NULLS FIRST
-    """
-    rows_103 = list(bq_client.query(query_103).result())
-    # Should have 3 rows now: 1 new active, 1 expired active, 1 old historical
-    assert len(rows_103) == 3
-    
-    # New active row
-    assert rows_103[0]["SEGMENT_CODE"] == "BRONZE"
-    assert rows_103[0]["SCORE_BAND"] == "LOW"
-    assert rows_103[0]["IS_CURRENT"] == 1
-    assert rows_103[0]["VALID_TO"] is None
-    
-    # Expired active row
-    assert rows_103[1]["SEGMENT_CODE"] == "GOLD"
-    assert rows_103[1]["SCORE_BAND"] == "HIGH"
-    assert rows_103[1]["IS_CURRENT"] == 0
-    assert rows_103[1]["VALID_TO"] is not None
-    
-    # Old historical row (untouched)
-    assert rows_103[2]["SEGMENT_CODE"] == "SILVER"
-    assert rows_103[2]["SCORE_BAND"] == "MED"
-    assert rows_103[2]["IS_CURRENT"] == 0
-    assert rows_103[2]["VALID_TO"] is not None
-```
-
----
-
-### Test Case 2.2: NULL Handling and Edge Cases
-* **Purpose**: Verify that NULL values in staging fields (`SEGMENT_CODE`, `SCORE_BAND`, `SCORE_VALUE`) do not cause unexpected matching failures or infinite row versioning.
-* **Setup**:
-  * Populate staging with a record containing NULL values.
-  * Populate the dimension with a matching record containing NULL values.
-* **Action**:
-  * Run the historization load.
-* **Pass/Fail Criterion**:
-  * If staging and dimension both contain NULL for a field, they must be treated as identical (no new version created).
-  * If staging contains a value and dimension contains NULL (or vice versa), the row must be correctly expired and a new version inserted.
-
-```python
-def test_null_handling(bq_client):
-    dataset = os.environ.get("BQ_DATASET", "test_analytics_dataset")
-    
-    # Setup: Staging has NULL score band
-    bq_client.query(f"""
-        TRUNCATE TABLE `{dataset}.STG_CUSTOMER_SCORE_OUTPUT`;
-        INSERT INTO `{dataset}.STG_CUSTOMER_SCORE_OUTPUT` (CUSTOMER_ID, SEGMENT_CODE, SCORE_BAND, SCORE_VALUE, RUN_DATE) 
-        VALUES (104, 'GOLD', NULL, 800, DATE '2026-03-30');
-        
-        TRUNCATE TABLE `{dataset}.DIM_CUSTOMER_SEGMENT`;
-        INSERT INTO `{dataset}.DIM_CUSTOMER_SEGMENT` (CUSTOMER_ID, SEGMENT_CODE, SCORE_BAND, SCORE_VALUE, IS_CURRENT, VALID_FROM, VALID_TO) 
-        VALUES (104, 'GOLD', NULL, 800, 1, TIMESTAMP '2026-03-23 00:00:00 UTC', NULL);
-    """).result()
-    
-    # Run merge logic (mocked execution of k_historization_load.py)
-    # ... execution code ...
-
-    # Assert: No new row created because NULL == NULL in business logic
-    query = f"SELECT COUNT(*) as cnt FROM `{dataset}.DIM_CUSTOMER_SEGMENT` WHERE CUSTOMER_ID = 104"
-    res = list(bq_client.query(query).result())
-    assert res[0]["cnt"] == 1
-```
-
----
-
-## Section 3: Data Quality & Threshold Validation
-
-### Test Case 3.1: Quality Check Threshold - Under Limit
-* **Purpose**: Verify that when the percentage of changed customer segments is below the safety threshold, the script logs the percentage and exits with code `0`.
-* **Setup**:
-  * Set `MAX_EXPECTED_CHANGE_PCT` = `25`.
-  * Populate `DIM_CUSTOMER_SEGMENT` such that 10% of the active rows have `VALID_FROM` equal to the run date (representing a 10% change rate).
-* **Action**:
-  * Execute `k_historization_load.py` with `RUN_DATE="2026-03-30"`.
-* **Pass/Fail Criterion**:
-  * The process exits with code `0`.
-  * Standard output contains: `Historization merge complete, 10% of customers re-versioned`.
-  * Standard output does *not* contain any `WARN` messages regarding threshold violations.
-
----
-
-### Test Case 3.2: Quality Check Threshold - Over Limit (Warning Trigger)
-* **Purpose**: Verify that when the percentage of changed customer segments exceeds the safety threshold, the script logs a warning but still exits with code `0` (non-blocking warning behavior).
-* **Setup**:
-  * Set `MAX_EXPECTED_CHANGE_PCT` = `25`.
-  * Populate `DIM_CUSTOMER_SEGMENT` such that 40% of the active rows have `VALID_FROM` equal to the run date (representing a 40% change rate).
-* **Action**:
-  * Execute `k_historization_load.py` with `RUN_DATE="2026-03-30"`.
-* **Pass/Fail Criterion**:
-  * The process exits with code `0`.
-  * Standard output contains: `WARN: 40% of customers changed segment this week (expected <= 25%) - flagging for review, not failing the job`.
-  * Standard output contains: `Historization merge complete, 40% of customers re-versioned`.
-
----
-
-### Test Case 3.3: Quality Check - Empty Output Handling
-* **Purpose**: Verify that if the quality check query returns an empty result or cannot compute the percentage, the script logs a warning and exits gracefully with code `0`.
-* **Setup**:
-  * Truncate `DIM_CUSTOMER_SEGMENT` so that the total count of active rows is `0` (causing a division by zero or empty result in the quality check query).
-* **Action**:
-  * Execute `k_historization_load.py`.
-* **Pass/Fail Criterion**:
-  * The process exits with code `0`.
-  * Standard output contains: `WARN: could not compute changed-row percentage - skipping sanity check`.
-
----
-
-## Section 4: SQL Dialect & Schema Equivalence
-
-### Test Case 4.1: Oracle to BigQuery SQL Dialect Equivalence
-* **Purpose**: Verify that the translated BigQuery SQL queries produce identical results to the legacy Oracle SQL queries, accounting for dialect differences (`SYSDATE` vs `CURRENT_TIMESTAMP()`, `TO_DATE` vs `PARSE_DATE`, and `MERGE` syntax constraints).
-* **Setup**:
-  * Maintain a parallel test environment with Oracle (legacy) and BigQuery (target).
-  * Load identical input datasets into both environments.
-* **Action**:
-  * Execute `d_historization_load.sql` on Oracle.
-  * Execute the translated BigQuery SQL on BigQuery.
-* **Pass/Fail Criterion**:
-  * Compare the resulting target tables row-by-row.
-  * The values for `CUSTOMER_ID`, `SEGMENT_CODE`, `SCORE_BAND`, `SCORE_VALUE`, and `IS_CURRENT` must match exactly between Oracle and BigQuery.
-  * `VALID_FROM` and `VALID_TO` timestamps must represent the same logical dates (ignoring minor execution-time second differences).
-
-```sql
--- BigQuery SQL Assertion for Schema and Column Type Equivalence
 SELECT 
+  table_name, 
   column_name, 
   data_type, 
   is_nullable
 FROM 
-  `test_analytics_dataset`.INFORMATION_SCHEMA.COLUMNS
+  `TEST_ANALYTICS_SCHEMA.INFORMATION_SCHEMA.COLUMNS`
 WHERE 
-  table_name = 'DIM_CUSTOMER_SEGMENT'
+  table_name IN ('DIM_CUSTOMER_SEGMENT', 'STG_CUSTOMER_SCORE_OUTPUT')
 ORDER BY 
-  ordinal_position;
-
--- Expected Output Types:
--- CUSTOMER_ID: INT64
--- SEGMENT_CODE: STRING
--- SCORE_BAND: STRING
--- SCORE_VALUE: INT64
--- IS_CURRENT: INT64 (or BOOL)
--- VALID_FROM: TIMESTAMP
--- VALID_TO: TIMESTAMP
+  table_name, ordinal_position;
 ```
+
+#### Pass/Fail Criterion
+The query must return the exact schema structure defined below. Any mismatch in data types (e.g., `DATE` instead of `TIMESTAMP` for `VALID_FROM`/`VALID_TO`) constitutes a **FAIL**.
+
+| Table Name | Column Name | Expected Data Type | Is Nullable |
+| :--- | :--- | :--- | :--- |
+| `DIM_CUSTOMER_SEGMENT` | `CUSTOMER_ID` | `STRING` (or `INT64`) | `NO` |
+| `DIM_CUSTOMER_SEGMENT` | `SEGMENT_CODE` | `STRING` | `YES` |
+| `DIM_CUSTOMER_SEGMENT` | `SCORE_BAND` | `STRING` | `YES` |
+| `DIM_CUSTOMER_SEGMENT` | `SCORE_VALUE` | `NUMERIC` | `YES` |
+| `DIM_CUSTOMER_SEGMENT` | `IS_CURRENT` | `INT64` | `NO` |
+| `DIM_CUSTOMER_SEGMENT` | `VALID_FROM` | `TIMESTAMP` | `NO` |
+| `DIM_CUSTOMER_SEGMENT` | `VALID_TO` | `TIMESTAMP` | `YES` |
+| `STG_CUSTOMER_SCORE_OUTPUT` | `CUSTOMER_ID` | `STRING` (or `INT64`) | `NO` |
+| `STG_CUSTOMER_SCORE_OUTPUT` | `SEGMENT_CODE` | `STRING` | `YES` |
+| `STG_CUSTOMER_SCORE_OUTPUT` | `SCORE_BAND` | `STRING` | `YES` |
+| `STG_CUSTOMER_SCORE_OUTPUT` | `SCORE_VALUE` | `NUMERIC` | `YES` |
+| `STG_CUSTOMER_SCORE_OUTPUT` | `RUN_DATE` | `DATE` | `NO` |
+
+---
+
+## Section 2: Output Parity & SCD2 Logic
+
+### Test Case 2.1: SCD2 - New Customer Insertion
+#### Purpose
+Verify that a customer present in the staging table but completely absent from the target dimension is inserted as a new active record (`IS_CURRENT = 1`) with `VALID_FROM` set to the execution timestamp and `VALID_TO` set to `NULL`.
+
+#### Setup
+1. Clear the test tables.
+2. Populate the staging table with one new customer.
+
+```sql
+TRUNCATE TABLE `TEST_ANALYTICS_SCHEMA.DIM_CUSTOMER_SEGMENT`;
+TRUNCATE TABLE `TEST_ANALYTICS_SCHEMA.STG_CUSTOMER_SCORE_OUTPUT`;
+
+INSERT INTO `TEST_ANALYTICS_SCHEMA.STG_CUSTOMER_SCORE_OUTPUT` 
+  (CUSTOMER_ID, SEGMENT_CODE, SCORE_BAND, SCORE_VALUE, RUN_DATE)
+VALUES 
+  ('CUST_NEW_01', 'BRONZE', 'BAND_C', 450.50, DATE '2023-10-15');
+```
+
+#### Action
+Execute the migrated BigQuery script `d_historization_load.sql` with `@run_date_param = '2023-10-15'`.
+
+#### Pass/Fail Criterion
+Query the target table:
+```sql
+SELECT * FROM `TEST_ANALYTICS_SCHEMA.DIM_CUSTOMER_SEGMENT` WHERE CUSTOMER_ID = 'CUST_NEW_01';
+```
+* **Pass**: Exactly 1 row is returned where `IS_CURRENT = 1`, `SEGMENT_CODE = 'BRONZE'`, `SCORE_BAND = 'BAND_C'`, `SCORE_VALUE = 450.50`, `VALID_FROM` is populated with the current execution timestamp, and `VALID_TO` is `NULL`.
+* **Fail**: No rows are returned, multiple rows are returned, or metadata fields (`IS_CURRENT`, `VALID_FROM`, `VALID_TO`) are incorrectly populated.
+
+---
+
+### Test Case 2.2: SCD2 - Unchanged Customer (No-Op)
+#### Purpose
+Verify that if a customer's staging data matches their active target record exactly, the pipeline performs no updates or insertions (no-op).
+
+#### Setup
+1. Clear the test tables.
+2. Populate the target table with an active record.
+3. Populate the staging table with identical attributes for the current run date.
+
+```sql
+TRUNCATE TABLE `TEST_ANALYTICS_SCHEMA.DIM_CUSTOMER_SEGMENT`;
+TRUNCATE TABLE `TEST_ANALYTICS_SCHEMA.STG_CUSTOMER_SCORE_OUTPUT`;
+
+INSERT INTO `TEST_ANALYTICS_SCHEMA.DIM_CUSTOMER_SEGMENT` 
+  (CUSTOMER_ID, SEGMENT_CODE, SCORE_BAND, SCORE_VALUE, IS_CURRENT, VALID_FROM, VALID_TO)
+VALUES 
+  ('CUST_UNCH_01', 'GOLD', 'BAND_A', 950.00, 1, TIMESTAMP '2023-10-01 12:00:00 UTC', NULL);
+
+INSERT INTO `TEST_ANALYTICS_SCHEMA.STG_CUSTOMER_SCORE_OUTPUT` 
+  (CUSTOMER_ID, SEGMENT_CODE, SCORE_BAND, SCORE_VALUE, RUN_DATE)
+VALUES 
+  ('CUST_UNCH_01', 'GOLD', 'BAND_A', 950.00, DATE '2023-10-15');
+```
+
+#### Action
+Execute the migrated BigQuery script `d_historization_load.sql` with `@run_date_param = '2023-10-15'`.
+
+#### Pass/Fail Criterion
+Query the target table:
+```sql
+SELECT * FROM `TEST_ANALYTICS_SCHEMA.DIM_CUSTOMER_SEGMENT` WHERE CUSTOMER_ID = 'CUST_UNCH_01';
+```
+* **Pass**: Exactly 1 row exists. It remains unmodified: `IS_CURRENT = 1`, `VALID_FROM = '2023-10-01 12:00:00 UTC'`, and `VALID_TO` is `NULL`.
+* **Fail**: Any row is updated, a new row is inserted, or the existing row's timestamps are modified.
+
+---
+
+### Test Case 2.3: SCD2 - Changed Customer (Re-versioning)
+#### Purpose
+Verify that if an existing customer's segment or score band changes:
+1. The active target record is expired (`IS_CURRENT = 0`, `VALID_TO` set to the transaction timestamp).
+2. A new active record is inserted (`IS_CURRENT = 1`, `VALID_FROM` set to the *exact same* transaction timestamp, `VALID_TO` set to `NULL`).
+
+#### Setup
+1. Clear the test tables.
+2. Populate the target table with an active record.
+3. Populate the staging table with a modified `SEGMENT_CODE` for the current run date.
+
+```sql
+TRUNCATE TABLE `TEST_ANALYTICS_SCHEMA.DIM_CUSTOMER_SEGMENT`;
+TRUNCATE TABLE `TEST_ANALYTICS_SCHEMA.STG_CUSTOMER_SCORE_OUTPUT`;
+
+INSERT INTO `TEST_ANALYTICS_SCHEMA.DIM_CUSTOMER_SEGMENT` 
+  (CUSTOMER_ID, SEGMENT_CODE, SCORE_BAND, SCORE_VALUE, IS_CURRENT, VALID_FROM, VALID_TO)
+VALUES 
+  ('CUST_CHG_01', 'SILVER', 'BAND_B', 600.00, 1, TIMESTAMP '2023-10-01 12:00:00 UTC', NULL);
+
+INSERT INTO `TEST_ANALYTICS_SCHEMA.STG_CUSTOMER_SCORE_OUTPUT` 
+  (CUSTOMER_ID, SEGMENT_CODE, SCORE_BAND, SCORE_VALUE, RUN_DATE)
+VALUES 
+  ('CUST_CHG_01', 'PLATINUM', 'BAND_B', 600.00, DATE '2023-10-15');
+```
+
+#### Action
+Execute the migrated BigQuery script `d_historization_load.sql` with `@run_date_param = '2023-10-15'`.
+
+#### Pass/Fail Criterion
+Query the target table:
+```sql
+SELECT * FROM `TEST_ANALYTICS_SCHEMA.DIM_CUSTOMER_SEGMENT` WHERE CUSTOMER_ID = 'CUST_CHG_01' ORDER BY VALID_FROM ASC;
+```
+* **Pass**: Exactly 2 rows are returned:
+  * **Row 1 (Expired)**: `SEGMENT_CODE = 'SILVER'`, `IS_CURRENT = 0`, `VALID_FROM = '2023-10-01 12:00:00 UTC'`, and `VALID_TO` is populated with the transaction timestamp ($T$).
+  * **Row 2 (New Active)**: `SEGMENT_CODE = 'PLATINUM'`, `IS_CURRENT = 1`, `VALID_FROM` is populated with the *exact same* transaction timestamp ($T$), and `VALID_TO` is `NULL`.
+  * **Timestamp Alignment**: `Row1.VALID_TO` must equal `Row2.VALID_FROM` down to the microsecond.
+* **Fail**: The old record is not expired, the new record is not inserted, or the timestamps do not align exactly.
+
+---
+
+## Section 3: Transformation Correctness & Edge Cases
+
+### Test Case 3.1: Transaction Atomicity and Rollback
+#### Purpose
+Verify that the multi-statement BigQuery scripting block executes within an atomic transaction. If a failure occurs during the second step (the `INSERT` of new active records), all changes made in the first step (the `MERGE` expiration) must be rolled back.
+
+#### Setup
+1. Clear the test tables.
+2. Populate the target table with an active record.
+3. Populate the staging table with a modified record.
+4. To force a failure in Step 2, we will temporarily alter the target table schema to make a column non-nullable, then insert a `NULL` value in Step 2, or we can run a modified test script that contains a deliberate runtime error (e.g., division by zero) in the second statement. 
+
+Let's use a test-specific script execution that mimics `d_historization_load.sql` but includes a division-by-zero error in the second statement:
+
+```sql
+-- TEST SCRIPT: d_historization_load_fail_test.sql
+BEGIN
+  DECLARE v_run_date DATE DEFAULT DATE '2023-10-15';
+  DECLARE v_current_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP();
+
+  BEGIN TRANSACTION;
+
+  -- Step 1: Expire old record (This should succeed temporarily)
+  MERGE INTO `TEST_ANALYTICS_SCHEMA.DIM_CUSTOMER_SEGMENT` AS tgt
+  USING (
+      SELECT 'CUST_ROLLBACK_01' AS CUSTOMER_ID, 'PLATINUM' AS SEGMENT_CODE, 'BAND_B' AS SCORE_BAND, 600.00 AS SCORE_VALUE
+  ) AS src
+  ON (tgt.CUSTOMER_ID = src.CUSTOMER_ID AND tgt.IS_CURRENT = 1)
+  WHEN MATCHED THEN
+    UPDATE SET tgt.IS_CURRENT = 0, tgt.VALID_TO = v_current_timestamp;
+
+  -- Step 2: Force a runtime error (Division by Zero)
+  INSERT INTO `TEST_ANALYTICS_SCHEMA.DIM_CUSTOMER_SEGMENT`
+      (CUSTOMER_ID, SEGMENT_CODE, SCORE_BAND, SCORE_VALUE, IS_CURRENT, VALID_FROM)
+  SELECT 
+      src.CUSTOMER_ID, src.SEGMENT_CODE, src.SCORE_BAND, 
+      (src.SCORE_VALUE / 0), -- FORCED ERROR
+      1, v_current_timestamp
+  FROM `TEST_ANALYTICS_SCHEMA.STG_CUSTOMER_SCORE_OUTPUT` AS src;
+
+  COMMIT TRANSACTION;
+
+EXCEPTION WHEN ERROR THEN
+  ROLLBACK TRANSACTION;
+  -- Do not raise here so the test runner can verify the rollback state gracefully
+END;
+```
+
+Initialize the data:
+```sql
+TRUNCATE TABLE `TEST_ANALYTICS_SCHEMA.DIM_CUSTOMER_SEGMENT`;
+INSERT INTO `TEST_ANALYTICS_SCHEMA.DIM_CUSTOMER_SEGMENT` 
+  (CUSTOMER_ID, SEGMENT_CODE, SCORE_BAND, SCORE_VALUE, IS_CURRENT, VALID_FROM, VALID_TO)
+VALUES 
+  ('CUST_ROLLBACK_01', 'SILVER', 'BAND_B', 600.00, 1, TIMESTAMP '2023-10-01 12:00:00 UTC', NULL);
+```
+
+#### Action
+Execute the test script containing the forced error.
+
+#### Pass/Fail Criterion
+Query the target table:
+```sql
+SELECT * FROM `TEST_ANALYTICS_SCHEMA.DIM_CUSTOMER_SEGMENT` WHERE CUSTOMER_ID = 'CUST_ROLLBACK_01';
+```
+* **Pass**: Exactly 1 row is returned, and it remains completely unchanged (`IS_CURRENT = 1`, `VALID_TO` is `NULL`). This proves the transaction rolled back successfully.
+* **Fail**: The row is left in an expired state (`IS_CURRENT = 0`), or any new records are partially committed.
+
+---
+
+## Section 4: External-System Replacements & Orchestration
+
+### Test Case 4.1: Quality Check - Threshold Warning Logic
+#### Purpose
+Verify that `k_historization_load.py` correctly calculates the percentage of changed customer segments and logs a warning (but does not fail the job) when the change percentage exceeds `MAX_EXPECTED_CHANGE_PCT` (25%).
+
+#### Setup
+1. Populate the target table with 10 active records.
+2. Populate the staging table such that 3 out of 10 records (30%) are updated/re-versioned on the run date.
+3. Set environment variables:
+   * `RUN_DATE = '2023-10-15'`
+   * `MAX_EXPECTED_CHANGE_PCT = '25'`
+   * `GCP_PROJECT = 'your-test-gcp-project'`
+   * `BQ_DATASET = 'TEST_ANALYTICS_SCHEMA'`
+
+```sql
+TRUNCATE TABLE `TEST_ANALYTICS_SCHEMA.DIM_CUSTOMER_SEGMENT`;
+TRUNCATE TABLE `TEST_ANALYTICS_SCHEMA.STG_CUSTOMER_SCORE_OUTPUT`;
+
+-- Insert 10 active records
+INSERT INTO `TEST_ANALYTICS_SCHEMA.DIM_CUSTOMER_SEGMENT` (CUSTOMER_ID, SEGMENT_CODE, SCORE_BAND, SCORE_VALUE, IS_CURRENT, VALID_FROM, VALID_TO)
+VALUES
+  ('C01', 'BRONZE', 'B1', 100, 1, TIMESTAMP '2023-10-01 12:00:00 UTC', NULL),
+  ('C02', 'BRONZE', 'B1', 100, 1, TIMESTAMP '2023-10-01 12:00:00 UTC', NULL),
+  ('C03', 'BRONZE', 'B1', 100, 1, TIMESTAMP '2023-10-01 12:00:00 UTC', NULL),
+  ('C04', 'BRONZE', 'B1', 100, 1, TIMESTAMP '2023-10-01 12:00:00 UTC', NULL),
+  ('C05', 'BRONZE', 'B1', 100, 1, TIMESTAMP '2023-10-01 12:00:00 UTC', NULL),
+  ('C06', 'BRONZE', 'B1', 100, 1, TIMESTAMP '2023-10-01 12:00:00 UTC', NULL),
+  ('C07', 'BRONZE', 'B1', 100, 1, TIMESTAMP '2023-10-01 12:00:00 UTC', NULL),
+  ('C08', 'BRONZE', 'B1', 100, 1, TIMESTAMP '2023-10-01 12:00:00 UTC', NULL),
+  ('C09', 'BRONZE', 'B1', 100, 1, TIMESTAMP '2023-10-01 12:00:00 UTC', NULL),
+  ('C10', 'BRONZE', 'B1', 100, 1, TIMESTAMP '2023-10-01 12:00:00 UTC', NULL);
+
+-- Staging has 3 changed records (C01, C02, C03) and 7 unchanged records
+INSERT INTO `TEST_ANALYTICS_SCHEMA.STG_CUSTOMER_SCORE_OUTPUT` (CUSTOMER_ID, SEGMENT_CODE, SCORE_BAND, SCORE_VALUE, RUN_DATE)
+VALUES
+  ('C01', 'GOLD', 'B1', 100, DATE '2023-10-15'), -- Changed
+  ('C02', 'GOLD', 'B1', 100, DATE '2023-10-15'), -- Changed
+  ('C03', 'GOLD', 'B1', 100, DATE '2023-10-15'), -- Changed
+  ('C04', 'BRONZE', 'B1', 100, DATE '2023-10-15'),
+  ('C05', 'BRONZE', 'B1', 100, DATE '2023-10-15'),
+  ('C06', 'BRONZE', 'B1', 100, DATE '2023-10-15'),
+  ('C07', 'BRONZE', 'B1', 100, DATE '2023-10-15'),
+  ('C08', 'BRONZE', 'B1', 100, DATE '2023-10-15'),
+  ('C09', 'BRONZE', 'B1', 100, DATE '2023-10-15'),
+  ('C10', 'BRONZE', 'B1', 100, DATE '2023-10-15');
+```
+
+#### Action
+Execute the Python script `k_historization_load.py` and capture `stdout` and the exit code.
+
+```bash
+export RUN_DATE="2023-10-15"
+export MAX_EXPECTED_CHANGE_PCT="25"
+export CRM_HOME="./" # Path containing customer/d_historization_load.sql
+python3 customer/k_historization_load.py
+```
+
+#### Pass/Fail Criterion
+* **Pass**: 
+  * The script exits with code `0`.
+  * The console output contains the exact warning message:
+    `"WARN: 30% of customers changed segment this week (expected <= 25%) - flagging for review, not failing the job"`
+  * The console output contains the completion message:
+    `"Historization merge complete, 30% of customers re-versioned"`
+* **Fail**: The script exits with a non-zero code, or the warning message is missing from the logs.
+
+---
+
+### Test Case 4.2: Quality Check - Zero Division Protection
+#### Purpose
+Verify that if the target table is empty (e.g., during initial load), the quality check query does not fail with a division-by-zero error, and the Python script handles the empty state gracefully.
+
+#### Setup
+1. Clear the target table.
+2. Populate the staging table with initial records.
+3. Set environment variables:
+   * `RUN_DATE = '2023-10-15'`
+   * `MAX_EXPECTED_CHANGE_PCT = '25'`
+
+```sql
+TRUNCATE TABLE `TEST_ANALYTICS_SCHEMA.DIM_CUSTOMER_SEGMENT`;
+TRUNCATE TABLE `TEST_ANALYTICS_SCHEMA.STG_CUSTOMER_SCORE_OUTPUT`;
+
+INSERT INTO `TEST_ANALYTICS_SCHEMA.STG_CUSTOMER_SCORE_OUTPUT` (CUSTOMER_ID, SEGMENT_CODE, SCORE_BAND, SCORE_VALUE, RUN_DATE)
+VALUES ('C01', 'GOLD', 'B1', 100, DATE '2023-10-15');
+```
+
+#### Action
+1. Execute the SQL quality check query directly to verify `NULL` handling.
+2. Execute `k_historization_load.py` and capture logs.
+
+#### Pass/Fail Criterion
+* **Pass**:
+  * The SQL query returns `NULL` (due to `NULLIF(..., 0)`).
+  * The Python script logs `"WARN: could not compute changed-row percentage - skipping sanity check"` and exits with code `0`.
+* **Fail**: The SQL query fails with a division-by-zero error, or the Python script exits with a non-zero code.
+
+---
+
+## Section 5: Airflow End-to-End Integration
+
+### Test Case 5.1: Airflow DAG Parameter Propagation and Execution
+#### Purpose
+Verify that the Airflow DAG `CUSTOMER_HISTORIZATION_LOAD_dag` successfully triggers, resolves the `RUN_DATE` parameter dynamically from the Airflow context (`{{ ds }}`), and executes the underlying Python wrapper script.
+
+#### Setup
+A Python-based test suite using `pytest` and Airflow's `DagBag` to validate the DAG structure and execute a mock run.
+
+```python
+# test_customer_historization_dag.py
+import pytest
+from airflow.models import DagBag, DagRun, TaskInstance
+from airflow.utils.state import DagRunState, TaskInstanceState
+from airflow.utils.types import DagRunType
+from airflow.utils import timezone
+
+def test_dag_loaded():
+    dagbag = DagBag(dag_folder="dags/customer", include_examples=False)
+    dag = dagbag.get_dag(dag_id="CUSTOMER_HISTORIZATION_LOAD_dag")
+    assert dagbag.import_errors == {}
+    assert dag is not None
+    assert len(dag.tasks) == 1
+
+def test_dag_parameter_propagation(mocker):
+    dagbag = DagBag(dag_folder="dags/customer", include_examples=False)
+    dag = dagbag.get_dag(dag_id="CUSTOMER_HISTORIZATION_LOAD_dag")
+    
+    # Mock the BashOperator execution to prevent actual system calls
+    mock_subprocess = mocker.patch("airflow.operators.bash.subprocess.Popen")
+    mock_subprocess.return_value.communicate.return_value = (b"Success", b"")
+    mock_subprocess.return_value.returncode = 0
+
+    # Create a manual DAG run with a specific logical date
+    execution_date = timezone.datetime(2023, 10, 15)
+    dag_run = dag.create_dagrun(
+        state=DagRunState.RUNNING,
+        execution_date=execution_date,
+        run_type=DagRunType.MANUAL,
+    )
+
+    ti = dag_run.get_task_instance(task_id="run_historization_load_wrapper")
+    ti.task = dag.get_task(task_id="run_historization_load_wrapper")
+    
+    # Render templates to verify parameter resolution
+    ti.render_templates()
+    
+    # Assert that RUN_DATE resolves to the logical date string (YYYY-MM-DD)
+    assert ti.task.env["RUN_DATE"] == "2023-10-15"
+```
+
+#### Action
+Run the pytest suite:
+```bash
+pytest test_customer_historization_dag.py
+```
+
+#### Pass/Fail Criterion
+* **Pass**: All tests pass, confirming that the DAG is syntactically correct, contains the expected tasks, and correctly maps the Airflow logical date (`{{ ds }}`) to the `RUN_DATE` environment variable.
+* **Fail**: The DAG fails to load, tasks are missing, or the `RUN_DATE` template resolves incorrectly.
