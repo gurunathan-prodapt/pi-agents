@@ -1,0 +1,1 @@
+ERROR: tests skipped for CRM_WEEKLY_WORKFLOW — build phase failed or produced no output.
