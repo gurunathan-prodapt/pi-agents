@@ -1,115 +1,117 @@
 #!/usr/bin/env python3
-"""
-k_historization_load.py
-
-Orchestrates an SCD Type 2 historization load for customer segments via BigQuery 
-and performs a post-load sanity check on the percentage of changed rows.
-"""
-
-import os
 import sys
-from datetime import datetime
+import os
+import datetime
 from google.cloud import bigquery
 
-# Step 1: Environment Setup & Variable Initialization
-CRM_HOME = os.environ.get("CRM_HOME", "/opt/etl/customer")
-GCP_PROJECT = os.environ.get("GCP_PROJECT")
-BQ_DATASET = os.environ.get("BQ_DATASET")
-
-MAX_EXPECTED_CHANGE_PCT_ENV = os.environ.get("MAX_EXPECTED_CHANGE_PCT", "25")
-try:
-    MAX_EXPECTED_CHANGE_PCT = int(MAX_EXPECTED_CHANGE_PCT_ENV)
-except ValueError:
-    MAX_EXPECTED_CHANGE_PCT = 25
-
-RUN_DATE = os.environ.get("RUN_DATE")
-if not RUN_DATE:
-    # Default to today's date formatted as YYYY-MM-DD if not supplied (corresponds to &$TODAY)
-    RUN_DATE = datetime.now().strftime("%Y-%m-%d")
-
-# Step 2: Custom Logging Definition
-def log(message: str, file=sys.stdout):
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{timestamp}] {message}", file=file)
+def log(message: str):
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{timestamp}] {message}")
 
 def main():
-    # Construct paths to SQL scripts
-    sql_load_path = os.path.join(CRM_HOME, "customer", "d_historization_load.sql")
-    sql_qc_path = os.path.join(CRM_HOME, "customer", "d_segment_quality_check.sql")
+    # Step 1: Initialize configuration parameters with defaults
+    crm_home = os.environ.get("CRM_HOME", "/opt/etl/customer")
+    
+    max_expected_change_pct = 25
+    max_expected_change_pct_env = os.environ.get("MAX_EXPECTED_CHANGE_PCT")
+    if max_expected_change_pct_env is not None:
+        try:
+            max_expected_change_pct = int(max_expected_change_pct_env)
+        except ValueError:
+            pass
 
-    # Read the SQL files
+    # Read GCP specific parameters from environment
+    gcp_project = os.environ.get("GCP_PROJECT")
+    if not gcp_project:
+        log("ERROR: GCP_PROJECT environment variable is not set.")
+        sys.exit(1)
+
+    bq_dataset = os.environ.get("BQ_DATASET")
+    if not bq_dataset:
+        log("ERROR: BQ_DATASET environment variable is not set.")
+        sys.exit(1)
+
+    # Step 2: Fetch RUN_DATE from the environment
+    run_date = os.environ.get("RUN_DATE")
+    if not run_date:
+        log("ERROR: RUN_DATE environment variable is not set.")
+        sys.exit(1)
+
+    # Step 3: Log step start: "Running SCD2 merge for customer segment dimension"
+    log("Running SCD2 merge for customer segment dimension")
+
+    # Step 4: Execute d_historization_load.sql with parameter RUN_DATE
+    sql_load_path = os.path.join(crm_home, "customer", "d_historization_load.sql")
     try:
         with open(sql_load_path, "r", encoding="utf-8") as f:
-            sql_text = f.read()
+            sql_load_text = f.read()
     except Exception as e:
-        log(f"ERROR: Failed to read SQL file {sql_load_path}: {e}", file=sys.stderr)
-        return 1
+        log(f"ERROR: Failed to read {sql_load_path}: {e}")
+        sys.exit(1)
 
     try:
-        with open(sql_qc_path, "r", encoding="utf-8") as f:
-            qc_sql_text = f.read()
+        client = bigquery.Client(project=gcp_project)
+        sql_load_text = sql_load_text.replace("ANALYTICS_SCHEMA", f"`{gcp_project}.{bq_dataset}`")
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("run_date_param", "STRING", run_date)
+            ]
+        )
+        query_job = client.query(sql_load_text, job_config=job_config)
+        query_job.result()
     except Exception as e:
-        log(f"ERROR: Failed to read SQL file {sql_qc_path}: {e}", file=sys.stderr)
-        return 1
+        # Step 5: Capture execution return code. If non-zero, log error "ERROR: d_historization_load.sql failed with rc=..."
+        merge_rc = 1
+        log(f"ERROR: d_historization_load.sql failed with rc={merge_rc}")
+        sys.exit(1)
 
-    # Initialize BigQuery Client
+    # Step 6: Execute d_segment_quality_check.sql
+    sql_check_path = os.path.join(crm_home, "customer", "d_segment_quality_check.sql")
     try:
-        client = bigquery.Client(project=GCP_PROJECT) if GCP_PROJECT else bigquery.Client()
+        with open(sql_check_path, "r", encoding="utf-8") as f:
+            sql_check_text = f.read()
     except Exception as e:
-        log(f"ERROR: Failed to initialize BigQuery Client: {e}", file=sys.stderr)
-        return 1
+        log("WARN: could not compute changed-row percentage - skipping sanity check")
+        sys.exit(0)
 
-    # Set up QueryJobConfig for query parameter injection
-    query_config = bigquery.QueryJobConfig(
-        query_parameters=[
-            bigquery.ScalarQueryParameter("run_date", "STRING", RUN_DATE),
-        ]
-    )
-
-    # Step 3: Run SCD2 Merge
-    log("Running SCD2 merge for customer segment dimension")
+    changed_pct_raw = ""
     try:
-        query_job = client.query(sql_text, job_config=query_config)
-        query_job.result()  # Wait for the query job to complete
-    except Exception as e:
-        # Step 4: Handle Failure of SCD2 Merge
-        log("ERROR: d_historization_load.sql failed with rc=1", file=sys.stderr)
-        log(f"Details: {e}", file=sys.stderr)
-        return 1
-
-    # Step 5: Run Segment Quality Check
-    try:
-        qc_job = client.query(qc_sql_text, job_config=query_config)
-        qc_results = qc_job.result()
-
-        changed_pct_str = ""
-        for row in qc_results:
-            if len(row) > 0:
-                val = row[0]
-                if val is not None:
-                    changed_pct_str = str(val).strip()
+        sql_check_text = sql_check_text.replace("ANALYTICS_SCHEMA", f"`{gcp_project}.{bq_dataset}`")
+        job_config = bigquery.QueryJobConfig(
+            query_parameters=[
+                bigquery.ScalarQueryParameter("run_date", "STRING", run_date)
+            ]
+        )
+        query_job = client.query(sql_check_text, job_config=job_config)
+        results = query_job.result()
+        for row in results:
+            changed_pct_raw = str(row[0])
             break
     except Exception as e:
-        log(f"ERROR: Quality check database execution failed: {e}", file=sys.stderr)
-        changed_pct_str = ""
-
-    # Step 7: Handle Empty Output Check (mimics empty stdout check)
-    if not changed_pct_str:
         log("WARN: could not compute changed-row percentage - skipping sanity check")
-        return 0
+        sys.exit(0)
 
-    # Step 8: Perform Safety Threshold Comparisons
+    # Step 7: Strip whitespaces from the database output
+    changed_pct_clean = "".join(changed_pct_raw.split())
+
+    # Step 8: If changed_pct is empty/null, log "WARN: could not compute changed-row percentage - skipping sanity check" and exit 0.
+    if not changed_pct_clean:
+        log("WARN: could not compute changed-row percentage - skipping sanity check")
+        sys.exit(0)
+
+    # Step 9: Convert changed_pct to an integer
     try:
-        changed_pct = int(float(changed_pct_str))
-        if changed_pct > MAX_EXPECTED_CHANGE_PCT:
-            log(f"WARN: {changed_pct}% of customers changed segment this week (expected <= {MAX_EXPECTED_CHANGE_PCT}%) - flagging for review, not failing the job")
+        changed_pct_val = int(float(changed_pct_clean))
     except ValueError:
-        # Suppress conversion errors (mimics 2>/dev/null in KSH)
-        pass
+        log("WARN: could not compute changed-row percentage - skipping sanity check")
+        sys.exit(0)
 
-    # Step 9: Process Completion
-    log(f"Historization merge complete, {changed_pct_str}% of customers re-versioned")
-    return 0
+    if changed_pct_val > max_expected_change_pct:
+        log(f"WARN: {changed_pct_val}% of customers changed segment this week (expected <= {max_expected_change_pct}%) - flagging for review, not failing the job")
+
+    # Step 10: Log completion message
+    log(f"Historization merge complete, {changed_pct_val}% of customers re-versioned")
+    sys.exit(0)
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()
