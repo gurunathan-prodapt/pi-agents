@@ -1,0 +1,1 @@
+ERROR: migration notes skipped for CUSTOMER.HISTORIZATION_LOAD — build phase failed or produced no output.
