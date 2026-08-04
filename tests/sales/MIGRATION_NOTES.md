@@ -1,0 +1,1 @@
+ERROR: migration notes skipped for sales/retail_daily_workflow.xml — build phase failed or produced no output.
