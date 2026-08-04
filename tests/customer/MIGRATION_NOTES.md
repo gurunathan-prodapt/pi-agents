@@ -1,149 +1,178 @@
 # Migration Notes: CUSTOMER.HISTORIZATION_LOAD
 
-This document details the migration of the legacy UC4 UNIX job `CUSTOMER.HISTORIZATION_LOAD` and its associated execution scripts to Google Cloud Platform (GCP) using Google Cloud Composer (Apache Airflow) and Google BigQuery.
+This document provides the technical details, design decisions, manual setup requirements, validation steps, and rollback procedures for the migration of the `CUSTOMER.HISTORIZATION_LOAD` job from UC4 (Automic) to Apache Airflow (Google Cloud Composer) and Google Cloud BigQuery.
 
 ---
 
 ## 1. Summary
 
-The legacy workload `CUSTOMER.HISTORIZATION_LOAD` was responsible for performing a weekly Slowly Changing Dimension Type 2 (SCD2) historization of customer segment codes and score bands into the segment dimension table (`DIM_CUSTOMER_SEGMENT`). It also executed an automated safety guardrail to flag anomalous mass updates (where more than 25% of the customer base changed segments in a single week).
+The `CUSTOMER.HISTORIZATION_LOAD` job has been migrated from a legacy UC4 UNIX-scheduled environment to **Apache Airflow (Google Cloud Composer)**, with the underlying data processing shifted from Oracle SQL*Plus to **Google Cloud BigQuery**.
 
-This workload has been fully migrated from its legacy UNIX host (`ETLHOST2`) and Oracle database environment to **Google Cloud Platform (GCP)**. 
-* **Orchestration**: Apache Airflow (Google Cloud Composer) manages the execution flow.
-* **Execution Engine**: Python 3 scripts replace the legacy KornShell (`.ksh`) wrappers.
-* **Data Warehouse**: Google BigQuery executes the transactional SCD Type 2 merge and quality check queries.
+### Scope of Migration
+* **Legacy Platform:** UC4 (Automic) scheduler executing KornShell (`.ksh`) scripts on a remote UNIX host (`ETLHOST2`) interacting with an Oracle database (`CRMPRD`).
+* **Target Platform:** Google Cloud Composer (Apache Airflow) orchestrating native Python scripts that execute GoogleSQL queries in Google Cloud BigQuery.
+* **Business Logic:** Performs a weekly Slowly Changing Dimension Type 2 (SCD2) historization of customer segments and scores into a segment dimension table, followed by a statistical sanity check to flag abnormally high segment-shift percentages (indicative of join corruption).
 
 ---
 
 ## 2. Generated Artifacts
 
-The migration process generated the following files, which must be deployed to their respective directories in the target environment:
+The migration process generated three core files, each mapping to a specific component of the legacy architecture:
 
-| File Path | Type / Language | Role / Description |
+| Generated File | Target Location | Role / Description |
 | :--- | :--- | :--- |
-| `customer/customer_historization_load_dag.py` | Python (Airflow DAG) | Orchestrates the entire process. Defines a single-task DAG that executes the wrapper script via a `BashOperator` and injects runtime parameters. |
-| `customer/r_historization_load.py` | Python Script | Replaces `r_historization_load.ksh`. Serves as the entry-point wrapper script, logging execution metadata and invoking the core execution engine. |
-| `customer/k_historization_load.py` | Python Script | Replaces `k_historization_load.ksh`. The core execution engine. Uses the Google Cloud BigQuery client library to run the SCD2 merge and quality check SQL scripts, parses the quality check output, and evaluates it against the threshold. |
-| `customer/d_historization_load.sql` | BigQuery SQL | Replaces the Oracle SQL script. Performs the transactional SCD Type 2 merge and insert logic using the `@RUN_DATE` query parameter. |
-| `customer/d_segment_quality_check.sql` | BigQuery SQL | Replaces the Oracle SQL quality check. Computes the percentage of customer segments re-versioned on the given run date using the `@RUN_DATE` query parameter. |
+| `customer_historization_load.py` | `dags/customer/` | **Airflow DAG:** Replaces the UC4 job definition. Defines execution parameters, default arguments, and orchestrates the execution tasks. Configured as an externally triggered workflow (`schedule=None`). |
+| `k_historization_load.py` | `dags/customer/scripts/` | **Core Execution Script:** Replaces `k_historization_load.ksh`. Uses the `google-cloud-bigquery` client to run the SCD2 merge and quality check SQL files, parses the results, and performs threshold validation. |
+| `r_historization_load.py` | `dags/customer/scripts/` | **Wrapper Script:** Replaces `r_historization_load.ksh`. Acts as the entry point for execution, handling logging initialization, environment setup, and subprocess execution monitoring. |
 
 ---
 
 ## 3. Key Design Decisions
 
-### KornShell to Python Conversion
-Legacy `.ksh` scripts were migrated to native Python (`.py`) scripts. This shift allows robust error handling, native integration with the Google Cloud BigQuery client library, and clean string parsing without relying on legacy Unix utilities like `tr`, `awk`, or `sqlplus`.
+### Decoupled Script Execution via Python BigQuery Client
+* **Decision:** Instead of using Airflow's `BashOperator` to run legacy shell scripts or raw `sqlplus` commands, the core logic was rewritten into native Python (`k_historization_load.py`) using the `google-cloud-bigquery` client library.
+* **Trade-off/Reasoning:** This removes the dependency on legacy database clients (SQL*Plus) and local UNIX environments. It also allows for structured, type-safe parsing of the quality check query results (extracting a scalar integer from a BigQuery row iterator) rather than relying on fragile shell-based stdout sanitization (`tr -d '[:space:]'`).
 
-### BigQuery Scripting & Transactional Integrity
-To maintain 100% semantic equivalence with the legacy Oracle transaction model, the SCD2 `MERGE` and subsequent `INSERT` statements are grouped inside a single transactional block (`BEGIN TRANSACTION ... COMMIT TRANSACTION`) in BigQuery.
+### Soft-Failure Threshold Validation
+* **Decision:** Maintained the legacy behavior where exceeding the `MAX_EXPECTED_CHANGE_PCT` (default `25%`) logs a warning but does *not* fail the pipeline.
+* **Trade-off/Reasoning:** This prevents statistical anomalies from hard-blocking downstream weekly processing while ensuring that data quality warnings are clearly visible in the Airflow task logs for operational review.
 
-### Temporal Snapshot Alignment
-In the legacy Oracle script, `SYSDATE` was evaluated dynamically. To prevent race conditions and ensure that the `VALID_TO` timestamp updated in the `MERGE` matches the `VALID_FROM` timestamp in the subsequent `INSERT` down to the microsecond, we declare a single `v_current_time` timestamp variable at the start of the transaction.
-
-### Query Parameterization
-Replaced legacy SQL*Plus positional parameters (`&1`) with native BigQuery query parameters (`@RUN_DATE`). This prevents SQL injection risks and aligns with modern database practices.
-
-### Airflow Orchestration
-Wrapped the execution in a single-task Airflow DAG with `schedule=None` to match its legacy behavior as an externally triggered, embedded workflow.
+### Parameterized Execution Dates (Backfill Safety)
+* **Decision:** Sourced the `RUN_DATE` parameter dynamically using Airflow's logical date macro `{{ ds }}` (or falling back to the current system date if run standalone).
+* **Trade-off/Reasoning:** This ensures that if the DAG is run historically (backfilled), the queries execute against the correct historical business date rather than the real-world execution timestamp.
 
 ---
 
 ## 4. Manual Steps Before Go-Live
 
-Before deploying and running the migrated workload in production, the following manual setup steps must be completed:
+Before enabling this workflow in production, the following infrastructure, security, and configuration steps must be completed:
 
-### Schema & Dataset Creation
-1. Ensure the target BigQuery dataset (e.g., `ANALYTICS_SCHEMA` or the environment-configured `BQ_DATASET`) exists in your GCP project.
-2. Verify that the target tables exist with compatible schemas:
-   * `ANALYTICS_SCHEMA.STG_CUSTOMER_SCORE_OUTPUT`
-   * `ANALYTICS_SCHEMA.DIM_CUSTOMER_SEGMENT` (Ensure `VALID_FROM` and `VALID_TO` are typed as `TIMESTAMP` or `DATETIME`, and `IS_CURRENT` is typed as `INT64`).
+### A. Schema & Dataset Creation
+1. Ensure the target BigQuery dataset (e.g., `customer_dimension`) exists in your GCP project.
+2. Ensure the target SCD2 dimension table (e.g., `dim_customer_segment`) is created with fields supporting SCD2 tracking:
+   * `customer_id` (BK)
+   * `segment_score`
+   * `segment_name`
+   * `valid_from` (TIMESTAMP/DATE)
+   * `valid_to` (TIMESTAMP/DATE)
+   * `is_active` (BOOLEAN)
 
-### IAM & Permissions
-The Cloud Composer service account (or the worker identity running the DAG) must be granted the following IAM roles on the target BigQuery dataset:
-* **BigQuery Job User** (`roles/bigquery.jobUser`)
-* **BigQuery Data Editor** (`roles/bigquery.dataEditor`)
+### B. IAM & Permissions
+The Google Cloud Composer worker service account (typically `service-XXX@gcp-sa-composer.iam.gserviceaccount.com`) must be granted the following IAM roles:
+* **`roles/bigquery.jobUser`** (on the project level to run query jobs).
+* **`roles/bigquery.dataEditor`** (on the target dataset to perform the SCD2 merge).
+* **`roles/storage.objectViewer`** (on the environment's GCS bucket to read SQL scripts).
 
-### Airflow Variables Configuration
-Define the following Airflow Variables in your Cloud Composer environment:
+### C. Airflow Variables & Environment Variables
+Configure the following Airflow Variables in the Cloud Composer UI (**Admin -> Variables**):
 
-| Variable Key | Expected Value Example | Description |
+| Variable Name | Example Value | Description |
 | :--- | :--- | :--- |
-| `GCP_PROJECT` | `my-gcp-project-id` | The target Google Cloud Project ID. |
-| `GCP_REGION` | `us-east1` | The deployment region for BigQuery and Composer. |
-| `SCRIPTS_DIR` | `/home/airflow/gcs/dags` | The GCS bucket path or local worker path where the Python and SQL scripts are deployed. |
+| `GCP_PROJECT` | `my-gcp-prod-project` | Target Google Cloud Project ID. |
+| `GCP_REGION` | `us-central1` | Deployment region. |
+| `GCS_BUCKET` | `us-central1-composer-bucket-xyz` | GCS bucket associated with the Composer environment. |
+| `BQ_DATASET` | `customer_dimension` | Target BigQuery dataset. |
+| `CRM_HOME` | `/home/airflow/gcs/dags` | Base path where scripts and SQL files are deployed. |
 
-### Environment Variables
-Ensure `CRM_HOME` is configured in your execution environment or allowed to default to `/opt/etl/customer` (or your mapped GCS mount path).
+### D. SQL File Deployment
+The SQL files referenced by the execution script must be migrated to BigQuery-compliant SQL syntax and uploaded to the GCS bucket under the following paths:
+* `gs://<composer-bucket>/dags/customer/d_historization_load.sql`
+* `gs://<composer-bucket>/dags/customer/d_segment_quality_check.sql`
 
-### Scheduling & Triggering
-Because the legacy job was designed to run embedded inside other workflows, the migrated DAG is configured with `schedule=None`. To trigger this DAG:
-* **Option A**: Use Airflow's `TriggerDagRunOperator` within a parent DAG.
-* **Option B**: Trigger manually via the Airflow UI or CLI.
-* **Option C**: Call the Airflow REST API from an external orchestrator.
+### E. Scheduling & Downstream Wiring
+Because this job is designed to run as part of a larger weekly cycle, it is configured with `schedule_interval=None`. Once the downstream job `CUSTOMER.WEEKLY_SCHEDULE` is migrated, you must uncomment and configure the `TriggerDagRunOperator` at the end of `customer_historization_load.py` to trigger it.
 
 ---
 
 ## 5. Known Gaps & Unresolved References
 
-### Downstream Dependency Gap
-* **Reference**: `CUSTOMER.WEEKLY_SCHEDULE`
-* **Status**: **Not Yet Migrated**
-* **Impact**: The downstream job `CUSTOMER.WEEKLY_SCHEDULE` expects the historization output to be complete. The cross-DAG trigger or sensor linkage cannot be finalized until that job is migrated.
-* **Mitigation**: Once `CUSTOMER.WEEKLY_SCHEDULE` is migrated, its orchestration DAG must be updated to depend on the successful completion of the `customer_historization_load` DAG.
+The following items were flagged during migration as requiring manual follow-up or redesign (B4 items):
 
-### SQL Stubs
-* **Status**: **Action Required**
-* **Impact**: The generated SQL files (`d_historization_load.sql` and `d_segment_quality_check.sql`) are currently provided as functional stubs.
-* **Mitigation**: The actual production SCD2 merge logic and quality check calculations must be fully populated and verified using the converted SQL designs before deployment.
+1. **Missing SQL Files:** The SQL files `d_historization_load.sql` and `d_segment_quality_check.sql` were not part of this migration bundle. They must be manually translated from Oracle SQL*Plus dialect to GoogleSQL (BigQuery Standard SQL).
+   * *Oracle Specifics to Convert:* Replace Oracle-specific `MERGE` statements, `NVL`, and date functions (e.g., `SYSDATE`, `TO_DATE`) with BigQuery equivalents (`IFNULL`, `CURRENT_TIMESTAMP`, etc.).
+2. **Unmigrated Downstream Dependency:** The downstream consumer `CUSTOMER.WEEKLY_SCHEDULE` is not yet migrated. Cross-DAG orchestration cannot be verified end-to-end until this asset is deployed.
+3. **Empty Operator Placeholder:** The task `customer_historization_load` in the DAG is currently stubbed with an `EmptyOperator`. Once the deployment paths for `r_historization_load.py` are finalized on the Composer workers, this must be updated to a `BashOperator` or `PythonVirtualenvOperator` executing the script:
+   ```python
+   customer_historization_load = BashOperator(
+       task_id='customer_historization_load',
+       bash_command='python3 /home/airflow/gcs/dags/customer/scripts/r_historization_load.py',
+       env={
+           'CRM_HOME': '/home/airflow/gcs/dags',
+           'RUN_DATE': '{{ ds }}',
+           'GCP_PROJECT': Variable.get("GCP_PROJECT"),
+           'BQ_DATASET': Variable.get("BQ_DATASET")
+       }
+   )
+   ```
 
 ---
 
 ## 6. Validation
 
-To validate the migration, execute the following test plan in a non-production environment:
+To validate the migration, execute the following testing steps in a non-production environment:
 
-### Step 1: Unit Testing the Python Scripts
-Run the Python scripts locally or on a test worker by setting the required environment variables:
-```bash
-export CRM_HOME="/path/to/your/local/scripts"
-export RUN_DATE="2023-11-01"
-export GCP_PROJECT="your-test-gcp-project"
-export GCP_REGION="us-east1"
+### Running the Test
+1. **Manual Trigger:** In the Airflow UI, locate the `customer_historization_load` DAG and click **Trigger DAG w/ config**.
+2. **Custom Parameters:** Pass a test execution date and threshold if desired:
+   ```json
+   {
+     "run_date": "2023-10-15",
+     "max_expected_change_pct": 25
+   }
+   ```
+3. **CLI Execution (Alternative):** Run the Python script directly from a terminal with access to the target BigQuery environment:
+   ```bash
+   export CRM_HOME="/path/to/local/dags"
+   export GCP_PROJECT="your-dev-project"
+   export BQ_DATASET="your_dev_dataset"
+   export RUN_DATE="2023-10-15"
+   python3 dags/customer/scripts/r_historization_load.py
+   ```
 
-# Execute the wrapper script
-python3 customer/r_historization_load.py
-```
-
-### Step 2: Airflow DAG Dry Run
-1. Upload the DAG and scripts to the Cloud Composer GCS bucket.
-2. Trigger the DAG manually from the Airflow UI, passing a specific logical date (e.g., `2023-11-01`).
-
-### Definition of "Passing"
-The validation is considered successful when:
-1. The Airflow task completes with exit code `0`.
-2. The BigQuery job history shows a successful transaction containing the `MERGE` and `INSERT` operations.
-3. The target table `DIM_CUSTOMER_SEGMENT` has updated records:
-   * Old records are expired with `IS_CURRENT = 0` and `VALID_TO = execution_timestamp`.
-   * New records are inserted with `IS_CURRENT = 1` and `VALID_FROM = execution_timestamp`.
-4. The quality check executes successfully, logs the change percentage, and flags a warning *only* if the change percentage exceeds 25% (without failing the job).
+### What "Passing" Looks Like
+Review the task execution logs in Airflow. The run is successful if:
+* The log outputs: `Starting SCD2 historization for run date 2023-10-15`.
+* The BigQuery merge job completes without errors.
+* The quality check query executes and returns a valid numeric string.
+* **Scenario A (Normal Run):** If the change percentage is $\le 25\%$, the log outputs:
+  `[YYYY-MM-DD HH:MM:SS] Historization merge complete, 12% of customers re-versioned` and exits with code `0`.
+* **Scenario B (Anomaly Warning):** If the change percentage is $> 25\%$, the log outputs:
+  `[YYYY-MM-DD HH:MM:SS] WARN: 34% of customers changed segment this week (expected <= 25%) - flagging for review, not failing the job` and exits with code `0`.
+* **Scenario C (Empty QC Output):** If the QC query returns no data, the log outputs:
+  `[YYYY-MM-DD HH:MM:SS] WARN: could not compute changed-row percentage - skipping sanity check` and exits with code `0`.
 
 ---
 
 ## 7. Rollback Procedure
 
-In the event of a production failure or data corruption during or after deployment, execute the following rollback steps:
+In the event of a critical failure or data corruption during deployment, execute the following rollback steps:
 
-### Step 1: Database Rollback (Time Travel)
-Since BigQuery does not support traditional database rollbacks once a transaction is committed, use BigQuery's **Time Travel** feature to restore the target table to its state prior to the execution:
+### Step 1: Disable the Airflow DAG
+1. Navigate to the Airflow UI.
+2. Locate `customer_historization_load` and toggle the DAG switch to **Off** (Paused) to prevent any automated or manual triggers.
 
-```sql
--- Restore the target table to its state 1 hour ago (adjust interval as needed)
-CREATE OR REPLACE TABLE `your_project.ANALYTICS_SCHEMA.DIM_CUSTOMER_SEGMENT`
-AS SELECT * FROM `your_project.ANALYTICS_SCHEMA.DIM_CUSTOMER_SEGMENT`
-FOR SYSTEM_TIME AS OF TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL 1 HOUR);
+### Step 2: Revert Code Changes
+If code modifications caused the failure, revert the Git repository to the last known stable commit and redeploy the DAGs to the GCS bucket:
+```bash
+git revert <commit_hash>
+git push origin main
+# Sync GCS bucket with reverted code
+gsutil -m rsync -d -r ./dags gs://<composer-bucket>/dags
 ```
 
-### Step 2: Code Rollback
-1. Revert the Airflow DAG and Python/SQL scripts in your Git repository to the previous stable commit.
-2. Redeploy the reverted code to the Cloud Composer GCS bucket.
-3. If necessary, clear the failed DAG run in the Airflow UI to allow a clean re-run once the environment is stabilized.
+### Step 3: Data Rollback (SCD2 State Restoration)
+Because SCD2 is an additive process, a failed or corrupted run will have inserted new active records and closed out older records. To restore the database state to the previous week (before `RUN_DATE` executed):
+
+1. Run the following SQL script in BigQuery to delete the newly inserted records and reactivate the previous versions:
+   ```sql
+   -- 1. Delete new records inserted by the failed run
+   DELETE FROM `your_project.customer_dimension.dim_customer_segment`
+   WHERE valid_from = DATE('2023-10-15');
+
+   -- 2. Re-open the previous active records that were closed out by the failed run
+   UPDATE `your_project.customer_dimension.dim_customer_segment`
+   SET valid_to = NULL,
+       is_active = TRUE
+   WHERE valid_to = DATE('2023-10-15');
+   ```
+2. Verify the row counts and active flags in `dim_customer_segment` to ensure the state matches the pre-execution baseline.
