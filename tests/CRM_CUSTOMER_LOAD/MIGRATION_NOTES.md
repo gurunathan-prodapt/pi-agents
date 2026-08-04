@@ -1,0 +1,1 @@
+ERROR: migration notes skipped for CRM_CUSTOMER_LOAD — build phase failed or produced no output.
