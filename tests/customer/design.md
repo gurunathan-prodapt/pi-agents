@@ -19,53 +19,47 @@ operational_notes=None
 
 # Design Document: UC4 to Apache Airflow Migration
 
-This document details the migration design of a standalone UC4 UNIX job to an Apache Airflow DAG. Since the extraction bundle contains only a single `JOBS_UNIX` object with no parent `JOBP` (workflow) container or calendar schedule, it is represented as a single-task DAG.
-
----
-
 ## 1. Overview
-This migration contains a single standalone UC4 UNIX job, `CUSTOMER.HISTORIZATION_LOAD`, which executes an SCD2 (Slowly Changing Dimension Type 2) historization process. It loads weekly customer segments and scores into a segment dimension table. Because no parent workflow (`JOBP`) was provided in the extraction, this job is modeled as a standalone Airflow DAG containing a single task. This process is triggered externally as no scheduling configurations were defined in the extraction.
+This migration design captures a single, isolated UC4 UNIX job: `CUSTOMER.HISTORIZATION_LOAD`. The job is responsible for executing the Slowly Changing Dimension Type 2 (SCD2) historization process, loading weekly customer segment and score data into the customer segment dimension. Since no wrapping workflow (`JOBP`) or schedule was provided in this extraction bundle, this job is represented as an independent Airflow DAG configured for external manual triggering or upstream integration.
 
 ---
 
 ## 2. UC4 Object Inventory
 | Object Name | Object Type | Active Flag | Title/Description |
 | :--- | :--- | :--- | :--- |
-| `CUSTOMER.HISTORIZATION_LOAD` | JOBS_UNIX | `1` (Active) | SCD2 historization of the weekly customer segment/score into the segment dimension |
+| `CUSTOMER.HISTORIZATION_LOAD` | JOBS_UNIX | 1 (Active) | SCD2 historization of the weekly customer segment/score into the segment dimension |
 
 ---
 
 ## 3. Scheduling
-* **Schedule Trigger:** This workflow has no calendar-based schedule of its own within the extraction bundle (no `EVNT_TIME` or schedule triggers present). 
-* **Trigger Source:** Neither a parent `JOBP` nor a triggering `SCRI` was supplied. This workflow is noted as externally triggered, source unknown from this extraction alone.
-* **DAG Schedule:** `schedule=None`
+- **Trigger Source**: No `EVNT_TIME` or scheduling definitions are present in this extraction bundle. There are no native triggering scripts (`SCRI`) or master workflows (`JOBP`) referencing this object within this export.
+- **Airflow Schedule**: `schedule=None` (Externally triggered or run on-demand).
+- **Target DAG Property**: `schedule=None`.
 
 ---
 
 ## 4. Airflow DAG Properties
-The following DAG properties are mapped from the `CUSTOMER.HISTORIZATION_LOAD` job:
-
 | Property | Value |
 | :--- | :--- |
-| `dag_id` | `customer_historization_load` |
-| `schedule` | `None` |
-| `start_date` | `datetime(2023, 1, 1)` *(placeholder)* |
-| `catchup` | `False` |
-| `max_active_runs` | `1` |
-| `is_paused_upon_creation` | `False` *(Active=1 maps to is_paused_upon_creation=False)* |
-| `default_args` | `{'owner': 'airflow', 'retries': 1, 'retry_delay': timedelta(minutes=5)}` |
+| **dag_id** | `customer_historization_load` |
+| **schedule** | `None` |
+| **start_date** | `datetime(2023, 1, 1)` (Placeholder) |
+| **catchup** | `False` |
+| **max_active_runs** | `1` |
+| **is_paused_upon_creation** | `False` (Mapped from Active=1) |
+| **default_args** | `{'owner': 'airflow', 'retries': 1, 'retry_delay': timedelta(minutes=5)}` |
 
 ---
 
 ## 5. Task Inventory
 | Task ID | Source Object | Operator | Target Script/DAG | Launch Parameters | Retries | Retry Delay | Earliest Start Time | Calendar Constraint | Fire-and-Forget | on_failure_callback | Notes |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| `customer_historization_load` | `CUSTOMER.HISTORIZATION_LOAD` | `EmptyOperator` | N/A | N/A | 1 | 5m | None | None | False | None | #REVIEW-STRUCT: launcher command [`#!/bin/ksh`] not recognised — confirm target operator/script manually. Script runs `. &HOME/customer/r_historization_load.ksh`. |
+| `customer_historization_load` | `CUSTOMER.HISTORIZATION_LOAD` | `EmptyOperator` | N/A | N/A | 1 | 5 min | None | None | False | None | # REVIEW-STRUCT: Launcher command `#!/bin/ksh` not recognised — confirm target operator/script manually. Under UC4, this executed `. &HOME/customer/r_historization_load.ksh`. |
 
 ---
 
 ## 6. Task Dependency Map
-Since there is only one task in this DAG, there are no dependencies to map:
+Since this DAG contains only a single task representing the migrated `JOBS_UNIX` object, there are no dependencies to map:
 
 ```python
 customer_historization_load
@@ -74,49 +68,42 @@ customer_historization_load
 ---
 
 ## 7. Sync / Concurrency Analysis
-No `sync_rows` (locks or mutual exclusions) are defined for this object. No additional concurrency guards are required beyond setting `max_active_runs=1` as a standard production practice.
+No `sync_rows` (self or cross locks) were defined in the extraction for this object.
+- **Airflow Mapping**: standard `max_active_runs=1` is applied to prevent concurrent runs of the historization process.
 
 ---
 
 ## 8. Error Handling and Retry Strategy
-No custom postcondition actions, run-time branches, or execution guards are defined in the UC4 extraction. Standard default Airflow retry mechanisms apply.
+- Default task retries are set to `1` with a `5` minute delay.
+- No postcondition actions, alerts, or complex failure execution paths are specified in the extraction.
 
 ---
 
 ## 9. Parameter and Variable Mapping
-| UC4 Parameter | Value/Source | Airflow Equivalent / Dynamic Mapping |
+| UC4 Parameter | Value/Source | Airflow Equivalent |
 | :--- | :--- | :--- |
-| `&RUN_DATE` | `&$TODAY` | `{{ ds }}` (Airflow execution date string in `YYYY-MM-DD` format) |
-| `&HOME` | Environment Variable | Set via Airflow environment variable configurations or system-level pathing. |
+| `&RUN_DATE` | `&$TODAY` (UC4 System Date) | `{{ ds }}` (Airflow Logical Date string `YYYY-MM-DD`) |
 
 ---
 
 ## 10. Developer Notes
-* **#REVIEW-STRUCT:** The original launcher command `#!/bin/ksh` was classified as unrecognized. The underlying shell command is `. &HOME/customer/r_historization_load.ksh`. For production Airflow, migrate this to an `SSHOperator` (to run on a remote edge host) or a `BashOperator` (if running locally on the Airflow worker), replacing the `EmptyOperator` placeholder.
-* **#REVIEW-STRUCT:** No parent workflow (`JOBP`) was supplied in this extraction. The standalone task has been wrapped in its own dedicated DAG `customer_historization_load`. If this task is part of a larger, unprovided workflow, verify whether it should be integrated into a larger DAG instead.
-* **Parameter Initialization:** The script references `&RUN_DATE='&$TODAY'`. Ensure that your converted script or command uses the Airflow execution date macro `{{ ds }}` or `{{ logical_date }}` to maintain historical backfill consistency.
+- **# REVIEW-STRUCT: Unrecognized Launcher**: The original execution script leverages a KornShell (`#!/bin/ksh`) wrapper script executing `. &HOME/customer/r_historization_load.ksh` on a target host (`|ETLHOST2|HOST`). The Airflow representation has been modeled using an `EmptyOperator` stub. The developer must determine if this should be implemented using an `SSHOperator` to target `ETLHOST2`, or if the shell script logic should be containerized and run via `GKEStartPodOperator` / local `BashOperator` if migrated to the Airflow runner.
+- **Date Variable**: The UC4 script explicitly sets `:SET &RUN_DATE='&$TODAY'`. In the target Airflow task implementation, use the Airflow template variable `{{ ds }}` or `{{ logical_date }}` to maintain runtime context compatibility.
 
 ---
 
 # Pseudocode Outline
 
 ```python
-# ==============================================================================
-# ── Imports ───────────────────────────────────────────────────────────────────
-# ==============================================================================
+# ── Imports ──────────────────────────────────────────────
 from datetime import datetime, timedelta
 from airflow import DAG
 from airflow.operators.empty import EmptyOperator
 
-# ==============================================================================
-# ── GCP Configuration ─────────────────────────────────────────────────────────
-# ==============================================================================
-# No GCP connections are mapped for this generic UNIX execution.
-# (If migrated to GKE/Compute, define connections or SSH hooks here)
+# ── GCP Configuration ────────────────────────────────────
+# No GCP configurations identified in this extraction
 
-# ==============================================================================
-# ── Default Args ──────────────────────────────────────────────────────────────
-# ==============================================================================
+# ── Default Args ─────────────────────────────────────────
 DEFAULT_ARGS = {
     'owner': 'airflow',
     'depends_on_past': False,
@@ -124,117 +111,690 @@ DEFAULT_ARGS = {
     'retry_delay': timedelta(minutes=5),
 }
 
-# ==============================================================================
-# ── on_failure_callback stubs ─────────────────────────────────────────────────
-# ==============================================================================
-# No custom failure callback objects are specified in the extraction.
+# ── on_failure_callback stubs ─────────────────────────────
+# No failure callbacks specified in UC4 extraction
 
-# ==============================================================================
-# ── DAG Definition ────────────────────────────────────────────────────────────
-# ==============================================================================
+# ── DAG Definition ────────────────────────────────────────
 with DAG(
     dag_id='customer_historization_load',
     default_args=DEFAULT_ARGS,
     description='SCD2 historization of the weekly customer segment/score into the segment dimension',
-    schedule_interval=None,  # Externally triggered
     start_date=datetime(2023, 1, 1),
+    schedule=None,
     catchup=False,
     max_active_runs=1,
     is_paused_upon_creation=False,
-    tags=['customer', 'historization', 'uc4_migration'],
 ) as dag:
 
-    # ==========================================================================
-    # ── Task: customer_historization_load ─────────────────────────────────────
-    # ==========================================================================
-    # #REVIEW-STRUCT: Unrecognized launcher type in UC4 (raw_command: #!/bin/ksh).
-    # Script body content:
+    # ── Task: customer_historization_load ─────────────────
+    # # REVIEW-STRUCT: launcher command [#!/bin/ksh] not recognised — confirm target operator/script manually.
+    # Original command context:
     #   :SET &RUN_DATE='&$TODAY'
     #   . &HOME/customer/r_historization_load.ksh
-    #
-    # Recommended Airflow Target: SSHOperator (to run on host |ETLHOST2|), or BashOperator.
-    # Currently stubbed as EmptyOperator per migration rules.
+    # Target Host: |ETLHOST2|HOST
+    # Target Login: UNIX.ETL_SVC
     customer_historization_load = EmptyOperator(
         task_id='customer_historization_load',
     )
 
-    # ==========================================================================
-    # ── Dependencies ──────────────────────────────────────────────────────────
-    # ==========================================================================
-    # Single-task DAG: No dependencies to register.
-    pass
+    # ── Dependencies ─────────────────────────────────────────
+    # Single task DAG; no dependency chain required.
+    customer_historization_load
 ```
 
-### File Disposition
+# File Disposition
 
 | Source File Path | Target File / Action | Purpose / Reason for Action |
 | :--- | :--- | :--- |
-| `customer/CUSTOMER.HISTORIZATION_LOAD.xml` | `dags/customer/customer_historization_load.py` | Migrates the UC4 job definition into an Airflow DAG to orchestrate the historization script and manage execution parameters. |
+| `customer/CUSTOMER.HISTORIZATION_LOAD.xml` | `dags/customer/customer_historization_load.py` | Migrates the UC4 UNIX job definition into a Python-based Apache Airflow DAG to orchestrate the historization load sequence. |
 
----
+# Add Context the MCP Could Not See
 
 ### Job dependencies
-* **Downstream Job:** `CUSTOMER.WEEKLY_SCHEDULE` is currently marked as **not yet migrated**. Once migrated, it must be wired to execute upon the successful completion of this DAG. This can be achieved using Airflow's `TriggerDagRunOperator` or an `ExternalTaskSensor` in the downstream DAG. A warning is added under Risks & Manual Actions because this downstream connection cannot be completed or tested until the downstream job is migrated.
+* **Downstream Job**: `CUSTOMER.WEEKLY_SCHEDULE` (not yet migrated).
+  * **BigQuery/Airflow Wiring**: This downstream job should be triggered via an `ExternalTaskSensor` configured in the downstream DAG to sense the completion of the `customer_historization_load` task, or directly triggered via a `TriggerDagRunOperator` as the terminal step of this DAG once the downstream DAG is migrated.
 
 ### Execution order
-* **Task Sequence Mapping:** The orchestration must preserve the legacy execution flow sequence:
-  1. `customer/CUSTOMER.HISTORIZATION_LOAD.xml` -> Represented by the parent Airflow DAG (`dags/customer/customer_historization_load.py`).
-  2. `customer/r_historization_load.ksh` -> Executed as a task in this DAG calling the migrated Python wrapper equivalent (migrated under a separate design pass).
-  3. `customer/k_historization_load.ksh` -> Invoked downstream via the wrapper task (migrated under a separate design pass).
-  4. `customer/d_historization_load.sql` -> Executed downstream via BigQuery/Dataform within the pipeline (migrated under a separate design pass).
-  5. `customer/d_segment_quality_check.sql` -> Final quality check query executed at the end of the pipeline (migrated under a separate design pass).
+The target orchestration (Airflow DAG) preserves the execution sequence defined by the legacy execution order:
+1. **Orchestration Entry**: `CUSTOMER.HISTORIZATION_LOAD.xml` is mapped to the Airflow DAG definition in `dags/customer/customer_historization_load.py`.
+2. **Wrapper Script**: `r_historization_load.ksh` is mapped to an Airflow task (`r_historization_load` executing the migrated Python wrapper equivalent).
+3. **Execution Script**: `k_historization_load.ksh` is mapped to an Airflow task (`k_historization_load` executing the migrated Python controller equivalent).
+4. **SCD2 Historization**: `d_historization_load.sql` is mapped to a Dataform invocation task or BigQuery operator executing the migrated SQL logic.
+5. **Quality Check**: `d_segment_quality_check.sql` is mapped to a Dataform assertion or BigQuery-based validation task verifying the shift percentage.
+
+*Note: Steps 2 through 5 represent separate components whose actual script conversions are handled by their own independent migration design passes.*
 
 ### Scheduling
-* **Trigger Mechanism:** This job is not directly triggered by any independent schedulers; it executes as an included/shared module inside other scheduled processes. Accordingly, the migrated Airflow DAG must be configured with `schedule=None` so that it remains a callable, externally-triggered unit. It will be initiated programmatically via `TriggerDagRunOperator` from parent workflows or called directly via the Airflow API.
+* **Triggering Pattern**: This job is not directly triggered by any standalone scheduler; it executes inside other workflows/scheduled jobs (e.g., as an include/shared module).
+* **Airflow Configuration**: The migrated Airflow DAG is configured with `schedule=None`. It must remain an on-demand, callable unit triggered either manually, by an upstream DAG run via a `TriggerDagRunOperator`, or by an external Airflow dataset/event trigger.
 
 ### Schedule & variables
-* **SCHEDULER-SET VARIABLES:**
-  * `RUN_DATE`: Set dynamically in the source as `&$TODAY`. In Airflow, this maps to the logical date macro `{{ ds }}`.
-  * `MAX_EXPECTED_CHANGE_PCT`: Defined in the source XML as `25` (`<row Name="MAX_EXPECTED_CHANGE_PCT" Value="25"/>`). This must be exposed as a DAG parameter or task parameter with a default value of `25` so it can be cleanly propagated downstream to the quality check script.
+* **Inherited / Event Triggering**: The legacy job executes as an included component or is called dynamically. The equivalent scheduling approach in Airflow is setting `schedule=None`.
+* **Scheduler-Set Variables**:
+  * `RUN_DATE` (Value: `'&$TODAY'`): Maps to the standard Airflow execution date macro `{{ ds }}`. To ensure support for manual runs and historic backfills, it should be defined using DAG run parameters with a logical date fallback, such as: `{{ dag_run.conf.get('RUN_DATE', ds) }}`.
 
 ### Lineage
-* **Upstream Producers:** None.
-* **Downstream Consumers:** `CUSTOMER.WEEKLY_SCHEDULE` (job: not yet migrated) — representing a cross-job hand-off.
-* **Invoked Scripts:** `customer/r_historization_load.ksh`.
-* **Execution Host:** `EXT:ETLHOST2` (legacy UNIX host).
-* **Target Table Lineage (Parser Artifacts):** The source metadata includes lineage relationships pointing to `TABLE:THE` and `TABLE:OF`. These are parser noise artifacts extracted from the job description ("SCD2 historization of the... segment dimension of...") and do not represent actual database tables. They must be ignored during final implementation.
+* **Downstream Consumers**:
+  * `CUSTOMER.WEEKLY_SCHEDULE` (job: `CUSTOMER.WEEKLY_SCHEDULE`): A downstream consumer of this job's outcome, which is a cross-job hand-off to reference on BigQuery.
+* **Lineage Edges Analysis**:
+  * Invokes `FILE:customer/r_historization_load.ksh` (conf=0.90) - handled by another pass, called as a child task.
+  * Runs on host `EXT:ETLHOST2` (conf=0.85) - mapped to Google Cloud infrastructure execution environment.
+  * Writes to Table `THE` & Table `OF` (conf=0.80) - identified as likely parsing remnants/hallucinations from the legacy metadata extractor. No tables by these names should be created.
 
 ### External system replacements
-* **Legacy UNIX Host:** The legacy execution host `ETLHOST2` is retired. Execution shifts directly to the Google Cloud Composer GKE environment or GCSF/BigQuery operations, removing the need for dedicated remote host SSH connections.
+* **Legacy Host (`ETLHOST2`) & Login (`UNIX.ETL_SVC`)**: Migrated execution environment runs on Cloud Composer (GKE-managed workers) or a dedicated GKE Pod, utilizing Google Cloud IAM service accounts with appropriate roles (e.g., BigQuery Admin, Composer Worker) instead of legacy SSH credentials.
 
 ### Cross-file dependencies
-* **Script Invocation:** This DAG is responsible for executing the migrated version of `customer/r_historization_load.ksh` (which is converted in a separate design pass). Runtime parameters (e.g., `RUN_DATE` and `MAX_EXPECTED_CHANGE_PCT`) must be passed from this DAG to the target script task.
+* **Direct Invocation**: This UC4 XML job directly targets the execution of `customer/r_historization_load.ksh`.
+* **Target Integration**: The DAG task `r_historization_load` must call the migrated Python equivalent of the wrapper script. This represents a modular dependency across files that are integrated at runtime in the dags folder structure.
 
 ### Target file plan
-* **`dags/customer/customer_historization_load.py`**
-  * **Language:** Python (Airflow DAG)
-  * **Source File:** `customer/CUSTOMER.HISTORIZATION_LOAD.xml`
-  * **Description:** Contains the Airflow DAG definition that configures variables, sets default execution arguments, and triggers the Python task representing the migrated `r_historization_load.ksh` script.
+* **Target File**: `dags/customer/customer_historization_load.py`
+  * **Language**: Python (Apache Airflow DAG)
+  * **Source File**: `customer/CUSTOMER.HISTORIZATION_LOAD.xml`
+  * **Purpose**: Defines the Airflow DAG container, properties, default parameters, and the orchestration sequence stubbing the execution of the historization wrapper script.
 
 ### Environment-specific values
-* **`GCP_PROJECT`** (GLOBAL): Identifies the target Google Cloud Project. Resolved via `Variable.get("GCP_PROJECT")` or `os.environ.get("GCP_PROJECT")`.
-* **`GCP_REGION`** (GLOBAL): The deployment region for composer/tasks. Resolved via `Variable.get("GCP_REGION")`.
-* **`MAX_EXPECTED_CHANGE_PCT`** (JOB-SPECIFIC): Parameter specifying the change threshold for the historization check. Defaults to `25` and is passed via DAG `params`.
-* **`RUN_DATE`** (JOB-SPECIFIC): The logical execution date of the run. Captured dynamically using the `{{ ds }}` macro.
+1. **GLOBAL (environment-wide)**:
+   * `GCP_PROJECT`: Identifies the target Google Cloud project. To be sourced via `GCP_PROJECT = os.environ.get("GCP_PROJECT")` or Airflow variables.
+   * `GCP_REGION`: The GCP region for execution (e.g., `us-central1`). Sourced via `os.environ.get("GCP_REGION")`.
+2. **JOB-SPECIFIC**:
+   * `RUN_DATE`: Logical date of execution. Populated dynamically in the DAG using the Jinja template `{{ ds }}` (or `{{ dag_run.conf.get('RUN_DATE', ds) }}`).
+   * `MAX_EXPECTED_CHANGE_PCT` (Value: `25`): Segment quality check percentage limit. Defined in a job-specific dictionary within the DAG file: `JOB_CONFIG = {"MAX_EXPECTED_CHANGE_PCT": 25}`.
 
 ### Risks and manual steps
-* **WIRING FOR UNMIGRATED DOWNSTREAM:** The downstream workflow `CUSTOMER.WEEKLY_SCHEDULE` is marked as **not yet migrated**. The dependency linkage cannot be finalized in the target environment until this downstream asset has been migrated.
-* **SIBLING PASS ALIGNMENT:** The underlying execution scripts (`r_historization_load.ksh`, `k_historization_load.ksh`, etc.) are owned by different design passes. A manual verification step is required during integration to ensure that this wrapper DAG correctly imports and references the Python task representing the migrated `r_historization_load.ksh`.
-* **LEGACY HOST DEPRECATION:** The execution environment is transitioning from a dedicated UNIX host `ETLHOST2` to Cloud Composer. Any absolute paths or local environment references (such as `&HOME`) must be updated to reference correct GCS bucket paths (`gcs/dags/...`) or Cloud Composer environment variables.
+* **SOURCE: NOT FOUND** — `customer/r_historization_load.ksh` — Candidate: `customer/r_historization_load.ksh` (This wrapper script is a sibling component handled in a separate migration pass. The DAG task invocation cannot be finalized/compiled as a working call until the Python conversion of this wrapper is delivered).
+* **DOWNSTREAM: NOT YET MIGRATED** — `CUSTOMER.WEEKLY_SCHEDULE`. The target DAG cannot configure its final downstream hand-off or triggering mechanism until the downstream scheduling job is migrated to Cloud Composer.
+* **PARSING ANOMALY**: Lineage edges refer to Table `THE` and Table `OF` being written by this job. These represent parsing artifacts from the description or logs of the legacy job and should be ignored during physical schema setup.
+* **EXECUTION ENVIRONMENT RE-ARCHITECTURE**: The legacy script uses KornShell and runs on a remote server (`ETLHOST2`). A design decision is required to either:
+  1. Migrate the shell logic entirely to Python (highly recommended, handled in the sibling migration pass) and run it natively within the Airflow environment.
+  2. Maintain a shell-execution model using the `SSHOperator` targeting a containerized worker if native Python rewrite cannot be completed.
 
 ---
 
-### group 2/5 — DESIGN FAILED
+=== FILE: customer/d_historization_load.sql ===
+-- d_historization_load.sql
+-- SCD Type 2 merge of the weekly customer score/segment into the segment
+-- dimension. A customer's prior current row is expired only when the
+-- segment or score band actually changed.
+-- Schema: ANALYTICS_SCHEMA
 
-ERROR: Design cannot proceed — REQUIRED TOOL returned errors, empty, or hollow (no real content extracted) responses on every attempt. Investigate the MCP service and retry the job.
+MERGE INTO ANALYTICS_SCHEMA.DIM_CUSTOMER_SEGMENT tgt
+USING (
+    SELECT CUSTOMER_ID, SEGMENT_CODE, SCORE_BAND, SCORE_VALUE
+    FROM   ANALYTICS_SCHEMA.STG_CUSTOMER_SCORE_OUTPUT
+    WHERE  RUN_DATE = TO_DATE('&1', 'YYYY-MM-DD')
+) src
+ON (tgt.CUSTOMER_ID = src.CUSTOMER_ID AND tgt.IS_CURRENT = 1)
+WHEN MATCHED AND (
+         tgt.SEGMENT_CODE <> src.SEGMENT_CODE
+      OR tgt.SCORE_BAND   <> src.SCORE_BAND
+     ) THEN
+    UPDATE SET tgt.IS_CURRENT = 0,
+               tgt.VALID_TO   = SYSDATE
+WHEN NOT MATCHED THEN
+    INSERT (CUSTOMER_ID, SEGMENT_CODE, SCORE_BAND, SCORE_VALUE, IS_CURRENT, VALID_FROM)
+    VALUES (src.CUSTOMER_ID, src.SEGMENT_CODE, src.SCORE_BAND, src.SCORE_VALUE, 1, SYSDATE);
 
+INSERT INTO ANALYTICS_SCHEMA.DIM_CUSTOMER_SEGMENT
+    (CUSTOMER_ID, SEGMENT_CODE, SCORE_BAND, SCORE_VALUE, IS_CURRENT, VALID_FROM)
+SELECT src.CUSTOMER_ID, src.SEGMENT_CODE, src.SCORE_BAND, src.SCORE_VALUE, 1, SYSDATE
+FROM   ANALYTICS_SCHEMA.STG_CUSTOMER_SCORE_OUTPUT src
+JOIN   ANALYTICS_SCHEMA.DIM_CUSTOMER_SEGMENT tgt
+  ON   tgt.CUSTOMER_ID = src.CUSTOMER_ID AND tgt.IS_CURRENT = 0 AND tgt.VALID_TO = SYSDATE
+WHERE  src.RUN_DATE = TO_DATE('&1', 'YYYY-MM-DD');
+
+COMMIT;
+EXIT;
+
+
+═══════════════════════════════════════════
+SECTION 1 — DESIGN DOCUMENT
+═══════════════════════════════════════════
+ 
+Step 1: Understand the Script
+1.1 Identify the type of Oracle SQL object being converted:
+    - Multi-statement DML script with transaction control (MERGE, INSERT, COMMIT).
+1.2 Business Logic Summary:
+    - This script performs a Slowly Changing Dimension (SCD) Type 2 load of weekly customer segments and scores into the `DIM_CUSTOMER_SEGMENT` table.
+    - It uses a classic two-step approach:
+      1. A MERGE statement that identifies existing active target rows (`IS_CURRENT = 1`) where the staging data (`SEGMENT_CODE` or `SCORE_BAND`) has changed. It marks these target records as expired (`IS_CURRENT = 0`, `VALID_TO = SYSDATE`). It also inserts brand-new customers who do not yet exist in the target dimension.
+      2. An INSERT statement that inserts the new active version of the records for the customers who were just expired in the MERGE step. This is identified by joining the staging table back to the target table on the matching `CUSTOMER_ID`, `IS_CURRENT = 0`, and `VALID_TO = SYSDATE` (which represents the rows just expired).
+1.3 Entities Referenced:
+    - `ANALYTICS_SCHEMA.DIM_CUSTOMER_SEGMENT` (Target Table `tgt`):
+      - `CUSTOMER_ID` (Inferred Type: STRING/INT64)
+      - `SEGMENT_CODE` (Inferred Type: STRING)
+      - `SCORE_BAND` (Inferred Type: STRING)
+      - `SCORE_VALUE` (Inferred Type: NUMERIC)
+      - `IS_CURRENT` (Inferred Type: INT64)
+      - `VALID_FROM` (Inferred Type: TIMESTAMP)
+      - `VALID_TO` (Inferred Type: TIMESTAMP)
+    - `ANALYTICS_SCHEMA.STG_CUSTOMER_SCORE_OUTPUT` (Source Staging Table `src`):
+      - `CUSTOMER_ID` (Inferred Type: STRING/INT64)
+      - `SEGMENT_CODE` (Inferred Type: STRING)
+      - `SCORE_BAND` (Inferred Type: STRING)
+      - `SCORE_VALUE` (Inferred Type: NUMERIC)
+      - `RUN_DATE` (Inferred Type: DATE)
+ 
+Step 2: Oracle-Specific Construct Detection and Resolution
+ 
+2.1 Data Type Conversions:
+    - Oracle `DATE` (used for `VALID_FROM` and `VALID_TO` which tracks execution time) → Map to BigQuery `TIMESTAMP`.
+    - Oracle `DATE` (used for `RUN_DATE` partitions) → Map to BigQuery `DATE`.
+    - Oracle `NUMBER` (for flags like `IS_CURRENT`) → Map to BigQuery `INT64`.
+    - Oracle `NUMBER` (for scores like `SCORE_VALUE`) → Map to BigQuery `NUMERIC`.
+    - Oracle `VARCHAR2` (for segments/bands) → Map to BigQuery `STRING`.
+ 
+2.2 Implicit and Explicit Type Casting:
+    - Oracle `&1` (SQL*Plus parameter) converted via `TO_DATE('&1', 'YYYY-MM-DD')` → Declare a BigQuery scripting variable `v_run_date_str STRING` and convert explicitly using `PARSE_DATE('%Y-%m-%d', v_run_date_str)`.
+ 
+2.3 NULL Handling and Conditional Functions:
+    - None used in this script.
+ 
+2.4 String Functions:
+    - None used in this script.
+ 
+2.5 Date and Timestamp Functions:
+    - `SYSDATE` → Map to BigQuery `CURRENT_TIMESTAMP()`. To ensure transaction-level alignment and absolute matching consistency between the MERGE (expiration) and the INSERT (new active version) steps, `SYSDATE` is evaluated once and captured into a script-level local variable `v_current_timestamp` at the start of execution.
+    - `TO_DATE` → Map to BigQuery `PARSE_DATE` with syntax `PARSE_DATE('%Y-%m-%d', ...)`.
+ 
+2.6 Numeric and Aggregate Functions:
+    - None used in this script.
+ 
+2.7 Analytical and Window Functions:
+    - None used in this script.
+ 
+2.8 Set and Join Operations:
+    - Implicit Inner Join used in the final INSERT. Will be represented as an explicit `INNER JOIN` in BigQuery.
+ 
+2.9 Row Limiting and Sampling:
+    - None used in this script.
+ 
+2.10 Sequences:
+    - None used in this script.
+ 
+2.11 MERGE Statements:
+    - BigQuery supports the standard `MERGE` statement. The Oracle syntax mapping is directly compatible, except we must ensure the source query is isolated and types match.
+ 
+2.12 INSERT / UPDATE / DELETE:
+    - The secondary `INSERT SELECT` statement is directly translatable to BigQuery syntax.
+ 
+2.13 DDL Constructs:
+    - No DDL present. Transaction logic (COMMIT, EXIT) is handled via BigQuery Scripting Transactions (`BEGIN TRANSACTION` / `COMMIT TRANSACTION`).
+ 
+2.14 PL/SQL:
+    - Multi-statement SQL*Plus script converted to a clean BigQuery procedural scripting block (`BEGIN ... END`) containing local variable declarations, transaction boundaries, and procedural statements.
+ 
+2.15 Unresolvable or Advisory Items:
+    - Substitution variables (`&1`) are SQL*Plus concepts. In BigQuery, these are represented as parameterized values or scripting variables. They are mapped to a declared variable `v_run_date_str` which must be passed as a query parameter or set dynamically.
+ 
+Step 3: Conversion Strategy Summary
+3.1 Overall Conversion Approach:
+    - A procedural BigQuery scripting block wrapped inside a `BEGIN TRANSACTION` / `COMMIT TRANSACTION` to ensure consistency and exact functional replication of the sequential SCD Type 2 logic.
+3.2 Assumptions:
+    - The value of `&1` is provided at execution time as a parameter or parameter-assigned variable.
+    - The staging table matches the target schema data types.
+3.3 Items Flagged for Human Review:
+    - SQL*Plus execution parameter assignment (`&1`). Ensure the orchestrator (e.g., Airflow, dbt, or gcloud) maps the run date to the parameter.
+ 
+═══════════════════════════════════════════
+2.16 MIGRATION DECISION MATRIX
+═══════════════════════════════════════════
+ 
+| Source Construct / Statement | Selected Target | Rejected Alternatives | Reason for Selection / Evidence |
+| :--- | :--- | :--- | :--- |
+| **SQL\*Plus Script with multi-DML** | BigQuery Scripting Block (`BEGIN...END`) | Python Wrapper, Scheduled Queries | Scripting blocks naturally support multi-statement transactions and variable declaration without the overhead of external runtimes. |
+| **SCD Type 2 Load Execution** | BigQuery Transaction Block (`BEGIN TRANSACTION...COMMIT TRANSACTION`) | Separate non-transactional statements | Absolute consistency is required. The second INSERT relies on joining rows updated in the preceding MERGE step based on the exact same execution timestamp. |
+| **`SYSDATE`** | Local Script Variable `v_current_timestamp` | Inline `CURRENT_TIMESTAMP()` | To maintain referential integrity between the MERGE (expiration) and subsequent INSERT (creation), the execution timestamp must be identical across statements. |
+| **`TO_DATE('&1', 'YYYY-MM-DD')`** | `PARSE_DATE('%Y-%m-%d', v_run_date_str)` | `CAST(x AS DATE)` | Safe, explicit date formatting match. Protects against varying environment-level default formats. |
+ 
+═══════════════════════════════════════════
+2.17 REQUIRED ARTIFACTS
+═══════════════════════════════════════════
+- **Artifact Type**: BigQuery Standard SQL Script (Scripting Block).
+- **Execution Interface**: To be executed via the BigQuery client API, dbt, or airflow passing a query parameter named `run_date_param` for the substitution variable.
+ 
+═══════════════════════════════════════════
+2.18 DATA TYPE COMPATIBILITY TABLE
+═══════════════════════════════════════════
+ 
+| Oracle Column / Type | BigQuery Target Type | Conversion Rule / Logic | Warnings / Comments |
+| :--- | :--- | :--- | :--- |
+| `CUSTOMER_ID` (NUMBER/VARCHAR2) | `STRING` | Direct mapping (assuming alphanumeric identity) | If numerical index, map to `INT64`. Treat here as `STRING` or `INT64` generic. |
+| `SEGMENT_CODE` (VARCHAR2) | `STRING` | Direct conversion. | None. |
+| `SCORE_BAND` (VARCHAR2) | `STRING` | Direct conversion. | None. |
+| `SCORE_VALUE` (NUMBER) | `NUMERIC` | Maps to BigQuery NUMERIC to preserve fixed precision. | Safe from floating-point errors. |
+| `IS_CURRENT` (NUMBER) | `INT64` | Maps to INT64 since value is restricted to {0, 1}. | None. |
+| `VALID_FROM` (DATE) | `TIMESTAMP` | Maps to TIMESTAMP to preserve granular time details of SYSDATE. | None. |
+| `VALID_TO` (DATE) | `TIMESTAMP` | Maps to TIMESTAMP to preserve granular time details of SYSDATE. | None. |
+| `RUN_DATE` (DATE) | `DATE` | Maps to DATE as it only represents a year-month-day business partition. | None. |
+ 
+═══════════════════════════════════════════
+2.19 DESIGN REVIEW SUMMARY
+═══════════════════════════════════════════
+- **Patterns/Objects Found**: SCD Type 2 MERGE pattern, SQL*Plus variables, sequential dependent DML statements, session commit/exit.
+- **Unsupported Functions**: Oracle `TO_DATE` (rewritten to `PARSE_DATE`), `SYSDATE` (rewritten to local script variable storing `CURRENT_TIMESTAMP()`), `&1` SQL*Plus variable (replaced with scripting parameter).
+- **UDF Required**: No.
+- **Python Required**: No.
+- **Direct Dependencies**: Target `ANALYTICS_SCHEMA.DIM_CUSTOMER_SEGMENT`, Source Staging `ANALYTICS_SCHEMA.STG_CUSTOMER_SCORE_OUTPUT`.
+- **Assumptions**: Staging and target tables are pre-existing in BigQuery with clean mapping schemas. The orchestrator supplies a valid date string as a runtime parameter.
+- **Ready for Human Approval**: Yes.
+ 
+═══════════════════════════════════════════
+2.20 PACKAGE ANALYSIS
+═══════════════════════════════════════════
+- Not applicable; no PL/SQL PACKAGE or PACKAGE BODY construct was detected in the supplied source.
+ 
+═══════════════════════════════════════════
+2.21 ORACLE FUNCTION ANALYSIS TABLE
+═══════════════════════════════════════════
+ 
+| Oracle Function/Construct | Supported in BigQuery | BigQuery Equivalent / Alternative |
+| :--- | :--- | :--- |
+| `TO_DATE('&1', 'YYYY-MM-DD')` | Direct-with-rewrite | `PARSE_DATE('%Y-%m-%d', @run_date_param)` |
+| `SYSDATE` | Direct-with-rewrite | `CURRENT_TIMESTAMP()` mapped to a scalar variable to prevent runtime drift. |
+| `MERGE` | Direct | Standard BigQuery `MERGE` statement. |
+| `COMMIT` | Direct-with-rewrite | Script-level `COMMIT TRANSACTION`. |
+| `EXIT` | Direct-with-rewrite | End of standard Scripting block boundary. |
+ 
+<br>
+ 
+═══════════════════════════════════════════
+SECTION 2 — PSEUDOCODE
+═══════════════════════════════════════════
+ 
+Step 4: Write Vendor-Neutral Pseudocode
+ 
+```sql
+-- BigQuery Scripting block to emulate the Oracle PL/SQL transaction environment
+BEGIN
+  -- Declare SQL*Plus replacement variable
+  DECLARE v_run_date_str STRING;
+  DECLARE v_run_date DATE;
+  DECLARE v_current_timestamp TIMESTAMP;
+
+  -- Assign input run date string from orchestration parameter (represents '&1')
+  SET v_run_date_str = @run_date_param;
+  
+  -- Convert input parameter to standard DATE format
+  SET v_run_date = PARSE_DATE('%Y-%m-%d', v_run_date_str); -- converted from TO_DATE('&1', 'YYYY-MM-DD')
+  
+  -- Lock execution timestamp for consistent SCD transaction boundaries
+  SET v_current_timestamp = CURRENT_TIMESTAMP(); -- converted from SYSDATE
+
+  -- Start of multi-statement transactional block for safe SCD Type 2 execution
+  BEGIN TRANSACTION;
+
+  -- STEP 1: Expire old active customer records where values have changed, 
+  -- and insert brand-new customers who do not yet exist.
+  MERGE INTO ANALYTICS_SCHEMA.DIM_CUSTOMER_SEGMENT AS tgt
+  USING (
+      SELECT CUSTOMER_ID, SEGMENT_CODE, SCORE_BAND, SCORE_VALUE
+      FROM   ANALYTICS_SCHEMA.STG_CUSTOMER_SCORE_OUTPUT
+      WHERE  RUN_DATE = v_run_date
+  ) AS src
+  ON (tgt.CUSTOMER_ID = src.CUSTOMER_ID AND tgt.IS_CURRENT = 1)
+  
+  WHEN MATCHED AND (
+         tgt.SEGMENT_CODE <> src.SEGMENT_CODE
+      OR tgt.SCORE_BAND   <> src.SCORE_BAND
+     ) THEN
+    UPDATE SET 
+        tgt.IS_CURRENT = 0,
+        tgt.VALID_TO   = v_current_timestamp -- converted from SYSDATE to script execution timestamp
+        
+  WHEN NOT MATCHED THEN
+    INSERT (CUSTOMER_ID, SEGMENT_CODE, SCORE_BAND, SCORE_VALUE, IS_CURRENT, VALID_FROM)
+    VALUES (src.CUSTOMER_ID, src.SEGMENT_CODE, src.SCORE_BAND, src.SCORE_VALUE, 1, v_current_timestamp); -- converted from SYSDATE
+
+  -- STEP 2: Insert new active versions of records for customers whose prior active row 
+  -- was just expired in the MERGE step. Joined based on matching timestamp from Step 1.
+  INSERT INTO ANALYTICS_SCHEMA.DIM_CUSTOMER_SEGMENT
+      (CUSTOMER_ID, SEGMENT_CODE, SCORE_BAND, SCORE_VALUE, IS_CURRENT, VALID_FROM)
+  SELECT 
+      src.CUSTOMER_ID, 
+      src.SEGMENT_CODE, 
+      src.SCORE_BAND, 
+      src.SCORE_VALUE, 
+      1, 
+      v_current_timestamp -- converted from SYSDATE to preserve timestamp equality
+  FROM   ANALYTICS_SCHEMA.STG_CUSTOMER_SCORE_OUTPUT AS src
+  INNER JOIN ANALYTICS_SCHEMA.DIM_CUSTOMER_SEGMENT AS tgt -- converted from implicit comma-join
+    ON   tgt.CUSTOMER_ID = src.CUSTOMER_ID 
+    AND  tgt.IS_CURRENT = 0 
+    AND  tgt.VALID_TO = v_current_timestamp -- Joins only matching records expired in preceding MERGE
+  WHERE  src.RUN_DATE = v_run_date;
+
+  -- Commit transaction to solidify all historical versions atomically
+  COMMIT TRANSACTION; -- converted from COMMIT;
+
+END;
+```
+ 
+═══════════════════════════════════════════
+FLAGGED ITEMS FOR HUMAN REVIEW
+═══════════════════════════════════════════
+1. **SQL*Plus Parameterization (`&1`)**:
+   - The variable replacement mapping relies on `@run_date_param` being supplied as a standard query parameter string (e.g., `'2023-10-31'`) during client execution. If target orchestrators cannot pass parameters natively, a script wrapper or environment-level substitution step must be implemented before submission.
+2. **Schema Type Matching**:
+   - Ensure target target table `DIM_CUSTOMER_SEGMENT` columns `VALID_FROM` and `VALID_TO` are mapped to standard BigQuery `TIMESTAMP` or `DATETIME` types. If they are mapped to `DATE`, the assignment of `v_current_timestamp` must be explicitly wrapped in `EXTRACT(DATE FROM v_current_timestamp)` or `CURRENT_DATE()` to avoid runtime type assignment errors. This pseudocode conservatively treats them as `TIMESTAMP` types based on Oracle `DATE` default precision containing hours/minutes/seconds.
+
+# File Disposition
+
+| Source File Path | Target File / Action | Purpose / Reason for Action |
+| :--- | :--- | :--- |
+| `customer/d_historization_load.sql` | `customer/d_historization_load.sql` | Convert Oracle SQL*Plus script to a native BigQuery Standard SQL scripting block containing sequential SCD Type 2 MERGE and INSERT DMLs wrapped in a transaction block. |
+
+# Add Context the MCP Could Not See
+
+### Job Dependencies
+* **Downstream**: `CUSTOMER.WEEKLY_SCHEDULE` — This downstream job is marked **not yet migrated**. Since it is not yet migrated, the final target wiring (such as an Airflow sensor or direct DAG trigger) cannot be fully finalized until that job is migrated.
+
+### Execution Order
+The target orchestration (managed via Cloud Composer / Airflow DAG) must preserve the original 5-step sequence. Although only step 4 is in-scope for this design pass, the overall ordering is:
+1. `customer/CUSTOMER.HISTORIZATION_LOAD.xml` (UC4 orchestration, converted to Airflow DAG structure)
+2. `customer/r_historization_load.ksh` (Wrapper script, converted to Python/Airflow Task)
+3. `customer/k_historization_load.ksh` (KSH execution/log wrapper, converted to Python/Airflow Task)
+4. `customer/d_historization_load.sql` (Historization SQL script, executed via BigQueryInsertJobOperator or native Dataform task)
+5. `customer/d_segment_quality_check.sql` (Post-load segment quality verification, executed via BigQuery task)
+
+### Scheduling
+* This job is not directly triggered by any of the environment's standalone schedulers. It is designed to run inside parent scheduled jobs as an include/shared module. 
+* Do not configure a standalone cron schedule for the migrated artifact; it must remain a callable/importable unit within the master orchestration workflow.
+
+### Schedule & Variables
+* **Scheduler-Set Variable**: `RUN_DATE` (dynamically set to `'&$TODAY'` in the source environment).
+* **Target Delivery Mechanism**: This value must reach the BigQuery script as a dynamic query parameter (`@run_date_param`). In Airflow, this should be mapped to the templated execution date (e.g., `{{ ds }}`) and injected into the task parameters of the BigQuery operator.
+
+### Lineage
+* **Upstream Table Producer (Reads)**: `ANALYTICS_SCHEMA.STG_CUSTOMER_SCORE_OUTPUT`
+* **Downstream Table Consumer (Writes)**: `ANALYTICS_SCHEMA.DIM_CUSTOMER_SEGMENT`
+* **Schema/Package Used**: `ANALYTICS_SCHEMA`
+
+### External System Replacements
+* **Database Platform**: Oracle SQL*Plus execution is replaced by Google Cloud BigQuery.
+* **Transaction Control**: Oracle native SQL*Plus session commits (`COMMIT; EXIT;`) are replaced by standard BigQuery Scripting Transactions (`BEGIN TRANSACTION` and `COMMIT TRANSACTION`).
+
+### Cross-File Dependencies
+* This SQL script operates as the primary DML task of the `CUSTOMER.HISTORIZATION_LOAD` job. It depends on staging data loaded by the preceding KSH wrappers (`r_historization_load.ksh` / `k_historization_load.ksh`) and supplies populated dimensional data required by the downstream quality check task (`d_segment_quality_check.sql`).
+
+### Target File Plan
+* **Target Path**: `customer/d_historization_load.sql`
+* **Language**: BigQuery Standard SQL (Procedural Scripting)
+* **Source File**: `customer/d_historization_load.sql`
+
+### Environment-Specific Values
+1. **GLOBAL (Environment-Wide)**
+   * **`ANALYTICS_SCHEMA`**: Identifies the dataset namespace. In BigQuery, this must be mapped to a canonical environment variable `BQ_DATASET`.
+     * *Retrieval*: Airflow DAGs should fetch this using `Variable.get("BQ_DATASET")` or refer to the environment-configured project/dataset.
+2. **JOB-SPECIFIC**
+   * **`RUN_DATE`**: Represents the specific business run partition date.
+     * *Retrieval*: Handled as a query parameter (`@run_date_param`) substituted at execution time using DAG params (e.g. `{{ ds }}`).
+
+### Risks & Manual Steps
+* **Downstream Orchestration Gap**: The downstream job `CUSTOMER.WEEKLY_SCHEDULE` is not yet migrated. The cross-job dependency trigger or sensor can only be stubbed out and must be verified once `CUSTOMER.WEEKLY_SCHEDULE` is moved to BigQuery.
+* **Date / Timestamp Mapping**: Oracle `DATE` columns `VALID_FROM` and `VALID_TO` in `DIM_CUSTOMER_SEGMENT` store granular time. They must be mapped as BigQuery `TIMESTAMP` types. If they have been mapped as `DATE` in the target schema, the script's `v_current_timestamp` local variable must be cast to `DATE` using `EXTRACT(DATE FROM v_current_timestamp)` or `CURRENT_DATE()` to avoid a type mismatch during script execution.
+* **Variable Binding Verification**: Ensure the Airflow operator or orchestration wrapper is correctly configured to pass `@run_date_param` as a parameter to the BigQuery API call, replacing the legacy `&1` SQL*Plus positional parameter.
 
 ---
 
-### group 3/5 — DESIGN FAILED
+=== FILE: customer/d_segment_quality_check.sql ===
+-- d_segment_quality_check.sql
+-- Computes the percentage of customers whose current segment version was
+-- freshly created (i.e. re-versioned) on the given run date, so callers can
+-- flag an implausibly large weekly shift.
+-- Schema: ANALYTICS_SCHEMA
 
-ERROR: Design cannot proceed — REQUIRED TOOL returned errors, empty, or hollow (no real content extracted) responses on every attempt. Investigate the MCP service and retry the job.
+SET HEADING OFF FEEDBACK OFF PAGESIZE 0 VERIFY OFF
 
+SELECT ROUND(
+           (SELECT COUNT(*) FROM ANALYTICS_SCHEMA.DIM_CUSTOMER_SEGMENT
+            WHERE IS_CURRENT = 1 AND VALID_FROM = TRUNC(TO_DATE('&1', 'YYYY-MM-DD')))
+           /
+           NULLIF((SELECT COUNT(*) FROM ANALYTICS_SCHEMA.DIM_CUSTOMER_SEGMENT
+                    WHERE IS_CURRENT = 1), 0)
+           * 100
+       ) AS CHANGED_PCT
+FROM DUAL;
+
+EXIT;
+
+
+═══════════════════════════════════════════
+SECTION 1 — DESIGN DOCUMENT
+═══════════════════════════════════════════
+
+Step 1: Understand the Script
+1.1 Identify the type of Oracle SQL object being converted:
+    - Multi-statement script containing SQL*Plus formatting commands (`SET`), a standalone parameterized `SELECT` query referencing the dummy table `DUAL`, and an `EXIT` instruction.
+
+1.2 Summarize the business logic and purpose of the script in plain English:
+    - The script calculates the percentage of currently active customer segments (`IS_CURRENT = 1`) whose record was started (`VALID_FROM`) on a specific input run-date. This metric allows downstream systems or orchestrators to perform quality checks and detect anomalies, such as an unexpectedly large block of customers shifting segments in a single run.
+
+1.3 List all entities referenced:
+    - Table: `ANALYTICS_SCHEMA.DIM_CUSTOMER_SEGMENT`
+        - `IS_CURRENT`: Numeric flag/indicator.
+        - `VALID_FROM`: Oracle `DATE` (contains date/time).
+    - Pseudotable: `DUAL`
+    - Parameter: `&1` (SQL*Plus positional substitution variable representing the target run-date).
+
+Step 2: Oracle-Specific Construct Detection and Resolution
+
+2.1 Data Type Conversions:
+    - Oracle `DATE` (for `VALID_FROM`) → Maps to BigQuery `DATE` as it is compared with a calendar date string without time components.
+    - Parameter `&1` → Represented as a BigQuery query parameter `@run_date` of type `STRING`.
+
+2.2 Implicit and Explicit Type Casting:
+    - Oracle `TO_DATE('&1', 'YYYY-MM-DD')` is used to explicitly cast the string parameter. This will be mapped to `PARSE_DATE('%Y-%m-%d', @run_date)` in BigQuery to ensure strong explicit typing.
+
+2.3 NULL Handling and Conditional Functions:
+    - `NULLIF(..., 0)` → BigQuery natively supports `NULLIF()`. Compatible as-is.
+
+2.4 String Functions:
+    - None used.
+
+2.5 Date and Timestamp Functions:
+    - `TRUNC(TO_DATE('&1', 'YYYY-MM-DD'))`:
+        - `TO_DATE` converted to `PARSE_DATE('%Y-%m-%d', @run_date)`.
+        - `TRUNC(<date>)` without a format mask defaults to Day granularity. This is converted to `DATE_TRUNC(<date>, DAY)`. BigQuery requires the second argument explicitly.
+
+2.6 Numeric and Aggregate Functions:
+    - `ROUND(val)` → Fully compatible with BigQuery `ROUND()`.
+
+2.7 Analytical and Window Functions:
+    - None used.
+
+2.8 Set and Join Operations:
+    - None used.
+
+2.9 Row Limiting and Sampling:
+    - None used.
+
+2.10 Sequences:
+    - None used.
+
+2.11 MERGE Statements:
+    - None used.
+
+2.12 INSERT / UPDATE / DELETE:
+    - None used.
+
+2.13 DDL Constructs:
+    - None used.
+
+2.14 PL/SQL:
+    - None used.
+
+2.15 Unresolvable or Advisory Items:
+    - SQL*Plus directives (`SET HEADING OFF...`, `EXIT`) cannot be executed in BigQuery SQL engines. These are stripped and noted as tasks for the pipeline orchestrator (e.g., Airflow or a shell wrapper).
+    - `FROM DUAL` is obsolete in BigQuery; expressions can be queried directly via a standalone `SELECT` without a `FROM` clause.
+
+Step 3: Conversion Strategy Summary
+3.1 State the overall conversion approach:
+    - Convert the SQL*Plus query into a clean, parameterized BigQuery Standard SQL query.
+    - Remove the SQL*Plus header configurations and the `FROM DUAL` expression.
+    - Replace the substitution variable `&1` with a query parameter `@run_date`.
+
+3.2 List any assumptions made during conversion:
+    - It is assumed that the pipeline orchestrator passing the argument `@run_date` ensures it is in `'YYYY-MM-DD'` format.
+    - It is assumed that `VALID_FROM` is stored with date resolution or can be safely compared to a truncated date.
+
+3.3 List any items flagged for human review before the build stage proceeds:
+    - Ensure downstream consumers of this script capture the scalar output of the BigQuery job correctly since SQL*Plus output formatting is no longer handling stdout.
+
+2.16 MIGRATION DECISION MATRIX
+
+| Oracle Construct | Target Option | Rejected Alternatives | Reason for Selection |
+| :--- | :--- | :--- | :--- |
+| `SET ...` / `EXIT;` | Orchestration Wrapper | SQL Scripting | SQL*Plus instructions are client-side commands; BigQuery engines do not execute them. |
+| `&1` | BigQuery Query Parameter (`@run_date`) | Hardcoded literal | Dynamic injection via standard parameterization is the most secure and clean pattern in BigQuery. |
+| `FROM DUAL` | Direct SELECT | `SELECT ... FROM (SELECT 1)` | BigQuery allows execution of scalar SELECT statements without any `FROM` clause. |
+| `TRUNC(TO_DATE(...))` | `DATE_TRUNC(PARSE_DATE(...), DAY)` | UDF | BigQuery has direct built-in functions for explicit date parsing and truncation. |
+
+2.17 REQUIRED ARTIFACTS
+- **BigQuery SQL Script**: `d_segment_quality_check.sql` containing a clean, parameterized standard query. No procedural blocks or custom UDFs are required.
+
+2.18 DATA TYPE COMPATIBILITY TABLE
+
+| Source Table/Column | Oracle Type | BigQuery Type | Conversion Rule / Warning |
+| :--- | :--- | :--- | :--- |
+| `DIM_CUSTOMER_SEGMENT.IS_CURRENT` | `NUMBER` | `INT64` | Native numeric mapping. |
+| `DIM_CUSTOMER_SEGMENT.VALID_FROM` | `DATE` | `DATE` | Mapped to `DATE` since time values are truncated to calendar days. |
+| `&1` | String Substitution | `STRING` | Passed as parameter `@run_date` and explicitly parsed to `DATE`. |
+
+2.19 DESIGN REVIEW SUMMARY
+- **Patterns/Objects Found**: SQL*Plus directives, DUAL pseudo-table, scalar subqueries.
+- **Unsupported Functions**: None (all native alternatives exist).
+- **UDF Required**: No.
+- **Python Required**: No (except for scheduling/orchestration wrapping).
+- **Direct Dependencies**: Table `ANALYTICS_SCHEMA.DIM_CUSTOMER_SEGMENT`.
+- **Status**: Ready for Human Approval.
+
+2.21 ORACLE FUNCTION ANALYSIS TABLE
+
+| Oracle Function/Construct | Supported in BigQuery | BigQuery Equivalent / Alternative |
+| :--- | :--- | :--- |
+| `SET ...` | Unsupported | None (strip; handle in orchestration) |
+| `ROUND` | Direct | `ROUND` |
+| `TO_DATE` | Direct-with-rewrite | `PARSE_DATE('%Y-%m-%d', ...)` |
+| `TRUNC` | Direct-with-rewrite | `DATE_TRUNC(..., DAY)` |
+| `NULLIF` | Direct | `NULLIF` |
+| `DUAL` | Direct-with-rewrite | Remove `FROM DUAL` entirely |
+| `EXIT` | Unsupported | None (strip) |
+
+═══════════════════════════════════════════
+SECTION 2 — PSEUDOCODE
+═══════════════════════════════════════════
+
+Step 4: Write Vendor-Neutral Pseudocode
+
+```sql
+-- BigQuery SQL equivalent for customer/d_segment_quality_check.sql
+-- Parameter declaration placeholder (handled by BigQuery Client / API):
+-- DECLARE run_date STRING; 
+
+SELECT 
+  ROUND(
+    (
+      SELECT COUNT(1) 
+      FROM ANALYTICS_SCHEMA.DIM_CUSTOMER_SEGMENT
+      WHERE IS_CURRENT = 1 
+        -- CONVERTED: TO_DATE and TRUNC replaced with PARSE_DATE and explicit DATE_TRUNC
+        AND VALID_FROM = DATE_TRUNC(PARSE_DATE('%Y-%m-%d', @run_date), DAY)
+    )
+    /
+    -- CONVERTED: Native NULLIF retained for safety against zero division
+    NULLIF(
+      (
+        SELECT COUNT(1) 
+        FROM ANALYTICS_SCHEMA.DIM_CUSTOMER_SEGMENT
+        WHERE IS_CURRENT = 1
+      ), 
+      0
+    )
+    * 100
+  ) AS CHANGED_PCT
+-- CONVERTED: Oracle FROM DUAL removed; BigQuery supports standalone SELECT
+;
+```
+
+FLAGGED ITEMS FOR HUMAN REVIEW:
+- **Orchestration Integration**: SQL*Plus-specific settings (`SET HEADING OFF`, `EXIT`) have been removed. The orchestrator invoking this script must execute it as a parameterized query passing `@run_date` and capturing the scalar `CHANGED_PCT` output from the BigQuery query job results.
+
+### File Disposition Table
+
+| Source File Path | Target File / Action | Purpose / Reason for Action |
+| :--- | :--- | :--- |
+| `customer/d_segment_quality_check.sql` | `customer/d_segment_quality_check.sql` | Oracle SQL*Plus script converted to standard BigQuery parameterized SQL. SQL*Plus-specific options (`SET`, `EXIT`) and the obsolete `FROM DUAL` are retired. |
+
+---
+
+### 1. Job Dependencies
+- **Downstream Consumer**: `CUSTOMER.WEEKLY_SCHEDULE` (not yet migrated).
+  - *Wiring on BigQuery/Cloud Composer*: Because `CUSTOMER.WEEKLY_SCHEDULE` is not yet migrated, the final hand-off cannot be completed in this pass. Once migrated, a cross-DAG trigger or an Airflow sensor (e.g., `ExternalTaskSensor`) should be implemented in the target DAG to notify or trigger `CUSTOMER.WEEKLY_SCHEDULE`.
+
+---
+
+### 2. Execution Order
+The target Cloud Composer orchestration must preserve the sequential execution order established by the legacy dependency graph. Note that files 1 through 4 are handled by independent design passes; this design pass is responsible only for step 5.
+1. `customer/CUSTOMER.HISTORIZATION_LOAD.xml` (UC4 Job Definition)
+2. `customer/r_historization_load.ksh` (KSH Wrapper Script)
+3. `customer/k_historization_load.ksh` (Historization Core Script)
+4. `customer/d_historization_load.sql` (Historization Merge Script)
+5. `customer/d_segment_quality_check.sql` (**This File** — Executes as the final post-load quality gate)
+
+---
+
+### 3. Scheduling
+- **Triggering Pattern**: This job is not directly triggered by a standalone cron schedule. It executes as an included, shared module inside the parent job `CUSTOMER.HISTORIZATION_LOAD`.
+- **Target Platform Solution**: The converted BigQuery script must remain an importable, callable SQL task within the parent Cloud Composer DAG, scheduled to run immediately after the historization load task finishes. It should not be given an independent schedule.
+
+---
+
+### 4. Schedule & Variables
+- **Scheduler-Set Variables**:
+  - `RUN_DATE` (historically populated by UC4's `&$TODAY` in the parent job `CUSTOMER.HISTORIZATION_LOAD`).
+- **Target Platform Resolution**: In Cloud Composer, the `RUN_DATE` must be dynamically resolved using Airflow execution date templates (e.g., `{{ ds }}` in `YYYY-MM-DD` format) and passed directly as the query parameter `@run_date` to the BigQuery operator.
+
+---
+
+### 5. Lineage
+- **Upstream Producer**: None directly identified in metadata, but table `DIM_CUSTOMER_SEGMENT` is loaded during step 4 (`d_historization_load.sql`).
+- **Read Table**: `ANALYTICS_SCHEMA.DIM_CUSTOMER_SEGMENT`
+- **Downstream Consumers**: The output metric (`CHANGED_PCT`) is evaluated by the parent orchestrator script to trigger threshold alerts or stop execution in case of anomalous shifts.
+
+---
+
+### 6. External System Replacements
+- **Database Engine**: Oracle Database replaced by Google Cloud BigQuery.
+- **Client Utility**: Oracle SQL*Plus client utility replaced by the BigQuery execution engine in Cloud Composer (e.g., via `BigQueryExecuteQueryOperator`).
+
+---
+
+### 7. Cross-File Dependencies
+- **Shared Table**: `ANALYTICS_SCHEMA.DIM_CUSTOMER_SEGMENT` is shared. It is updated/historized in Step 4 (`customer/d_historization_load.sql`) and read by this script in Step 5 (`customer/d_segment_quality_check.sql`) to verify the load quality.
+
+---
+
+### 8. Target File Plan
+- **Path**: `customer/d_segment_quality_check.sql`
+- **Language**: SQL (BigQuery Standard SQL dialect)
+- **Source File**: `customer/d_segment_quality_check.sql`
+- **Purpose**: Verifies that the percentage of freshly re-versioned active customers on the specified run date remains within an acceptable threshold.
+
+---
+
+### 9. Environment-Specific Values
+- **`ANALYTICS_SCHEMA`**: Classified as **GLOBAL** (environment-wide).
+  - *GCP Target Concept*: `BQ_DATASET`
+  - *Resolution Mechanism*: In the BigQuery execution operator, the schema prefix must be parameterized dynamically using the environment configuration or Airflow variables (e.g., `{{ var.value.BQ_DATASET_ANALYTICS }}.DIM_CUSTOMER_SEGMENT`) rather than hardcoding.
+
+---
+
+### 10. Risks and Manual Steps
+- **Orchestration Result Capture (Critical)**: In the legacy environment, the SQL*Plus script relied on stdout redirection to return `CHANGED_PCT` to the calling KSH script. In BigQuery, the Cloud Composer DAG must be configured to explicitly query and capture the scalar value of the execution result (e.g., by using BigQuery's XCom push features or a lightweight Python operator reading from the query execution job) to perform threshold comparisons.
+- **Unmigrated Dependencies**: The downstream `CUSTOMER.WEEKLY_SCHEDULE` job has not yet been migrated. End-to-end integration testing of the historization pipeline remains blocked until the downstream consumer is available.
+- **Upstream Sequence Gaps**: Steps 1 through 4 are outside the scope of this file's design pass. Integration testing of this quality check relies on the presence of the freshly loaded target tables produced by step 4. Ensure dummy test data is populated in `DIM_CUSTOMER_SEGMENT` with matching `VALID_FROM` values to simulate the verification gate in isolation.
 
 ---
 
@@ -286,233 +846,290 @@ exit 0
 
 === CONVERSION VERDICT ===
 VERDICT: PYTHON
-REASON: The script contains custom shell-based logging, captures and sanitizes SQL execution outputs, and performs mathematical validation threshold checks on the results.
+REASON: The script performs database orchestration by executing multiple external Oracle SQL scripts, capturing stdout to extract a numeric threshold value, and performing conditional threshold validation logic.
 
 EVIDENCE
-- Business logic found: Yes, in the KSH custom logic where it executes a dimension merge and runs a quality check comparing the percentage of changed records against a safety threshold.
+- Business logic found: KSH custom logic coordinates the SCD Type 2 merge load, executes a quality check SQL statement, captures stdout, cleans whitespace, and evaluates the change percentage against a threshold.
 - AWK: none
-- SQL-expressible: No, the control flow relies on capturing external program stdout, string sanitization, and conditional alerting logic based on threshold comparison.
-- Non-SQL side effects: Command execution with output capture, console logging, and distinct exit/warning codes.
-- Against this verdict: One could argue for BQSQL if the external SQL files were supplied and fully translatable, but the operational checks and parameter-driven execution are best preserved in Python.
+- SQL-expressible: partly, the data transformations are SQL, but the orchestration and control flow (error handling, command substitution, and string cleaning) require a host programming language.
+- Non-SQL side effects: execution of external database client (sqlplus) and console logging.
+- Against this verdict: none
 
 =======================================================================================
 PART A — PYTHON DESIGN DOCUMENT
 =======================================================================================
 
 1. SCRIPT OVERVIEW
-   This script executes a weekly slowly changing dimension (SCD) Type 2 merge to load customer scores and segments into a segment dimension table. Following the merge, it performs a data quality sanity check by invoking a query to calculate the percentage of newly-versioned customer records. If the percentage of changed records exceeds a configurable safety threshold (default 25%), it raises a warning to flag potential join corruption without failing the pipeline.
+   The `k_historization_load.ksh` script manages the weekly Slowly Changing Dimension (SCD) Type 2 merge process for the customer segment dimension. It reads current customer score and segment data, merges it into the historical dimension table, and then executes a data quality sanity check. This sanity check computes the percentage of customers whose segments changed this week and issues a warning if the percentage exceeds a pre-defined threshold, helping catch potential bad join-key issues before they silently corrupt downstream reporting.
 
 2. INVOCATION CONTEXT
-   - Who calls this script: Unknown (typically triggered by a UC4 job, but JOBS_UNIX object metadata is not supplied in this extraction).
-   - UC4 native includes: None referenced in this extraction.
-   - Environment files sourced: None sourced.
+   - Invoked by: Unknown (no UC4/Automic extraction metadata provided).
+   - Expected command line execution: `k_historization_load.ksh` (requires the environment variable `RUN_DATE` to be set).
+   - UC4 Native Includes: None.
+   - Environment files sourced: None.
 
 3. PARAMETERS / INPUTS
-   - `CRM_HOME` (Environment Variable): Base directory path for CRM ETL assets. Default: `/opt/etl/customer`. Used to locate SQL scripts.
-   - `CRM_ORA_USER` (Environment Variable): Oracle database username. Default: `crm_etl`. Used for database connections.
-   - `CRM_ORA_PASS` (Environment Variable): Oracle database password. Default: `changeit`. Used for database connections.
-   - `CRM_ORA_SID` (Environment Variable): Oracle System Identifier (SID) or connection string. Default: `CRMPRD`. Used for database connections.
-   - `MAX_EXPECTED_CHANGE_PCT` (Environment Variable): Threshold percentage of changed records allowed before generating a warning. Default: `25`. Used in validations.
-   - `RUN_DATE` (Environment Variable): Parameter passed into the SQL execution. Appears as `${RUN_DATE}` but is not declared locally in the shell. Surfaces in Python via `os.environ.get("RUN_DATE")`.
+   - `RUN_DATE` (Environment variable): Used as a positional argument passed to both `d_historization_load.sql` and `d_segment_quality_check.sql`. Surface in Python via `os.environ.get("RUN_DATE")` or `argparse`.
+   - `CRM_HOME` (Environment variable): Base path of the ETL code. Defaults to `/opt/etl/customer`. Surface in Python via `os.environ.get("CRM_HOME", "/opt/etl/customer")`.
+   - `CRM_ORA_USER` (Environment variable): Database user. Defaults to `crm_etl`. Usable for Python DB-client initialization.
+   - `CRM_ORA_PASS` (Environment variable): Database password. Defaults to `changeit`. Usable for Python DB-client initialization.
+   - `CRM_ORA_SID` (Environment variable): Database Oracle SID. Defaults to `CRMPRD`. Usable for connection string initialization.
+   - `MAX_EXPECTED_CHANGE_PCT` (Environment variable / local variable): Threshold value for sanity checking. Defaults to `25`.
+   - KSH DECLARED ENVIRONMENT PARAMETERS:
+     - `CRM_HOME` (Informational/ETL home path)
+     - `CRM_ORA_USER` (DB connection parameter)
+     - `CRM_ORA_PASS` (DB connection parameter)
+     - `CRM_ORA_SID` (DB connection parameter)
 
 4. EXTERNAL COMMANDS / PROGRAMS INVOKED
-   - Command 1: `sqlplus -s ${CRM_ORA_USER}/${CRM_ORA_PASS}@${CRM_ORA_SID} @${CRM_HOME}/customer/d_historization_load.sql "${RUN_DATE}"`
-     - Purpose: Executes the SCD Type 2 dimension merge SQL script.
-     - Target: Should remain an external process invocation via `subprocess.run` to execute SQL*Plus if SQL*Plus environment dependencies must be preserved, or can be converted to run the SQL file natively using a Python Oracle driver (such as `oracledb`).
-     - Resolvable Launcher: No, because the contents of `d_historization_load.sql` are not supplied in this extraction.
-   - Command 2: `sqlplus -s ${CRM_ORA_USER}/${CRM_ORA_PASS}@${CRM_ORA_SID} @${CRM_HOME}/customer/d_segment_quality_check.sql "${RUN_DATE}"`
-     - Purpose: Computes the percentage of customers whose segments changed this week.
-     - Target: Processed via `subprocess.run` capturing standard output for verification.
+   - First `sqlplus` execution:
+     - Command: `sqlplus -s ${CRM_ORA_USER}/${CRM_ORA_PASS}@${CRM_ORA_SID} @${CRM_HOME}/customer/d_historization_load.sql "${RUN_DATE}"`
+     - Purpose: Run the main SCD2 merge SQL script against the Oracle Database.
+     - Recommendation: Convert to a native Python database client execution using `oracledb` (or `google-cloud-bigquery` if migrating to GCP).
+   - Second `sqlplus` execution (with `tr` cleanup):
+     - Command: `sqlplus -s ${CRM_ORA_USER}/${CRM_ORA_PASS}@${CRM_ORA_SID} @${CRM_HOME}/customer/d_segment_quality_check.sql "${RUN_DATE}" | tr -d '[:space:]'`
+     - Purpose: Calculate the percentage of changed records and capture it as a clean numeric string by stripping whitespaces.
+     - Recommendation: Convert to native database client querying, reading a scalar integer value from a cursor.
 
 5. EMBEDDED SQL
-   - No SQL is written inline. Two external Oracle SQL files are referenced:
-     - SQL File 1: `${CRM_HOME}/customer/d_historization_load.sql`
-       - # REVIEW-STRUCT: SQL file [d_historization_load.sql] body not supplied — behaviour unknown
-     - SQL File 2: `${CRM_HOME}/customer/d_segment_quality_check.sql`
-       - # REVIEW-STRUCT: SQL file [d_segment_quality_check.sql] body not supplied — behaviour unknown
-   - Dialect Identification: The use of `sqlplus` with the `@` operator and positional arguments (`"${RUN_DATE}"`) confirms the target platform is Oracle SQL*Plus.
-     - # REVIEW: target database platform is Oracle; python-oracledb or subprocess-based sqlplus execution choice is provisional based on target system capabilities.
+   - No SQL is inline. The SQL commands reside in external scripts:
+     - `d_historization_load.sql`:
+       - # REVIEW-STRUCT: SQL file [d_historization_load.sql] body not supplied — contents are external to this script.
+       - Statement Type: Assumed to be MERGE / INSERT / UPDATE (SCD Type 2 logic).
+       - Tables Touched: Segment dimension table.
+       - Dialect: Oracle SQL*Plus.
+     - `d_segment_quality_check.sql`:
+       - # REVIEW-STRUCT: SQL file [d_segment_quality_check.sql] body not supplied — contents are external to this script.
+       - Statement Type: SELECT (returning a scalar percentage value).
+       - Tables Touched: Segment dimension table.
+       - Dialect: Oracle SQL*Plus.
+   - # REVIEW: target database platform not specified; DB-client library choice below is provisional. Standard Oracle `oracledb` library is assumed based on the legacy SQL*Plus commands.
 
 6. CONTROL FLOW
-   1. **Initialization**: Read and assign default values to connection and execution environment variables (`CRM_HOME`, `CRM_ORA_USER`, `CRM_ORA_PASS`, `CRM_ORA_SID`, `MAX_EXPECTED_CHANGE_PCT`, `RUN_DATE`).
-   2. **SCD2 Execution**: Log the start of the process and invoke `d_historization_load.sql` via SQL*Plus, passing `RUN_DATE`.
-   3. **Execution Status Check**: Verify the return code of the SCD2 execution. If it is non-zero, log an error message and exit the program with status `1`.
-   4. **Quality Check Execution**: Log and execute `d_segment_quality_check.sql` via SQL*Plus, passing `RUN_DATE`. Capture standard output.
-   5. **Data Sanitization**: Strip all whitespaces, line breaks, and carriage returns from the captured quality check output (mimicking `tr -d '[:space:]'`).
-   6. **Sanity Validation**:
-      - If the cleaned output is empty, log a warning stating that the check is being skipped, and exit successfully with status `0`.
-      - Try converting the output to an integer. If successful and the value is greater than `MAX_EXPECTED_CHANGE_PCT` (25%), print a warning log alerting that the changes are abnormally high, but do not fail the program. Suppress conversion errors (mimicking `2>/dev/null`).
-   7. **Success Logging**: Log successful completion of the historization process, showing the computed changed percentage, and exit with status `0`.
+   1. Initialize configuration parameters with defaults (`CRM_HOME`, `CRM_ORA_USER`, `CRM_ORA_PASS`, `CRM_ORA_SID`, `MAX_EXPECTED_CHANGE_PCT`).
+   2. Fetch `RUN_DATE` from the environment. Check if it exists; log warning or fail if missing (depending on business rules).
+   3. Log step start: "Running SCD2 merge for customer segment dimension".
+   4. Execute `d_historization_load.sql` with connection string and `RUN_DATE` parameter.
+   5. Capture execution return code. If non-zero, log error "ERROR: d_historization_load.sql failed with rc=..." and exit 1.
+   6. Execute `d_segment_quality_check.sql` using same parameters.
+   7. Strip whitespaces from the database output to parse the `changed_pct` value.
+   8. If `changed_pct` is empty/null, log "WARN: could not compute changed-row percentage - skipping sanity check" and exit 0.
+   9. Convert `changed_pct` to an integer. If conversion fails or if `changed_pct` is greater than `MAX_EXPECTED_CHANGE_PCT`, log warning "WARN: {changed_pct}% of customers changed segment this week (expected <= {MAX_EXPECTED_CHANGE_PCT}%) - flagging for review, not failing the job".
+   10. Log completion message: "Historization merge complete, {changed_pct}% of customers re-versioned" and exit 0.
 
 7. ERROR HANDLING & EXIT CODES
-   - Merging Errors: Checked immediately via return code verification (`$?`). Non-zero causes an immediate exit with `1`.
-   - Quality Check Output Empty: Handled gracefully. Prints a warning and exits with `0`.
-   - Comparison Parsing Errors: Non-integer strings are safely handled by suppressing standard error redirecting `2>/dev/null` in KSH, translated in Python using a robust `try-except` block when casting to `int`.
-   - Success Exit Code: `0`.
+   - KornShell captures status using `merge_rc=$?` and validates with `if [ ${merge_rc} -ne 0 ]; then exit 1; fi`.
+   - Standard shell redirection and parsing failures on `changed_pct` are suppressed or redirected using `2>/dev/null` in `[ "${changed_pct}" -gt "${MAX_EXPECTED_CHANGE_PCT}" ]`.
+   - In Python, wrap DB-client executions in `try...except` blocks using driver-specific exceptions (e.g., `oracledb.DatabaseError` or `google.cloud.exceptions.GoogleCloudError`). Explicitly raise `RuntimeError` on load failures and gracefully handle parsing issues with standard `try...except ValueError`.
 
 8. OUTPUTS / SIDE EFFECTS
-   - Mutates data in the target Oracle Dimension Table via `d_historization_load.sql`.
-   - Writes logs and warnings directly to standard output and standard error.
+   - Mutated database records (inserts/updates on customer segment dimension table).
+   - Console logs (stdout) detailing execution status and warning messages.
 
 9. BUSINESS SUMMARY
-   - Performs automated weekly updates of customer segment dimensions using SCD Type 2 logic.
-   - Calculates the statistical deviation (percentage of segment shifts) to ensure data integrity.
-   - Flags potentially corrupted ETL pipeline runs (e.g., massive segment shifts caused by key mismatches) before downstream applications consume the mutated data.
+   - Executes the weekly Slowly Changing Dimension Type 2 (SCD2) history loading of customer segments and scores.
+   - Protects downstream analytics from massive data corruption (e.g., cartesian join errors) by verifying that the weekly records change threshold does not exceed 25%.
+   - Alerts operational teams if record updates exceed normal limits, while allowing the pipeline to complete successfully without a hard crash.
 
 =======================================================================================
 PYTHON PSEUDOCODE
 =======================================================================================
 
 ```python
-# Step 1: Environment Setup
-import os
 import sys
+import os
+import datetime
 import subprocess
-from datetime import datetime
 
-# # REVIEW: target database platform is Oracle; python-oracledb or subprocess-based sqlplus execution choice is provisional
-CRM_HOME = os.environ.get("CRM_HOME", "/opt/etl/customer")
-CRM_ORA_USER = os.environ.get("CRM_ORA_USER", "crm_etl")
-CRM_ORA_PASS = os.environ.get("CRM_ORA_PASS", "changeit")
-CRM_ORA_SID = os.environ.get("CRM_ORA_SID", "CRMPRD")
-
+# REVIEW: target database platform not specified; DB-client library choice below is provisional
+# (Oracle 'oracledb' is shown based on sqlplus usage)
 try:
-    MAX_EXPECTED_CHANGE_PCT = int(os.environ.get("MAX_EXPECTED_CHANGE_PCT", "25"))
-except ValueError:
-    MAX_EXPECTED_CHANGE_PCT = 25
+    import oracledb
+except ImportError:
+    # Fallback to subprocess if driver is unavailable or if subprocess migration is preferred
+    oracledb = None
 
-RUN_DATE = os.environ.get("RUN_DATE", "")
 
-# Step 2: Custom Logging Definition
-def log(message: str, file=sys.stdout):
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{timestamp}] {message}", file=file)
+def log(message: str):
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{timestamp}] {message}")
 
-# Step 3: Run SCD2 Merge
-log("Running SCD2 merge for customer segment dimension")
 
-# # REVIEW-STRUCT: SQL file [d_historization_load.sql] body not supplied — behaviour unknown
-sql_load_path = os.path.join(CRM_HOME, "customer/d_historization_load.sql")
-connection_string = f"{CRM_ORA_USER}/{CRM_ORA_PASS}@{CRM_ORA_SID}"
+def main():
+    # Step 1: Initialize environment and default parameters
+    crm_home = os.environ.get("CRM_HOME", "/opt/etl/customer")
+    crm_ora_user = os.environ.get("CRM_ORA_USER", "crm_etl")
+    crm_ora_pass = os.environ.get("CRM_ORA_PASS", "changeit")
+    crm_ora_sid = os.environ.get("CRM_ORA_SID", "CRMPRD")
+    
+    try:
+        max_expected_change_pct = int(os.environ.get("MAX_EXPECTED_CHANGE_PCT", 25))
+    except ValueError:
+        max_expected_change_pct = 25
 
-try:
-    # Executing external SQL script using SQL*Plus as a subprocess to preserve legacy execution behavior
-    merge_process = subprocess.run(
-        ["sqlplus", "-s", connection_string, f"@{sql_load_path}", RUN_DATE],
-        capture_output=False,
-        text=True,
-        check=True
-    )
-except subprocess.CalledProcessError as e:
-    # Step 4: Handle Failure of SCD2 Merge
-    log(f"ERROR: d_historization_load.sql failed with rc={e.returncode}", file=sys.stderr)
-    sys.exit(1)
+    run_date = os.environ.get("RUN_DATE")
+    if not run_date:
+        log("ERROR: RUN_DATE environment variable is not set.")
+        sys.exit(1)
 
-# Step 5: Run Segment Quality Check
-# # REVIEW-STRUCT: SQL file [d_segment_quality_check.sql] body not supplied — behaviour unknown
-sql_qc_path = os.path.join(CRM_HOME, "customer/d_segment_quality_check.sql")
+    log("Running SCD2 merge for customer segment dimension")
 
-try:
-    qc_process = subprocess.run(
-        ["sqlplus", "-s", connection_string, f"@{sql_qc_path}", RUN_DATE],
-        capture_output=True,
-        text=True,
-        check=True
-    )
-    # Step 6: Sanitize Output (tr -d '[:space:]')
-    changed_pct_str = "".join(qc_process.stdout.split())
-except subprocess.CalledProcessError as e:
-    # If the quality check script execution fails completely, handle gracefully or raise error
-    log(f"ERROR: Quality check database execution failed with rc={e.returncode}", file=sys.stderr)
-    sys.exit(1)
+    # Step 2: Execute SCD2 merge using d_historization_load.sql
+    # # REVIEW-STRUCT: SQL file [d_historization_load.sql] body not supplied — content is external
+    sql_load_path = os.path.join(crm_home, "customer", "d_historization_load.sql")
 
-# Step 7: Handle Empty Output Check
-if not changed_pct_str:
-    log("WARN: could not compute changed-row percentage - skipping sanity check")
+    if oracledb:
+        try:
+            # Native Python DB client implementation
+            dsn = oracledb.makemdsn(crm_ora_sid, 1521, service_name=crm_ora_sid)
+            connection = oracledb.connect(user=crm_ora_user, password=crm_ora_pass, dsn=dsn)
+            with connection.cursor() as cursor:
+                # Assuming the external .sql file's logic is loaded or run via dynamic PL/SQL
+                # For equivalent emulation of SQL*Plus file execution:
+                with open(sql_load_path, 'r') as sql_file:
+                    sql_content = sql_file.read()
+                cursor.execute(sql_content, [run_date])
+            connection.commit()
+            connection.close()
+        except Exception as e:
+            log(f"ERROR: d_historization_load.sql failed: {str(e)}")
+            sys.exit(1)
+    else:
+        # Fallback to subprocess preservation if native DB-driver is not used
+        cmd_load = [
+            "sqlplus", "-s", 
+            f"{crm_ora_user}/{crm_ora_pass}@{crm_ora_sid}", 
+            f"@{sql_load_path}", 
+            run_date
+        ]
+        result = subprocess.run(cmd_load, capture_output=True, text=True)
+        if result.returncode != 0:
+            log(f"ERROR: d_historization_load.sql failed with rc={result.returncode}")
+            log(result.stderr)
+            sys.exit(1)
+
+    # Step 3: Run segment quality check query
+    # # REVIEW-STRUCT: SQL file [d_segment_quality_check.sql] body not supplied — content is external
+    sql_check_path = os.path.join(crm_home, "customer", "d_segment_quality_check.sql")
+    changed_pct_raw = ""
+
+    if oracledb:
+        try:
+            dsn = oracledb.makemdsn(crm_ora_sid, 1521, service_name=crm_ora_sid)
+            connection = oracledb.connect(user=crm_ora_user, password=crm_ora_pass, dsn=dsn)
+            with connection.cursor() as cursor:
+                with open(sql_check_path, 'r') as sql_file:
+                    sql_content = sql_file.read()
+                cursor.execute(sql_content, [run_date])
+                row = cursor.fetchone()
+                if row:
+                    changed_pct_raw = str(row[0])
+            connection.close()
+        except Exception as e:
+            log(f"WARN: could not compute changed-row percentage - skipping sanity check. Error: {str(e)}")
+            sys.exit(0)
+    else:
+        cmd_check = [
+            "sqlplus", "-s", 
+            f"{crm_ora_user}/{crm_ora_pass}@{crm_ora_sid}", 
+            f"@{sql_check_path}", 
+            run_date
+        ]
+        result_check = subprocess.run(cmd_check, capture_output=True, text=True)
+        changed_pct_raw = result_check.stdout
+
+    # Step 4: String cleanup and parsing (reproducing tr -d '[:space:]')
+    changed_pct_clean = "".join(changed_pct_raw.split())
+
+    # Step 5: Validate quality metric
+    if not changed_pct_clean:
+        log("WARN: could not compute changed-row percentage - skipping sanity check")
+        sys.exit(0)
+
+    try:
+        changed_pct = int(changed_pct_clean)
+        if changed_pct > max_expected_change_pct:
+            log(f"WARN: {changed_pct}% of customers changed segment this week "
+                f"(expected <= {max_expected_change_pct}%) - flagging for review, not failing the job")
+        
+        log(f"Historization merge complete, {changed_pct}% of customers re-versioned")
+    except ValueError:
+        log(f"WARN: could not compute changed-row percentage (invalid int format: '{changed_pct_clean}') - skipping sanity check")
+
     sys.exit(0)
 
-# Step 8: Perform Safety Threshold Comparisons
-try:
-    # Replicates the KSH numeric evaluation and redirects stderr to null (2>/dev/null)
-    changed_pct = int(changed_pct_str)
-    if changed_pct > MAX_EXPECTED_CHANGE_PCT:
-        log(f"WARN: {changed_pct}% of customers changed segment this week (expected <= {MAX_EXPECTED_CHANGE_PCT}%) - flagging for review, not failing the job")
-except ValueError:
-    # Replicates 2>/dev/null behavior where non-integer values ignore comparison check
-    pass
 
-# Step 9: Process Completion
-log(f"Historization merge complete, {changed_pct_str}% of customers re-versioned")
-sys.exit(0)
+if __name__ == "__main__":
+    main()
 ```
 
-### File Disposition
+# File Disposition
+
 | Source File Path | Target File / Action | Purpose / Reason for Action |
 | :--- | :--- | :--- |
-| `customer/k_historization_load.ksh` | `customer/k_historization_load.py` | Converted to a Python script that orchestrates the BigQuery-based SCD2 merge and quality validation using the BigQuery Python Client instead of SQL*Plus, maintaining logging and threshold checks. |
+| `customer/k_historization_load.ksh` | `customer/k_historization_load.py` | Converts KornShell orchestrator into a Python script using the BigQuery Python Client to execute the SCD2 load and perform the quality check. |
 
-***
+---
 
-### Job Dependencies
-- **Downstream Job:** `CUSTOMER.WEEKLY_SCHEDULE` — not yet migrated.
-- **Wiring on BigQuery / Cloud Composer:** Since the downstream job `CUSTOMER.WEEKLY_SCHEDULE` is not yet migrated, the orchestration link cannot be fully finalized. Once `CUSTOMER.WEEKLY_SCHEDULE` is migrated to Airflow, it must be wired as a downstream task or DAG dependency (e.g., using a `TriggerDagRunOperator` or shared task group) that consumes the output of the customer segment dimension table generated by this historization job.
+# Additional Context
 
-### Execution Order
-The original execution sequence must be preserved in the target orchestration (Cloud Composer):
-1. **UC4 Job Definition:** `customer/CUSTOMER.HISTORIZATION_LOAD.xml` (Defines job execution metadata and scheduler variables)
-2. **KSH Wrapper:** `customer/r_historization_load.ksh` (Logs execution and captures exit codes; triggers `k_historization_load.ksh`)
-3. **Execution Logic:** `customer/k_historization_load.ksh` (Target: `customer/k_historization_load.py` - coordinates step 4 and step 5)
-4. **SCD2 Load:** `customer/d_historization_load.sql` (Target: BigQuery/Dataform SQL query executing the SCD2 merge)
-5. **Quality Check:** `customer/d_segment_quality_check.sql` (Target: BigQuery SQL query calculating changed row percentage)
+### Job dependencies
+* **Downstream Job**: `CUSTOMER.WEEKLY_SCHEDULE` — Not yet migrated. Once migrated, this downstream job should be triggered from the main DAG using an Airflow sensor (such as `ExternalTaskSensor`) or via Pub/Sub message.
+* **Risks & Manual Actions**: The downstream wiring cannot be finalized until `CUSTOMER.WEEKLY_SCHEDULE` is migrated to the target platform.
 
-In the target Python execution, `customer/k_historization_load.py` (Step 3) will call the target equivalents of `customer/d_historization_load.sql` (Step 4) followed by `customer/d_segment_quality_check.sql` (Step 5) against BigQuery.
+### Execution order
+The target orchestration sequence must preserve the legacy order:
+1. `customer/CUSTOMER.HISTORIZATION_LOAD.xml` (UC4 Orchestration job, handled in its own design pass).
+2. `customer/r_historization_load.ksh` (Wrapper script, handled in its own design pass).
+3. `customer/k_historization_load.ksh` (This step, mapped to `customer/k_historization_load.py`).
+4. `customer/d_historization_load.sql` (Main SCD2 SQL load, handled in its own design pass).
+5. `customer/d_segment_quality_check.sql` (Quality check query, handled in its own design pass).
+
+Our target file `customer/k_historization_load.py` will handle the runtime step of executing the translated equivalents of `d_historization_load.sql` and `d_segment_quality_check.sql` sequentially and parsing the resulting output.
 
 ### Scheduling
-- **Triggering details:** This job is not directly triggered by any of the run's schedulers; it runs as an included or shared module inside scheduled parent jobs.
-- **Target Orchestration:** The migrated Python script (`customer/k_historization_load.py`) must remain an importable, callable unit (such as a task or TaskGroup within an Airflow DAG) and must not be given its own standalone Airflow schedule.
+* This job is not directly triggered by any standalone scheduler; it acts as an include/shared module within scheduled workflows. The migrated Python artifact must remain a callable/importable unit (e.g., as a Python task or a reusable Airflow operator) and should not be given an independent standalone schedule.
 
-### Schedule & Variables
-- **Scheduler-Set Variable:** `RUN_DATE` (legacy value `&$TODAY`).
-- **Target Mapping:** This variable will be injected at runtime by the Airflow scheduler using execution date macros (e.g., `{{ ds }}` or `dag_run.logical_date`) and passed into the Python script's execution environment.
+### Schedule & variables
+* **RUN_DATE**: Inherited from the scheduler variable `&$TODAY`. In the migrated environment, this variable must be passed at runtime using Cloud Composer's context parameters (e.g., `{{ ds }}` or `{{ dag_run.conf['RUN_DATE'] }}`) and mapped to an environment variable `RUN_DATE` for the Python script.
 
 ### Lineage
-- **Upstream SQL Executes:**
-  - `customer/k_historization_load.ksh` executes SQL file `customer/d_historization_load.sql`
-  - `customer/k_historization_load.ksh` executes SQL file `customer/d_segment_quality_check.sql`
-- **Downstream Consumers:** The job updates the customer segment dimension table (`DIM_CUSTOMER_SEGMENT`), which is subsequently used by downstream weekly schedules and analytical reports.
+* **SQL Executions**:
+  * Upstream Execution: `customer/d_historization_load.sql`
+  * Upstream Execution: `customer/d_segment_quality_check.sql`
+  Both SQL components are referenced inside `k_historization_load.ksh` and are executed against the database. Note that these belong to different file groups and will be migrated separately to BigQuery standard SQL or Dataform models.
 
-### External System Replacements
-- **Legacy Database Execution:** SQL*Plus connection and execution (`sqlplus -s ${CRM_ORA_USER}/${CRM_ORA_PASS}@${CRM_ORA_SID}`) is retired.
-- **Target Replacement:** The python script will use `google.cloud.bigquery.Client` to submit asynchronous query jobs to BigQuery, utilizing service account authentication configured on the Cloud Composer environment.
+### External system replacements
+* **Oracle Database** (`CRM_ORA_USER`, `CRM_ORA_PASS`, `CRM_ORA_SID`) $\rightarrow$ Replaced by Google Cloud BigQuery.
+* **Oracle SQL*Plus Client** $\rightarrow$ Replaced by Google Cloud BigQuery Python client library (`google-cloud-bigquery`) or Dataform API client calls within Google Cloud Composer.
 
-### Cross-File Dependencies
-- **SQL Files:** The script depends on the external files `customer/d_historization_load.sql` and `customer/d_segment_quality_check.sql` which belong to a different group in this migration. 
-- **Integration:** The Python script expects these SQL queries to be deployed to a accessible GCS bucket location or embedded as package assets in the target repository. It will read their contents and submit them as parametrized queries.
+### Cross-file dependencies
+* `customer/k_historization_load.py` depends directly on:
+  * The migrated BigQuery/Dataform SQL equivalent of `customer/d_historization_load.sql` (for SCD2 loading).
+  * The migrated BigQuery/Dataform SQL equivalent of `customer/d_segment_quality_check.sql` (for retrieving the change percentage).
 
-### Target File Plan
-- **Target File Path:** `customer/k_historization_load.py`
-  - **Language:** Python
-  - **Source File:** `customer/k_historization_load.ksh`
-  - **Purpose:** Executable Python script deployed to Cloud Composer. It leverages the BigQuery Python Client to execute the SQL scripts, parses the numeric output of the quality check, and issues warnings when thresholds are violated.
+### Target file plan
+* **Target File**: `customer/k_historization_load.py`
+  * **Language**: Python (3.x)
+  * **Source File**: `customer/k_historization_load.ksh`
+  * **Purpose**: Orchestrates the run. It uses the `google-cloud-bigquery` library to execute the merged historization query, runs the segment quality check query, captures the scalar `changed_pct` output, and performs threshold-based logic.
 
-### Environment-Specific Values
+### Environment-specific values
+* **GCP_PROJECT** (GLOBAL): The target GCP Project ID. Sourced at runtime via `os.environ.get("GCP_PROJECT")`.
+* **BQ_DATASET** (GLOBAL): The target BigQuery dataset containing the segment dimension. Sourced at runtime via `os.environ.get("BQ_DATASET")`.
+* **RUN_DATE** (JOB-SPECIFIC): The execution date. Sourced at runtime via the environment variable `RUN_DATE`.
+* **MAX_EXPECTED_CHANGE_PCT** (JOB-SPECIFIC): Threshold value for quality checks. Sourced at runtime via `os.environ.get("MAX_EXPECTED_CHANGE_PCT", "25")`.
+* **RETIRED**: Oracle connection variables (`CRM_HOME`, `CRM_ORA_USER`, `CRM_ORA_PASS`, `CRM_ORA_SID`) are retired and replaced by IAM-based authentication inside BigQuery.
 
-#### 1. GLOBAL (Environment-Wide)
-- `GCP_PROJECT`: Sourced via `os.environ.get("GCP_PROJECT")` or Airflow `Variable.get("GCP_PROJECT")`. Represents the target GCP project ID.
-- `BQ_DATASET`: Sourced via `Variable.get("BQ_DATASET")`. Represents the target BigQuery dataset containing the customer segment dimension tables.
-- `CRM_HOME` (Re-mapped to GCS/local mount): Sourced via `Variable.get("CRM_HOME")`. Represents the path where SQL scripts are stored in Cloud Composer.
-
-#### 2. JOB-SPECIFIC
-- `MAX_EXPECTED_CHANGE_PCT`: Defined inside a job-level configuration object (default value: `25`).
-- `RUN_DATE`: Passed dynamically at runtime to the Python execution task from the parent scheduler (e.g., using `{{ ds }}`).
-
-***
-
-### Risks and Manual Steps
-- **Downstream Dependency:** The downstream job `CUSTOMER.WEEKLY_SCHEDULE` is marked "not yet migrated". Airflow task connections or sensor linkages cannot be completed until that job is migrated. This is flagged as a blocking dependency.
-- **Query Parametrization:** The original SQL scripts receive positional arguments via SQL*Plus (`"${RUN_DATE}"`). The corresponding converted BigQuery SQL queries must be designed to accept named query parameters (such as `@run_date`), and `k_historization_load.py` must pass this parameter explicitly via `google.cloud.bigquery.QueryJobConfig`.
-- **Quality Check Output Parsing:** The original KSH script strips whitespace (`tr -d '[:space:]'`) from the SQL*Plus output. In the Python/BigQuery version, the BigQuery Client will return a structured row iterator. The Python script must extract the scalar value of the first column of the first row to perform the threshold validation, rather than parsing raw stdout strings.
-- **SQL File Locations:** Since `customer/d_historization_load.sql` and `customer/d_segment_quality_check.sql` are outside the scope of this migration group, their exact target deployment paths must be coordinated and verified prior to executing the Python orchestration.
+### Risks and manual steps
+* **Separately Migrated SQL Dependencies**: The SQL logic in `d_historization_load.sql` and `d_segment_quality_check.sql` must be migrated to BigQuery syntax (or Dataform models) in their own respective design passes. The Python script cannot successfully execute without these translated queries.
+* **Output Literal Consistency**: The literal log and print messages from the source shell script must be kept identical in the python translation.
+  * `"Running SCD2 merge for customer segment dimension"`
+  * `"ERROR: d_historization_load.sql failed with rc=..."`
+  * `"WARN: could not compute changed-row percentage - skipping sanity check"`
+  * `"WARN: {changed_pct}% of customers changed segment this week (expected <= {max_expected_change_pct}%) - flagging for review, not failing the job"`
+  * `"Historization merge complete, {changed_pct}% of customers re-versioned"`
+* **Query Parameterization**: The migrated BigQuery queries must support parameter binding for `RUN_DATE` natively to avoid SQL injection risks and ensure schema compatibility.
 
 ---
 
@@ -548,112 +1165,116 @@ exit 0
 
 === CONVERSION VERDICT ===
 VERDICT: PYTHON
-REASON: The script contains functional logic including a custom logging function and error-handling conditions, and it sources another shell script whose implementation is not provided, requiring Python for robust orchestration.
+REASON: Sourcing an unsupplied script (k_historization_load.ksh) and utilizing custom logging functions requires a Python-based orchestration to preserve execution context.
 
 EVIDENCE
-- Business logic found: KSH custom logic defines a custom timestamped `log` function and contains conditional error trapping/logging when sourcing the downstream script.
+- Business logic found: Invokes `k_historization_load.ksh` which is described as wrapping an SCD2 historization merge, but the actual logic of that script is not supplied in this extraction.
 - AWK: none
-- SQL-expressible: no (the script is primarily an orchestration wrapper and error catcher sourcing a downstream shell script)
-- Non-SQL side effects: Sourcing and executing an external shell script (`k_historization_load.ksh`), writing to standard output with custom timestamped logs.
-- Against this verdict: NO_CONVERSION_REQUIRED could be argued if this was treated as a pure wrapper, but the presence of the `log` function and post-execution evaluation logic strictly disqualifies it.
+- SQL-expressible: no (the body of the sourced script `k_historization_load.ksh` is unknown and cannot be mapped to SQL)
+- Non-SQL side effects: none observed in the wrapper itself, but the wrapped script performs database and shell operations
+- Against this verdict: none (it is impossible to convert to BQSQL without the sourced script's contents, and it is not a pure wrapper because it defines a custom `log()` function)
 
 =======================================================================================
 PART A — PYTHON DESIGN DOCUMENT
 =======================================================================================
 
 1. SCRIPT OVERVIEW
-   This script (`r_historization_load.ksh`) acts as a logging and error-trapping wrapper for the SCD2 historization load process. It is triggered during the customer historization phase, sets up runtime environment variables, invokes the core shell script (`k_historization_load.ksh`), and intercepts any non-zero exit codes to log specific failure details before propagating the exit status.
+   This script acts as an orchestration wrapper for the SCD2 (Slowly Changing Dimension Type 2) historization merge process. It is triggered during the customer historization pipeline to execute `k_historization_load.ksh` while capturing, logging, and safely propagating its exit codes. It reads the `RUN_DATE` from the environment and ensures any failures are explicitly captured and logged before terminating.
 
 2. INVOCATION CONTEXT
-   - Who calls this script: Invoked within the UC4 scheduler by the job `CUSTOMER.HISTORIZATION_LOAD` (JOBS_UNIX object).
-   - UC4 native includes: None referenced in this extraction.
-   - Environment files sourced: Sources `${CRM_HOME}/customer/k_historization_load.ksh` dynamically. 
-     # REVIEW-STRUCT: environment file / script k_historization_load.ksh body not supplied — behaviour and variables it sets are unknown.
+   - Invoking Job: UC4 job `CUSTOMER.HISTORIZATION_LOAD` (implied by the header comments)
+   - Command Line: `r_historization_load.ksh`
+   - UC4 includes: none referenced in the extraction
+   - Environment files sourced: Sourced inline via `. ${CRM_HOME}/customer/k_historization_load.ksh`
+     # REVIEW-STRUCT: environment file k_historization_load.ksh not supplied — variables it sets are unknown; do not guess their names or values
 
 3. PARAMETERS / INPUTS
-   - `CRM_HOME`: Environment variable specifying the base path for CRM ETL assets. Source: Sourced environment / UC4 configuration. Defaulted to `/opt/etl/customer` if not set. Used in script body. Surface in Python via `os.environ.get("CRM_HOME", "/opt/etl/customer")`.
-   - `RUN_DATE`: Environment variable denoting the business date of execution. Source: UC4 execution context. Used inside the log statements. Surface in Python via `os.environ.get("RUN_DATE")`.
+   - `CRM_HOME` (Environment Variable)
+     - Source: Environment
+     - Used: Yes, to locate `k_historization_load.ksh`
+     - Python representation: `os.environ.get("CRM_HOME", "/opt/etl/customer")`
+   - `RUN_DATE` (Environment Variable)
+     - Source: Environment
+     - Used: Yes, in log messages
+     - Python representation: `os.environ.get("RUN_DATE")`
 
 4. EXTERNAL COMMANDS / PROGRAMS INVOKED
-   - `date '+%Y-%m-%d %H:%M:%S'`: Command-line utility invoked inside the `log` function to obtain formatting timestamps. In Python, replace with native `datetime.now().strftime("%Y-%m-%d %H:%M:%S")`.
-   - `. ${CRM_HOME}/customer/k_historization_load.ksh`: Sourced shell script execution. Must remain an external process invocation via `subprocess.run` since the script content is not supplied. 
-     # REVIEW-STRUCT: launcher k_historization_load.ksh invoked — internal behaviour not available in this extraction; confirm logging, error propagation, and credential handling before finalizing the conversion.
+   - `. ${CRM_HOME}/customer/k_historization_load.ksh`
+     - Exact command: `. ${CRM_HOME}/customer/k_historization_load.ksh`
+     - Purpose: Executes the core historization logic
+     - Python implementation: Must remain an external process invocation via `subprocess`
+     - Resolvable: No
+     - # REVIEW-STRUCT: launcher [k_historization_load.ksh] invoked — internal behaviour not available in this extraction; confirm logging, error propagation, and credential handling before finalizing the conversion
 
 5. EMBEDDED SQL
-   - None directly present in this wrapper script.
+   - None (no inline SQL present in this wrapper script).
 
 6. CONTROL FLOW
-   1. Set shell error execution option (`set -e`).
-   2. Establish parameter defaults (`CRM_HOME`).
-   3. Define utility function `log()` to write timestamped messages to standard output.
-   4. Log the initiation of SCD2 historization for `${RUN_DATE}`.
-   5. Source and execute `${CRM_HOME}/customer/k_historization_load.ksh`.
-   6. Capture the exit status code (`rc`).
-   7. Conditional check: if execution failed (`rc != 0`), log a formatted error message and exit with the captured `rc`.
-   8. If successful, log the completion of the historization load and exit 0.
+   1. Environment setup: Set shell option `set -e` (Step 1).
+   2. Parameter assignment: Initialize `CRM_HOME` default if not set (Step 2).
+   3. Function definition: Define custom timestamped logging function `log()` (Step 3).
+   4. Execution start: Log starting SCD2 historization with `${RUN_DATE}` (Step 4).
+   5. Core execution: Source and execute `k_historization_load.ksh` (Step 5).
+   6. Error capture: Capture the exit status code (`rc`) of the sourced script (Step 6).
+   7. Conditional branching: If `rc` is non-zero, log the failure and exit with `rc` (Step 7).
+   8. Execution success: Log completion and exit with `0` (Step 8).
 
 7. ERROR HANDLING & EXIT CODES
-   - Installs `set -e` to abort on immediate command failures.
-   - Captures status code of the sourced script via `rc=$?`.
-   - Checks if `[ ${rc} -ne 0 ]`. If true, emits an explicit log entry `ERROR: k_historization_load.ksh failed with rc=${rc}` and exits with `exit ${rc}`.
-   - Successful execution returns `exit 0`.
-   - Python mapping: Map execution of external script to `subprocess.run(..., check=True)`. Catch `subprocess.CalledProcessError` to safely capture the exit code, write the error log, and exit using `sys.exit(e.returncode)`.
+   - Detection: Captures return status via `rc=$?` immediately after execution.
+   - Action: If failure is detected, logs `ERROR: k_historization_load.ksh failed with rc={rc}` and exits with the same status code.
+   - Success exit code: `0`.
+   - Python Mapping: Map to `subprocess.run()` checking for `subprocess.CalledProcessError` and propagating the exception's return code.
 
 8. OUTPUTS / SIDE EFFECTS
-   - Writes timestamped log records to standard output (stdout).
-   - Execution of `k_historization_load.ksh` (which performs SCD2 historization merge operations, modifying database tables or flat files).
+   - Writes log messages containing execution status and timestamps to standard output.
+   - Potential database updates executed by the unsupplied `k_historization_load.ksh`.
 
 9. BUSINESS SUMMARY
-   - Coordinates and executes the core customer SCD2 historization process.
-   - Ensures runtime logging captures startup and completion timestamps for operational tracking.
-   - Explicitly logs failure states when the underlying historization load crashes.
-   - Returns precise exit codes back to the UC4/Automic scheduler to manage job dependencies.
+   - Orchestrates the SCD2 Customer Historization load process.
+   - Standardizes execution logging by outputting timestamped statements at the start and completion of the job.
+   - Ensures that underlying script failures are explicitly trapped, logged with error context, and returned with correct exit codes to the UC4 orchestrator to prevent silent failures.
 
-=======================================================================================
-PSEUDOCODE
-=======================================================================================
+=== PSEUDOCODE ===
 
 ```python
 import os
 import sys
+import datetime
 import subprocess
-from datetime import datetime
 
-# Step 1: Initialize environment variables and defaults
-# Map environment parameters to Python equivalents
-CRM_HOME = os.environ.get("CRM_HOME", "/opt/etl/customer")
-RUN_DATE = os.environ.get("RUN_DATE", "")
+# Step 1: Environment setup and default initialization
+# CRM_HOME defaults to '/opt/etl/customer' if not set
+crm_home = os.environ.get("CRM_HOME", "/opt/etl/customer")
+run_date = os.environ.get("RUN_DATE", "UNKNOWN_DATE")
 
-# Step 2: Define standard logging utility
-def log(message: str):
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{timestamp}] {message}")
+# Step 2: Define logging function
+def log(message: str) -> None:
+    current_time = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{current_time}] {message}")
 
-# Step 3: Log initiation of process
-log(f"Starting SCD2 historization for run date {RUN_DATE}")
+# Step 3: Log initiation of SCD2 historization
+log(f"Starting SCD2 historization for run date {run_date}")
 
-# Step 4: Resolve path to underlying script
-# # REVIEW-STRUCT: environment file k_historization_load.ksh not supplied — variables it sets are unknown; do not guess their names or values
-script_to_run = os.path.join(CRM_HOME, "customer", "k_historization_load.ksh")
+# Step 4: Define path to the script to execute
+# # REVIEW-STRUCT: launcher [k_historization_load.ksh] invoked — internal behaviour not available in this extraction; confirm logging, error propagation, and credential handling before finalizing the conversion
+script_to_run = os.path.join(crm_home, "customer", "k_historization_load.ksh")
 
-# Step 5: Execute the sourced script and monitor status
+# Step 5: Execute the sourced script using ksh as the execution environment
 try:
-    # Sourcing k_historization_load.ksh is simulated by subprocess execution.
-    # Current environment (os.environ) is forwarded to preserve context variables.
-    result = subprocess.run([script_to_run], shell=True, env=os.environ, check=True)
+    # We invoke ksh to run the script to mimic the 'sourcing' behavior as closely as possible in a subshell
+    result = subprocess.run(["ksh", script_to_run], check=True, capture_output=False)
     rc = result.returncode
 except subprocess.CalledProcessError as e:
     rc = e.returncode
-    # Step 6: Conditional error handling for non-zero execution statuses
+    # Step 6: Handle non-zero exit codes from k_historization_load.ksh
     log(f"ERROR: k_historization_load.ksh failed with rc={rc}")
     sys.exit(rc)
-except Exception as ex:
-    # Handle unexpected failures launching the process
-    log(f"ERROR: Failed to launch historization script: {str(ex)}")
+except Exception as e:
+    log(f"ERROR: Failed to launch k_historization_load.ksh: {str(e)}")
     sys.exit(1)
 
-# Step 7: Log completion and exit successfully
-log(f"Historization load completed for {RUN_DATE}")
+# Step 7: Log completion and exit with success code
+log(f"Historization load completed for {run_date}")
 sys.exit(0)
 ```
 
@@ -661,72 +1282,71 @@ sys.exit(0)
 
 | Source File Path | Target File / Action | Purpose / Reason for Action |
 | :--- | :--- | :--- |
-| `customer/r_historization_load.ksh` | `customer/r_historization_load.py` | Migrated from a KornShell wrapper to a Python script that preserves logging, error propagation, and execution logic of the historization load. |
+| `customer/r_historization_load.ksh` | `customer/r_historization_load.py` | Migrates the shell wrapper to a Python script to manage execution logging, launch the historization run, and safely propagate return status codes. |
 
 ---
 
 ### Job Dependencies
-* **Downstream Jobs:**
-  * `CUSTOMER.WEEKLY_SCHEDULE` (not yet migrated): This job consumes the output of the historization load. Because it is not yet migrated, the final cross-DAG wiring (e.g., Airflow `ExternalTaskSensor` or event-based triggers) on Google Cloud Composer / BigQuery cannot be fully established. 
+* **Downstream**: `CUSTOMER.WEEKLY_SCHEDULE` (not yet migrated).
+  * *Wiring Approach*: Once the downstream job `CUSTOMER.WEEKLY_SCHEDULE` is migrated, cross-job orchestration will be handled via Airflow's native dependency mechanisms (e.g., an `ExternalTaskSensor` or a dataset-triggered DAG run).
 
 ---
 
 ### Execution Order
-The legacy job execution order consists of the following steps:
-1. `customer/CUSTOMER.HISTORIZATION_LOAD.xml` (UC4 Orchestration)
-2. `customer/r_historization_load.ksh` (Wrapper / Execution script)
-3. `customer/k_historization_load.ksh` (SCD2 Historization core load script)
-4. `customer/d_historization_load.sql` (Historization DB Merge SQL)
-5. `customer/d_segment_quality_check.sql` (Segment Quality Check SQL)
+The legacy orchestration sequence is preserved in the target Cloud Composer environment:
+1. **Orchestration Entry**: Represented by the migrated Airflow DAG (`CUSTOMER_HISTORIZATION_LOAD_dag.py`).
+2. **Execution Wrapper**: The DAG runs the Python script `customer/r_historization_load.py` (migrated from `r_historization_load.ksh`).
+3. **Core Historization Execution**: `customer/r_historization_load.py` triggers the core logic corresponding to `customer/k_historization_load.ksh`.
+4. **Data Load**: Sequentially executes the target SQLX assets converted from `customer/d_historization_load.sql`.
+5. **Quality Check**: Executes the target SQLX assets converted from `customer/d_segment_quality_check.sql`.
 
-In the target environment (Cloud Composer/Airflow), this task ordering must be preserved:
-* The orchestration DAG (replacing the UC4 XML) will execute the Python task for `customer/r_historization_load.py`, which in turn triggers/coordinates the execution of the migrated `k_historization_load` module.
+---
+
+### Scheduling
+* **Trigger Mechanism**: This job is not directly triggered by a standalone cron schedule. It operates as an included/shared module within parent executions.
+* **Target Construct**: In Cloud Composer / Airflow, this job must not be given its own independent schedule interval. Instead, it will be modeled as a reusable, importable `TaskGroup` or a callable DAG (triggered via `TriggerDagRunOperator`) to maintain its status as an importable unit.
 
 ---
 
 ### Schedule & Variables
-* **Scheduling:**
-  * This job is not directly triggered by any of the run's primary schedulers; it is designed to run inside scheduled parent jobs (as an included/shared module). 
-  * On Cloud Composer, the migrated Python module must remain a callable/importable DAG task or a reusable task block rather than an independently scheduled DAG.
-* **Scheduler-Set Variables:**
-  * `RUN_DATE` (derived from UC4 parameter `&$TODAY`): Must be injected dynamically into the script at runtime using Cloud Composer's parameterization or Airflow's execution date context macro `{{ ds }}`.
+* **RUN_DATE**: This variable is set by the legacy scheduler as `RUN_DATE = '&$TODAY'`.
+  * *Target Delivery*: Sourced dynamically in Airflow using Airflow's native execution context variable `{{ ds }}` (logical date) and passed as an environment variable or execution argument to the Python script.
 
 ---
 
 ### Lineage
-* **Internal Lineage:**
-  * `customer/r_historization_load.ksh` invokes `customer/k_historization_load.ksh`. On the target platform, the migrated `customer/r_historization_load.py` will execute the Python equivalent of `k_historization_load.ksh` or run it as a subprocess.
+* **Downstream Invocation**: `customer/r_historization_load.ksh` --[INVOKES]--> `FILE:customer/k_historization_load.ksh`.
+
+---
+
+### External System Replacements
+* **Shell Execution**: Legacies executing nested shells are modernized to native Cloud Composer / Airflow execution. The subprocess execution of `k_historization_load.ksh` can be replaced with direct Airflow task invocations or BigQuery operator execution once the underlying script is migrated.
 
 ---
 
 ### Cross-File Dependencies
-* **Sourced Scripts:**
-  * The wrapper depends directly on the existence and interface of `customer/k_historization_load.ksh`. Any variables, return codes, and system-level operations exported or performed by `k_historization_load` must align with how `r_historization_load.py` captures and reacts to its execution status.
+* **Sourced Scripts**: Direct dependency on `customer/k_historization_load.ksh` which contains the core historization logic.
 
 ---
 
 ### Target File Plan
 
-* **`customer/r_historization_load.py`**
-  * **Language:** Python
-  * **Source File:** `customer/r_historization_load.ksh`
+| Target File Path | Language | Source File |
+| :--- | :--- | :--- |
+| `customer/r_historization_load.py` | Python | `customer/r_historization_load.ksh` |
 
 ---
 
 ### Environment-Specific Values
 
-1. **GLOBAL (Environment-wide)**
-   * **`CRM_HOME`**
-     * *Target Mapping:* Environment-wide execution base path. Sourced from the Airflow environment configuration or system env.
-     * *Resolution:* Read at runtime via `os.environ.get("CRM_HOME", "/opt/etl/customer")`.
+1. **GLOBAL**
+   * `CRM_HOME`: Sourced via `os.environ.get("CRM_HOME")`. This maps to the shared DAGs/scripts folder root path inside the GCS bucket or local path of the Cloud Composer environment.
 
 2. **JOB-SPECIFIC**
-   * **`RUN_DATE`**
-     * *Target Mapping:* Execution/business execution date.
-     * *Resolution:* Sourced from Airflow task execution parameter context (e.g., `{{ ds }}` or `params` object), passing it dynamically into the execution script environment.
+   * `RUN_DATE`: Map to Airflow's runtime execution date `{{ ds }}` and pass it into the task execution context.
 
 ---
 
-### Risks and Manual Steps
-* **Downstream Integration Risk:** The downstream consumer `CUSTOMER.WEEKLY_SCHEDULE` has not been migrated yet. Orchestration wiring (such as Airflow DAG sensors or event triggers) cannot be finalized or verified end-to-end until that job is migrated.
-* **Sourced Script Interface Boundary:** `customer/k_historization_load.ksh` belongs to a different file group and is not covered under this design pass. Manual validation is required to ensure that the variables passed dynamically through the shell environment in legacy (via `. k_historization_load.ksh`) are properly resolved and decoupled as explicit parameters in the migrated Python version.
+### Risks & Manual Steps
+* **Downstream Blockers**: The downstream job `CUSTOMER.WEEKLY_SCHEDULE` is not yet migrated; the final cross-job orchestration wiring cannot be completed until that job exists on the target platform.
+* **Coordination of Sourced File**: `customer/k_historization_load.ksh` is invoked by this wrapper but is not part of this design pass's source files. You must coordinate with the migration pass responsible for `k_historization_load.ksh` to ensure its target entrypoint is properly called by `customer/r_historization_load.py`.
