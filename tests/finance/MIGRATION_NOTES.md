@@ -1,0 +1,1 @@
+ERROR: migration notes skipped for finance/finance_month_end.xml — build phase failed or produced no output.
