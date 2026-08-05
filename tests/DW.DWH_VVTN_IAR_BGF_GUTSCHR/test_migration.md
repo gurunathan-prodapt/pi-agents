@@ -1,197 +1,372 @@
-Here is a comprehensive suite of migration-validation tests designed to prove that the migrated Airflow DAG and its underlying execution scripts are behaviorally equivalent to the legacy UC4 system.
+# Migration Validation Test Suite: DW.DWH_VVTN_IAR_BGF_GUTSCHR
+
+This document defines the migration-validation test suite to prove behavioral equivalence between the legacy UC4/Unix environment and the migrated Apache Airflow / Python 3 environment for the job `DW.DWH_VVTN_IAR_BGF_GUTSCHR`.
 
 ---
 
-# Test Suite: DW.DWH_VVTN_IAR_BGF_GUTSCHR Migration Validation
-
-## Test Case 1: End-to-End Happy Path (Output Parity & Transformation Correctness)
+## Test Case 1: Core Transformation & Schema Validation (`k_vvtn_iar_bgf_gutschrift.py`)
 
 ### Purpose
-Verify that when valid input files (`.chk` and `.CSV.gz`) are present in the work directory, the processing script executes successfully, transforms the data rows correctly (prepends `D;`), appends the correct footer format (prepends `X;`), converts line endings to Unix format, and moves the source files to the store directory.
+Verify that the migrated Python script `k_vvtn_iar_bgf_gutschrift.py` behaves identically to the legacy AWK script `k_vvtn_iar_bgf_gutschrift.awk`. It must validate that every row contains exactly 25 fields, prepend `"D;"` to valid rows, and terminate immediately with exit code `2` and the exact error message `"Error: Incorrect nos of Fields "` upon encountering any malformed row.
 
 ### Setup
-1. Identify or create the work directory matching `$DW_DIR_IMP_TCOM_SEC/iar/work/`.
-2. Identify or create the store directory matching `$DW_DIR_IMP_TCOM_SEC/iar/store/`.
-3. Create a mock `.chk` file: `DWHK_DWHM_IAR_GUTSCHR_20231031_01.chk` containing:
-   ```text
-   10;15000.50
-   ```
-4. Create a mock data file with exactly 25 fields per row, compress it to `.CSV.gz`, and place it alongside the `.chk` file:
-   ```bash
-   # Create 2 rows of 25 semicolon-separated fields
-   echo "f1;f2;f3;f4;f5;f6;f7;f8;f9;f10;f11;f12;f13;f14;f15;f16;f17;f18;f19;f20;f21;f22;f23;f24;f25" > DWHK_DWHM_IAR_GUTSCHR_20231031_01.CSV
-   echo "a1;a2;a3;a4;a5;a6;a7;a8;a9;a10;a11;a12;a13;a14;a15;a16;a17;a18;a19;a20;a21;a22;a23;a24;a25" >> DWHK_DWHM_IAR_GUTSCHR_20231031_01.CSV
-   gzip DWHK_DWHM_IAR_GUTSCHR_20231031_01.CSV
-   ```
+*   A Python 3 environment with `pytest` installed.
+*   The migrated script `isdwh/vorverarbeitung/tn/awk/k_vvtn_iar_bgf_gutschrift.py` accessible in the execution path.
 
 ### Action
-Execute the processing script directly or trigger the Airflow task with the test execution date:
-```bash
-export DW_DIR_IMP_TCOM_SEC="/tmp/test_iar"
-mkdir -p $DW_DIR_IMP_TCOM_SEC/iar/work/ $DW_DIR_IMP_TCOM_SEC/iar/store/
-
-# Copy setup files to work directory
-cp DWHK_DWHM_IAR_GUTSCHR_20231031_01.chk $DW_DIR_IMP_TCOM_SEC/iar/work/
-cp DWHK_DWHM_IAR_GUTSCHR_20231031_01.CSV.gz $DW_DIR_IMP_TCOM_SEC/iar/work/
-
-# Run the script
-$HOME/aktuell/vorverarbeitung/tn/bin/r_vvtn_iar_bgf_gutschrift
-```
+Run a suite of automated unit tests passing various inputs (valid, invalid field counts, empty lines, boundary cases) to the Python script via standard input and verifying the exit codes and standard output.
 
 ### Pass/Fail Criterion
-* **Pass**: 
-  * The script exits with status `0`.
-  * The output file `DWHK_DWHM_IAR_GUTSCHR_20231031_01_out.CSV` is created in the work directory.
-  * The output file contains exactly 3 lines (2 data rows + 1 footer row).
-  * Data rows are prefixed with `D;` (e.g., `D;f1;f2;...`).
-  * The footer row matches exactly: `X;Datei DWHK_DWHM_IAR_GUTSCHR_20231031_01.CSV;10;15000.50;File for BGF IAR Gutschrift;10`.
-  * The output file has Unix line endings (`\n` only, no `\r\n`).
-  * The source files `DWHK_DWHM_IAR_GUTSCHR_20231031_01.chk` and `DWHK_DWHM_IAR_GUTSCHR_20231031_01.CSV.gz` are moved to the store directory.
-* **Fail**: Any of the above conditions are not met, or the script exits with a non-zero code.
+*   **Pass:** 
+    *   Inputs with exactly 25 semicolon-separated fields are prepended with `"D;"` and exit with code `0`.
+    *   Inputs with $\neq 25$ fields output exactly `"Error: Incorrect nos of Fields \n"` to `stdout` and exit with code `2`.
+    *   Empty lines or lines with trailing carriage returns (`\r\n`) are handled gracefully without crashing.
+*   **Fail:** Any deviation in exit codes, output formatting, or failure to terminate immediately on the first invalid row.
 
----
+### Test Code (`test_gutschrift_validation.py`)
+```python
+import subprocess
+import pytest
+import sys
 
-## Test Case 2: Transformation Correctness & Field Count Validation (Edge Case)
+PYTHON_EXEC = sys.executable
+SCRIPT_PATH = "isdwh/vorverarbeitung/tn/awk/k_vvtn_iar_bgf_gutschrift.py"
 
-### Purpose
-Verify that the AWK transformation script (`k_vvtn_iar_bgf_gutschrift.awk`) strictly enforces the 25-field schema constraint and fails gracefully if a row contains an incorrect number of fields.
+def run_script(input_data: str) -> tuple[int, str, str]:
+    """Helper to run the Python script with stdin and capture outputs."""
+    process = subprocess.Popen(
+        [PYTHON_EXEC, SCRIPT_PATH],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True
+    )
+    stdout, stderr = process.communicate(input=input_data)
+    return process.returncode, stdout, stderr
 
-### Setup
-1. Create a mock `.chk` file: `DWHK_DWHM_IAR_GUTSCHR_20231031_02.chk` containing:
-   ```text
-   5;500.00
-   ```
-2. Create a malformed data file where one row has 24 fields instead of 25, compress it, and place it in the work directory:
-   ```bash
-   # Row 1: Valid (25 fields)
-   echo "f1;f2;f3;f4;f5;f6;f7;f8;f9;f10;f11;f12;f13;f14;f15;f16;f17;f18;f19;f20;f21;f22;f23;f24;f25" > DWHK_DWHM_IAR_GUTSCHR_20231031_02.CSV
-   # Row 2: Invalid (24 fields)
-   echo "e1;e2;e3;e4;e5;e6;e7;e8;e9;e10;e11;e12;e13;e14;e15;e16;e17;e18;e19;e20;e21;e22;e23;e24" >> DWHK_DWHM_IAR_GUTSCHR_20231031_02.CSV
-   gzip DWHK_DWHM_IAR_GUTSCHR_20231031_02.CSV
-   ```
+def test_valid_25_fields():
+    # Construct a valid line with exactly 25 fields (24 semicolons)
+    valid_line = ";".join([f"val{i}" for i in range(1, 26)])
+    returncode, stdout, stderr = run_script(valid_line + "\n")
+    
+    assert returncode == 0
+    assert stdout == f"D;{valid_line}\n"
+    assert stderr == ""
 
-### Action
-Execute the processing script:
-```bash
-cp DWHK_DWHM_IAR_GUTSCHR_20231031_02.chk $DW_DIR_IMP_TCOM_SEC/iar/work/
-cp DWHK_DWHM_IAR_GUTSCHR_20231031_02.CSV.gz $DW_DIR_IMP_TCOM_SEC/iar/work/
+def test_invalid_less_fields():
+    # 24 fields (23 semicolons)
+    invalid_line = ";".join([f"val{i}" for i in range(1, 25)])
+    returncode, stdout, stderr = run_script(invalid_line + "\n")
+    
+    assert returncode == 2
+    assert stdout == "Error: Incorrect nos of Fields \n"
 
-$HOME/aktuell/vorverarbeitung/tn/bin/r_vvtn_iar_bgf_gutschrift
+def test_invalid_more_fields():
+    # 26 fields (25 semicolons)
+    invalid_line = ";".join([f"val{i}" for i in range(1, 27)])
+    returncode, stdout, stderr = run_script(invalid_line + "\n")
+    
+    assert returncode == 2
+    assert stdout == "Error: Incorrect nos of Fields \n"
+
+def test_multi_line_fail_fast():
+    # First line valid, second line invalid
+    valid_line = ";".join([f"val{i}" for i in range(1, 26)])
+    invalid_line = "col1;col2;col3"
+    input_data = f"{valid_line}\n{invalid_line}\n"
+    
+    returncode, stdout, stderr = run_script(input_data)
+    
+    assert returncode == 2
+    # Should output the first valid line, then the error message, and stop
+    expected_output = f"D;{valid_line}\nError: Incorrect nos of Fields \n"
+    assert stdout == expected_output
+
+def test_carriage_return_handling():
+    # Verify Windows-style line endings (\r\n) are stripped correctly
+    valid_line = ";".join([f"val{i}" for i in range(1, 26)])
+    returncode, stdout, stderr = run_script(valid_line + "\r\n")
+    
+    assert returncode == 0
+    assert stdout == f"D;{valid_line}\n"
 ```
 
-### Pass/Fail Criterion
-* **Pass**:
-  * The script exits with status `2`.
-  * The console output/log contains the error message: `Error: Incorrect nos of Fields`.
-  * The temporary output file `DWHK_DWHM_IAR_GUTSCHR_20231031_02_out.CSV` is deleted (cleaned up) from the work directory.
-  * The source files remain in the work directory (not moved to store).
-* **Fail**: The script exits with `0`, does not log the field count error, or leaves a partially processed output file behind.
-
 ---
 
-## Test Case 3: Missing or Empty Control File Validation (Edge Case)
+## Test Case 2: Footer Generation & Metadata Injection (`k_vvtn_iar_bgf_gutsch_foot.py`)
 
 ### Purpose
-Verify that the script fails immediately and safely if a `.chk` file is empty or if the corresponding `.CSV.gz` data file is missing.
+Verify that the migrated Python script `k_vvtn_iar_bgf_gutsch_foot.py` behaves identically to the legacy AWK script `k_vvtn_iar_bgf_gutsch_foot.awk`. It must accept the filename parameter `FLNM` (via `-v FLNM=...` or `--flnm`), parse the `.chk` file fields, and output the structured footer record.
 
 ### Setup
-1. Create an empty `.chk` file: `DWHK_DWHM_IAR_GUTSCHR_20231031_03.chk` (0 bytes).
-2. Create a non-empty `.chk` file `DWHK_DWHM_IAR_GUTSCHR_20231031_04.chk` but do **not** create its corresponding `.CSV.gz` file.
+*   A Python 3 environment with `pytest` installed.
+*   The migrated script `isdwh/vorverarbeitung/tn/awk/k_vvtn_iar_bgf_gutsch_foot.py` accessible in the execution path.
 
 ### Action
-Execute the processing script:
-```bash
-# Scenario A: Empty .chk file
-touch $DW_DIR_IMP_TCOM_SEC/iar/work/DWHK_DWHM_IAR_GUTSCHR_20231031_03.chk
-$HOME/aktuell/vorverarbeitung/tn/bin/r_vvtn_iar_bgf_gutschrift
-echo "Scenario A Exit Code: $?"
+Execute the Python script passing a mock `.chk` file stream and the `FLNM` parameter, asserting that the output matches the exact legacy format:
+`"X;Datei {FLNM};{field1};{field2};File for BGF IAR Gutschrift;{field1}"`
 
-# Clean up Scenario A, setup Scenario B
-rm -f $DW_DIR_IMP_TCOM_SEC/iar/work/DWHK_DWHM_IAR_GUTSCHR_20231031_03.chk
-echo "10;100.00" > $DW_DIR_IMP_TCOM_SEC/iar/work/DWHK_DWHM_IAR_GUTSCHR_20231031_04.chk
-# Ensure no CSV.gz exists for 04
-rm -f $DW_DIR_IMP_TCOM_SEC/iar/work/DWHK_DWHM_IAR_GUTSCHR_20231031_04.CSV.gz
+### Pass/Fail Criterion
+*   **Pass:** 
+    *   The output matches the legacy format character-for-character.
+    *   The script handles missing or out-of-bounds fields in the `.chk` file gracefully by defaulting to empty strings (matching AWK's behavior).
+    *   Both `-v FLNM=filename` and `--flnm filename` syntaxes are supported.
+*   **Fail:** Any mismatch in the output string structure, unhandled exceptions on short lines, or failure to inject the filename.
 
-$HOME/aktuell/vorverarbeitung/tn/bin/r_vvtn_iar_bgf_gutschrift
-echo "Scenario B Exit Code: $?"
+### Test Code (`test_footer_generation.py`)
+```python
+import subprocess
+import pytest
+import sys
+
+PYTHON_EXEC = sys.executable
+SCRIPT_PATH = "isdwh/vorverarbeitung/tn/awk/k_vvtn_iar_bgf_gutsch_foot.py"
+
+def run_footer_script(input_data: str, flnm: str, use_legacy_flag: bool = True) -> tuple[int, str, str]:
+    args = [PYTHON_EXEC, SCRIPT_PATH]
+    if use_legacy_flag:
+        args.extend(["-v", f"FLNM={flnm}"])
+    else:
+        args.extend(["--flnm", flnm])
+        
+    process = subprocess.Popen(
+        args,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True
+    )
+    stdout, stderr = process.communicate(input=input_data)
+    return process.returncode, stdout, stderr
+
+def test_standard_footer_generation():
+    chk_line = "20231027_120000;1500.50"
+    flnm = "DWHK_DWHM_IAR_GUTSCHR_20231027_12.CSV"
+    
+    # Test with legacy -v flag
+    rc, stdout, stderr = run_footer_script(chk_line, flnm, use_legacy_flag=True)
+    assert rc == 0
+    expected = f"X;Datei {flnm};20231027_120000;1500.50;File for BGF IAR Gutschrift;20231027_120000\n"
+    assert stdout == expected
+    
+    # Test with modern --flnm flag
+    rc, stdout, stderr = run_footer_script(chk_line, flnm, use_legacy_flag=False)
+    assert rc == 0
+    assert stdout == expected
+
+def test_footer_missing_fields():
+    # Only 1 field in .chk file instead of 2
+    chk_line = "20231027_120000"
+    flnm = "DWHK_DWHM_IAR_GUTSCHR_20231027_12.CSV"
+    
+    rc, stdout, stderr = run_footer_script(chk_line, flnm)
+    assert rc == 0
+    # Field 2 ($2) should default to empty string
+    expected = f"X;Datei {flnm};20231027_120000;;File for BGF IAR Gutschrift;20231027_120000\n"
+    assert stdout == expected
+
+def test_footer_empty_input():
+    rc, stdout, stderr = run_footer_script("", "test.CSV")
+    assert rc == 0
+    assert stdout == ""
 ```
 
+---
+
+## Test Case 3: End-to-End Integration & Wrapper Script Equivalence
+
+### Purpose
+Verify that the wrapper script `r_vvtn_iar_bgf_gutschrift` (or its migrated equivalent) correctly orchestrates the entire preprocessing pipeline:
+1.  Detects `.chk` and `.CSV.gz` pairs in the work directory.
+2.  Validates file existence and non-emptiness.
+3.  Decompresses and streams data through `k_vvtn_iar_bgf_gutschrift.py`.
+4.  Appends the footer using `k_vvtn_iar_bgf_gutsch_foot.py`.
+5.  Performs `dos2unix` line-ending normalization.
+6.  Moves processed source files to the store directory on success, or cleans up and fails on error.
+
+### Setup
+*   A local test directory structure mimicking the production paths:
+    *   `work/` (Input directory)
+    *   `store/` (Archive directory)
+*   The wrapper script `isdwh/vorverarbeitung/tn/bin/r_vvtn_iar_bgf_gutschrift` configured to use the migrated Python scripts instead of legacy AWK.
+
+### Action
+1.  **Happy Path Run:** Place a valid `.chk` and a valid gzipped `.CSV` (containing 25-field rows) into `work/`. Execute the wrapper script.
+2.  **Validation Failure Run:** Place a valid `.chk` and an invalid gzipped `.CSV` (containing a row with 24 fields) into `work/`. Execute the wrapper script.
+3.  **Missing File Run:** Place a `.chk` file without its corresponding `.CSV.gz` file. Execute the wrapper script.
+
 ### Pass/Fail Criterion
-* **Pass**:
-  * Scenario A exits with status `1` and logs: `Error: Empty .chk file found - ... !`.
-  * Scenario B exits with status `1` and logs: `Error: Input file not found - ... !`.
-* **Fail**: The script exits with `0` or fails with an unhandled shell error (e.g., file-not-found crash without custom error logging).
+*   **Pass:**
+    *   *Happy Path:* Output file `*_out.CSV` is created with all data rows prefixed with `"D;"`, the footer row appended with `"X;"`, line endings normalized to Unix (`\n`), and original files moved to `store/`. Exit code is `0`.
+    *   *Validation Failure:* Wrapper exits with code `2`, prints the validation error, deletes the partial output file, and leaves source files in `work/`.
+    *   *Missing File:* Wrapper exits with code `1` and prints `"Error: Input file not found..."`.
+*   **Fail:** Any leftover temporary files on failure, incorrect file routing, or incorrect exit codes.
+
+### Test Code (`test_wrapper_integration.py`)
+```python
+import os
+import shutil
+import gzip
+import subprocess
+import pytest
+
+# Setup mock environment paths
+BASE_DIR = "/tmp/test_iar"
+WORK_DIR = os.path.join(BASE_DIR, "work")
+STORE_DIR = os.path.join(BASE_DIR, "store")
+WRAPPER_SCRIPT = "isdwh/vorverarbeitung/tn/bin/r_vvtn_iar_bgf_gutschrift"
+
+@pytest.fixture(autouse=True)
+def setup_teardown_env():
+    # Create directories
+    os.makedirs(WORK_DIR, exist_ok=True)
+    os.makedirs(STORE_DIR, exist_ok=True)
+    
+    # Set environment variables required by the wrapper script
+    os.environ["DW_DIR_IMP_TCOM_SEC"] = BASE_DIR
+    os.environ["DW_DIR_ROOT"] = "isdwh"
+    
+    yield
+    
+    # Cleanup
+    shutil.rmtree(BASE_DIR, ignore_errors=True)
+
+def create_mock_input(prefix: str, data_rows: list[str], chk_content: str):
+    chk_path = os.path.join(WORK_DIR, f"{prefix}.chk")
+    csv_gz_path = os.path.join(WORK_DIR, f"{prefix}.CSV.gz")
+    
+    with open(chk_path, "w") as f:
+        f.write(chk_content)
+        
+    with gzip.open(csv_gz_path, "wt") as f:
+        f.write("\n".join(data_rows) + "\n")
+        
+    return chk_path, csv_gz_path
+
+def test_wrapper_happy_path():
+    prefix = "DWHK_DWHM_IAR_GUTSCHR_20231027_12"
+    valid_row = ";".join([f"col{i}" for i in range(1, 26)])
+    chk_data = "20231027_120000;100.00"
+    
+    create_mock_input(prefix, [valid_row, valid_row], chk_data)
+    
+    # Run wrapper script
+    result = subprocess.run([WRAPPER_SCRIPT], capture_output=True, text=True)
+    
+    assert result.returncode == 0
+    
+    # Verify output file
+    out_csv_path = os.path.join(WORK_DIR, f"{prefix}_out.CSV")
+    assert os.path.exists(out_csv_path)
+    
+    with open(out_csv_path, "r") as f:
+        lines = f.read().splitlines()
+        
+    assert len(lines) == 3  # 2 data rows + 1 footer
+    assert lines[0] == f"D;{valid_row}"
+    assert lines[1] == f"D;{valid_row}"
+    assert lines[2] == f"X;Datei {prefix}.CSV;20231027_120000;100.00;File for BGF IAR Gutschrift;20231027_120000"
+    
+    # Verify source files moved to store
+    assert not os.path.exists(os.path.join(WORK_DIR, f"{prefix}.chk"))
+    assert not os.path.exists(os.path.join(WORK_DIR, f"{prefix}.CSV.gz"))
+    assert os.path.exists(os.path.join(STORE_DIR, f"{prefix}.chk"))
+    assert os.path.exists(os.path.join(STORE_DIR, f"{prefix}.CSV.gz"))
+
+def test_wrapper_validation_failure():
+    prefix = "DWHK_DWHM_IAR_GUTSCHR_20231027_13"
+    valid_row = ";".join([f"col{i}" for i in range(1, 26)])
+    invalid_row = "col1;col2;col3"  # Only 3 fields
+    chk_data = "20231027_130000;200.00"
+    
+    create_mock_input(prefix, [valid_row, invalid_row], chk_data)
+    
+    result = subprocess.run([WRAPPER_SCRIPT], capture_output=True, text=True)
+    
+    assert result.returncode == 2
+    assert "Error: Incorrect nos of Fields" in result.stdout
+    
+    # Output file must be cleaned up
+    out_csv_path = os.path.join(WORK_DIR, f"{prefix}_out.CSV")
+    assert not os.path.exists(out_csv_path)
+    
+    # Source files must remain in work directory (not moved to store)
+    assert os.path.exists(os.path.join(WORK_DIR, f"{prefix}.chk"))
+    assert os.path.exists(os.path.join(WORK_DIR, f"{prefix}.CSV.gz"))
+```
 
 ---
 
-## Test Case 4: Airflow Jinja Macro & Environment Variable Validation
+## Test Case 4: Airflow DAG Orchestration & Parameter Passing
 
 ### Purpose
-Verify that the migrated Airflow DAG correctly computes the `Month_ID` variable (representing the previous calendar month in `YYYYMM` format) and exports the correct `DWH_JOB_KENNUNG` environment variable.
+Verify that the migrated Airflow DAG `dw_dwh_vvtn_iar_bgf_gutschr` is syntactically correct, resolves the dynamic `Month_ID` parameter using native Airflow macros, and maintains the correct task execution order.
 
 ### Setup
-A Python test environment with `pytest` and `apache-airflow` installed.
+*   An Airflow execution environment (or local unit test context using `airflow.models.DagBag`).
+*   The migrated DAG file `DWH_IAR_BGF_GUTSCHRIFT_JOB/dw_dwh_vvtn_iar_bgf_gutschr.py` placed in the DAGs folder.
 
 ### Action
-Run the following `pytest` suite to validate the DAG structure, parameter rendering, and environment variable exports:
+1.  Load the DAG using `DagBag` to check for import errors.
+2.  Assert the task dependency structure: `print_lastmonth_task >> dw_dwh_vvtn_iar_bgf_gutschr_task`.
+3.  Render the Jinja templates for `print_lastmonth_task` to verify that the `Month_ID` resolves to the previous month in `YYYYMM` format relative to the execution date.
 
+### Pass/Fail Criterion
+*   **Pass:**
+    *   The DAG loads with zero import errors.
+    *   The task dependency matches the legacy sequence.
+    *   The `Month_ID` template renders correctly (e.g., for execution date `2023-11-15`, it renders as `202310`).
+*   **Fail:** Any import errors, incorrect task dependencies, or failure of the macro to resolve to the correct previous month string.
+
+### Test Code (`test_dag_metadata.py`)
 ```python
 import pytest
-from datetime import datetime
-from airflow.models import DagBag, TaskInstance
+from airflow.models import DagBag
 from airflow.utils.state import DagRunState
 from airflow.utils.types import DagRunType
+from pendulum import datetime
 
-@pytest.fixture
-def dagbag():
-    return DagBag(dag_folder="DWH_IAR_BGF_GUTSCHRIFT_JOB", include_examples=False)
-
-def test_dag_loaded(dagbag):
-    """Verify the DAG is loaded without import errors."""
-    dag = dagbag.get_dag(dag_id="dw_dwh_vvtn_iar_bgf_gutschr")
+def test_dag_loads_with_no_errors():
+    dag_bag = DagBag(dag_folder="DWH_IAR_BGF_GUTSCHRIFT_JOB", include_examples=False)
+    dag = dag_bag.get_dag(dag_id="dw_dwh_vvtn_iar_bgf_gutschr")
+    
+    assert dag_bag.import_errors == {}
     assert dag is not None
-    assert len(dag.tasks) == 1
+    assert len(dag.tasks) == 2
 
-def test_jinja_month_id_calculation(dagbag):
-    """Verify that Month_ID is correctly calculated as the previous month (YYYYMM)."""
-    dag = dagbag.get_dag(dag_id="dw_dwh_vvtn_iar_bgf_gutschr")
-    task = dag.get_task("dw_dwh_vvtn_iar_bgf_gutschr_task")
+def test_dag_structure():
+    dag_bag = DagBag(dag_folder="DWH_IAR_BGF_GUTSCHRIFT_JOB", include_examples=False)
+    dag = dag_bag.get_dag(dag_id="dw_dwh_vvtn_iar_bgf_gutschr")
     
-    # Test execution date: Mid-January 2023 -> Expected Month_ID: 202212
-    execution_date = datetime(2023, 1, 15)
-    dag_run = dag.create_dagrun(
+    print_task = dag.get_task("print_lastmonth_task")
+    main_task = dag.get_task("dw_dwh_vvtn_iar_bgf_gutschr_task")
+    
+    # Verify print_lastmonth_task is upstream of dw_dwh_vvtn_iar_bgf_gutschr_task
+    assert main_task in print_task.downstream_list
+    assert print_task in main_task.upstream_list
+
+def test_month_id_macro_rendering():
+    dag_bag = DagBag(dag_folder="DWH_IAR_BGF_GUTSCHRIFT_JOB", include_examples=False)
+    dag = dag_bag.get_dag(dag_id="dw_dwh_vvtn_iar_bgf_gutschr")
+    
+    # Create a mock execution run for November 15, 2023
+    execution_date = datetime(2023, 11, 15)
+    dagrun = dag.create_dagrun(
         state=DagRunState.RUNNING,
         execution_date=execution_date,
+        start_date=execution_date,
         run_type=DagRunType.MANUAL,
     )
-    ti = TaskInstance(task=task, run_id=dag_run.run_id)
-    context = ti.get_template_context()
     
-    # Render the bash command template
-    rendered_command = task.render_template(task.bash_command, context)
+    ti = dagrun.get_task_instance(task_id="print_lastmonth_task")
+    ti.task = dag.get_task("print_lastmonth_task")
     
-    assert 'export DWH_JOB_KENNUNG="VVTN_IAR_BGF_GUTSCHR"' in rendered_command
-    assert 'export Month_ID="202212"' in rendered_command
-    assert 'Lastmonth is $Month_ID' in rendered_command
-
-def test_jinja_month_id_leap_year(dagbag):
-    """Verify Month_ID calculation across leap years (e.g., March 2024 -> February 2024)."""
-    dag = dagbag.get_dag(dag_id="dw_dwh_vvtn_iar_bgf_gutschr")
-    task = dag.get_task("dw_dwh_vvtn_iar_bgf_gutschr_task")
+    # Render templates
+    ti.render_templates()
     
-    execution_date = datetime(2024, 3, 10)
-    dag_run = dag.create_dagrun(
-        state=DagRunState.RUNNING,
-        execution_date=execution_date,
-        run_type=DagRunType.MANUAL,
-    )
-    ti = TaskInstance(task=task, run_id=dag_run.run_id)
-    context = ti.get_template_context()
-    
-    rendered_command = task.render_template(task.bash_command, context)
-    assert 'export Month_ID="202402"' in rendered_command
+    # Sourced from: {{ (data_interval_start.add(months=-1)).strftime('%Y%m') }}
+    # For execution_date 2023-11-15, data_interval_start defaults to 2023-11-15 in manual runs.
+    # Subtracting 1 month yields October 2023 -> "202310"
+    rendered_month_id = ti.task.op_kwargs["month_id"]
+    assert rendered_month_id == "202310"
 ```
-
-### Pass/Fail Criterion
-* **Pass**: All `pytest` assertions pass successfully.
-* **Fail**: Any assertion fails, indicating incorrect date calculation or missing environment variables in the task command.
