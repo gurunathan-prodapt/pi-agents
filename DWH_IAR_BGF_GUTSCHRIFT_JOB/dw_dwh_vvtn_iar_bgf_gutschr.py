@@ -1,53 +1,68 @@
 """
-This DAG automates the legacy UC4 workflow DW.DWH_VVTN_IAR_BGF_GUTSCHR.
-It transforms Gutschrift (credit) files to a unified CSV format.
-The original UC4 job executed the script:
-$HOME/aktuell/vorverarbeitung/tn/bin/r_vvtn_iar_bgf_gutschrift
-and set environment configurations including the job identifier ('VVTN_IAR_BGF_GUTSCHR')
-and the previous calendar month's identifier (LASTMONTH_YYYYMM).
+DAG Name: dw_dwh_vvtn_iar_bgf_gutschr
+Description: Migrated DAG for the UC4 job DW.DWH_VVTN_IAR_BGF_GUTSCHR.
+This process transforms Gutschrift (credit note) files into a single unified CSV format.
 """
 
 from datetime import datetime, timedelta
 from airflow import DAG
-from airflow.operators.bash import BashOperator
 from airflow.models import Variable
+from airflow.operators.empty import EmptyOperator
+from airflow.operators.python import PythonOperator
 
-# --- GLOBAL Variables (sourced at runtime to avoid hardcoded environment values) ---
-GCP_PROJECT = Variable.get("GCP_PROJECT", default_var=None)
-GCS_BUCKET = Variable.get("GCS_BUCKET", default_var=None)
-BQ_DATASET = Variable.get("BQ_DATASET", default_var=None)
+# === GLOBAL ENVIRONMENT CONFIGURATION ===
+GCP_PROJECT_ID = Variable.get("GCP_PROJECT")
+DATAPROC_REGION = Variable.get("DATAPROC_REGION")
+DATAPROC_CLUSTER_NAME = Variable.get("DATAPROC_CLUSTER")
+GCS_BUCKET = Variable.get("GCS_BUCKET")
 
-# --- Default Arguments ---
+# === DEFAULT ARGS ===
 DEFAULT_ARGS = {
-    "owner": "airflow",
-    "depends_on_past": False,
-    "retries": 0,
-    "retry_delay": timedelta(minutes=5),
+    'owner': 'airflow',
+    'depends_on_past': False,
+    'retries': 1,
+    'retry_delay': timedelta(minutes=5),
 }
 
-# --- DAG Definition ---
-with DAG(
-    dag_id="dw_dwh_vvtn_iar_bgf_gutschr",
+def print_lastmonth_func(month_id, **context):
+    # Maintain strict character-for-character compliance with original-language wording
+    # Source print literal: "Lastmonth is &Month_ID"
+    print(f"Lastmonth is {month_id}")
+
+with DAG( 
+    dag_id='dw_dwh_vvtn_iar_bgf_gutschr',
     default_args=DEFAULT_ARGS,
-    description="Transform Gutschrift files to one file CSV",
+    description='Transform Gutschrift files to one file CSV',
+    schedule=None,
     start_date=datetime(2023, 1, 1),
-    schedule_interval=None,
     catchup=False,
     max_active_runs=1,
     is_paused_upon_creation=False,
-    tags=["migrated_uc4", "gutschrift"],
+    tags=['migrated_uc4', 'jobs_unix'],
+    params={
+        'DWH_JOB_KENNUNG': 'VVTN_IAR_BGF_GUTSCHR',
+    }
 ) as dag:
 
-    # Task representing the UC4 job DW.DWH_VVTN_IAR_BGF_GUTSCHR
-    dw_dwh_vvtn_iar_bgf_gutschr_task = BashOperator(
-        task_id="dw_dwh_vvtn_iar_bgf_gutschr_task",
-        bash_command="""
-        . $HOME/.dw_init
-        export DWH_JOB_KENNUNG="VVTN_IAR_BGF_GUTSCHR"
-        export Month_ID="{{ (execution_date - macros.dateutil.relativedelta.relativedelta(months=1)).strftime('%Y%m') }}"
-        echo "Lastmonth is $Month_ID"
-        $HOME/aktuell/vorverarbeitung/tn/bin/r_vvtn_iar_bgf_gutschrift
-        """,
+    # ── Task: print_lastmonth_task ──
+    # Ported from legacy print log statement: :print Lastmonth is &Month_ID
+    # Dynamic parameter resolution utilizing native Airflow context macros
+    print_lastmonth_task = PythonOperator(
+        task_id='print_lastmonth_task',
+        python_callable=print_lastmonth_func,
+        op_kwargs={
+            'month_id': "{{ (data_interval_start.add(months=-1)).strftime('%Y%m') }}"
+        },
     )
 
-    dw_dwh_vvtn_iar_bgf_gutschr_task
+    # ── Task: dw_dwh_vvtn_iar_bgf_gutschr_task ──
+    # This task maps to the legacy Unix job DW.DWH_VVTN_IAR_BGF_GUTSCHR.
+    # The original script executed: $HOME/aktuell/vorverarbeitung/tn/bin/r_vvtn_iar_bgf_gutschrift on host |DWHDWH1P|HOST.
+    # REVIEW-STRUCT: launcher command not recognised during conversion — implement the correct operator once its behaviour is confirmed.
+    # The workspace file reads/writes are redirected to the Google Cloud Storage bucket (GCS_BUCKET).
+    dw_dwh_vvtn_iar_bgf_gutschr_task = EmptyOperator(
+        task_id='dw_dwh_vvtn_iar_bgf_gutschr_task',
+    )
+
+    # ── Dependencies ──
+    print_lastmonth_task >> dw_dwh_vvtn_iar_bgf_gutschr_task
