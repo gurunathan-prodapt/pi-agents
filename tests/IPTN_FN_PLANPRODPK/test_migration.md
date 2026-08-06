@@ -1,0 +1,1 @@
+ERROR: tests skipped for IPTN_FN_PLANPRODPK — build phase failed or produced no output.
