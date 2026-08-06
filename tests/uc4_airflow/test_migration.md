@@ -1,0 +1,1 @@
+ERROR: tests skipped for DW.DWH_ADM_JOB_MONITOR_START — build phase failed or produced no output.
