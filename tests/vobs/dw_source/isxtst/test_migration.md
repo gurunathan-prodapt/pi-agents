@@ -1,0 +1,1 @@
+ERROR: tests skipped for DW.EXTTEST_GOOD — build phase failed or produced no output.
