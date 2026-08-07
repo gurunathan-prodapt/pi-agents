@@ -1,0 +1,105 @@
+config {
+  type: "operations",
+  hasOutput: false,
+  tags: ["jp_11", "IPTN_FN_PLANPRODPK"]
+}
+
+-- Declare variables for tracking execution and counts
+DECLARE l_table STRING DEFAULT 'DWH$TA_L_FN_VS_PLANPROD_PK';
+DECLARE v_anzahl_ds INT64 DEFAULT 0;
+DECLARE EintragsNr INT64 DEFAULT @p_eintragsnr; -- Parameterized job execution identifier
+DECLARE v_inserted_rows INT64 DEFAULT 0;
+DECLARE v_deleted_rows INT64 DEFAULT 0;
+
+BEGIN
+  -- Start Transactional block to ensure atomic execution
+  BEGIN TRANSACTION;
+
+  -----------------------------------------------------------------
+  -- MERGE representing cur1 (Insert/Update Loop)                --
+  -- Refactored to set-based DML for performance in BigQuery.     --
+  -----------------------------------------------------------------
+  MERGE `DWH$TA_L_FN_VS_PLANPROD_PK` AS target
+  USING (
+    SELECT
+      a.td_perlenprodukt_id,
+      a.td_plan_produkt_id,
+      a.referenz_jahr,
+      b.stichtag AS gueltig_von
+    FROM `${ref("DATEN_EXTTAB")}` AS a
+    CROSS JOIN `${ref("ER_EXTTAB")}` AS b
+  ) AS source
+  ON target.td_perlenprodukt_id = source.td_perlenprodukt_id
+     AND target.referenz_jahr = source.referenz_jahr
+  WHEN MATCHED THEN
+    UPDATE SET
+      target.td_plan_produkt_id = source.td_plan_produkt_id,
+      target.gueltig_von = source.gueltig_von
+  WHEN NOT MATCHED THEN
+    INSERT (td_perlenprodukt_id, td_plan_produkt_id, referenz_jahr, gueltig_von)
+    VALUES (source.td_perlenprodukt_id, source.td_plan_produkt_id, source.referenz_jahr, source.gueltig_von);
+
+  -- Track affected row counts for first loop
+  SET v_inserted_rows = @@row_count;
+
+  -- Log action output matching original dbms_output.put_line literal
+  -- Format: TO_CHAR(v_anzahl_ds) || ' rows successfully inserted in the table ' || l_table || ' (db_insert).'
+  SELECT FORMAT('%d rows successfully inserted in the table %s (db_insert).', v_inserted_rows, l_table);
+
+  -----------------------------------------------------------------
+  -- UPDATE representing cur2 (Deactivation/Soft Delete Loop)    --
+  -- Identifies existing rows to set validity end date.          --
+  -----------------------------------------------------------------
+  UPDATE `DWH$TA_L_FN_VS_PLANPROD_PK` AS target
+  SET target.gueltig_bis = expiry_source.stichtag
+  FROM (
+    SELECT
+      a.td_perlenprodukt_id,
+      a.referenz_jahr,
+      b.stichtag
+    FROM `DWH$VI_L_FN_VS_PLANPROD_PK` AS a
+    CROSS JOIN `${ref("ER_EXTTAB")}` AS b
+    EXCEPT DISTINCT
+    SELECT
+      a.td_perlenprodukt_id,
+      a.referenz_jahr,
+      b.stichtag
+    FROM `${ref("DATEN_EXTTAB")}` AS a
+    CROSS JOIN `${ref("ER_EXTTAB")}` AS b
+  ) AS expiry_source
+  WHERE target.td_perlenprodukt_id = expiry_source.td_perlenprodukt_id
+    AND target.referenz_jahr = expiry_source.referenz_jahr;
+
+  -- Track affected row counts for second loop
+  SET v_deleted_rows = @@row_count;
+
+  -- Log action output matching original dbms_output.put_line literal
+  -- Format: TO_CHAR(v_anzahl_ds) || ' rows successfully deleted in the table ' || l_table || ' (db_delete).'
+  SELECT FORMAT('%d rows successfully deleted in the table %s (db_delete).', v_deleted_rows, l_table);
+
+  -- Commit changes atomically
+  COMMIT TRANSACTION;
+
+EXCEPTION WHEN ERROR THEN
+  -- Rollback active transaction in case of any failure
+  ROLLBACK TRANSACTION;
+
+  -- Block to log error details to logging table
+  BEGIN
+    DECLARE ErrText STRING;
+    DECLARE ErrC STRING;
+    DECLARE FehlerNr INT64 DEFAULT -1; -- mapping from dwpa_globals.k_alis_err_unknown;
+
+    SET ErrText = @@error.message;
+    SET ErrC = @@error.statement_text;
+
+    -- unbekannte bzw. nicht erwartete Exceptions koennen auch
+    -- behandelt werden. Die Fehlernummer ist immer die gleiche, nur
+    -- der Zusatzfehlertext kann vorher ermittelt werden.
+    INSERT INTO `dw_logs.dwpa_meldung_errors` (severity, entry_nr, error_nr, error_msg, statement)
+    VALUES ('F', EintragsNr, FehlerNr, ErrText, ErrC);
+
+    -- Bubble up actual execution failure details using ERROR
+    ERROR(FORMAT('Execution Failed. Code: %s, Message: %s', ErrC, ErrText));
+  END;
+END;
