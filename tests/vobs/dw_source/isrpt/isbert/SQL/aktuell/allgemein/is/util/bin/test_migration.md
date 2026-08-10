@@ -1,0 +1,1 @@
+ERROR: tests skipped for Shared Files — vobs/dw_source/isrpt/isbert/SQL/aktuell/allgemein/is/util/bin — build phase failed or produced no output.
