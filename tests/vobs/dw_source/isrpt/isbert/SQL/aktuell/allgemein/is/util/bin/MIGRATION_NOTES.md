@@ -1,157 +1,158 @@
-# Migration Notes: Shared Utility Binaries
+# MIGRATION_NOTES.md
 
-**Target Path:** `vobs/dw_source/isrpt/isbert/SQL/aktuell/allgemein/is/util/bin`  
-**Source Platform:** KornShell (KSH) / Oracle SQL*Plus  
-**Target Platform:** Python 3 / Google Cloud Platform (GCP) / Cloud Composer (Apache Airflow)
+**Job/Module:** Shared Files — `vobs/dw_source/isrpt/isbert/SQL/aktuell/allgemein/is/util/bin`  
+**Source Technology:** KornShell (KSH) & Oracle SQL\*Plus / PL/SQL  
+**Target Technology:** Python 3, Google Cloud Platform (GCP) Cloud Composer (Apache Airflow), and Google Cloud BigQuery (with transitional Oracle DB support)
 
 ---
 
 ## 1. Summary
 
-This migration covers the transition of the core shared utility libraries from a legacy Unix/Oracle environment to a modern, cloud-native Python 3 architecture. These utilities provide foundational services—such as centralized error handling, date arithmetic, parameter validation, and database execution wrappers—for the entire Information Services (IS) data warehouse ecosystem.
+This migration covers the transition of four core KornShell (KSH) utility libraries from an on-premises Oracle Data Warehouse environment to a GCP-native Python 3 architecture. These utilities provide centralized error management, date arithmetic, parameter validation, and database client execution wrappers.
 
-The legacy KornShell scripts have been refactored into modular, high-performance Python modules. While they maintain strict backward compatibility with legacy command-line interfaces (CLI) and environment-variable-driven states, they eliminate unnecessary database round-trips by performing calculations natively in Python.
+*   **Source Path:** `vobs/dw_source/isrpt/isbert/SQL/aktuell/allgemein/is/util/bin/`
+*   **Target Path:** `vobs/dw_source/isrpt/isbert/SQL/aktuell/allgemein/is/util/bin/`
+*   **Target Platform:** GCP Cloud Composer (Airflow) for orchestration, BigQuery for target data warehousing, and transitional Oracle DB connectivity via the `python-oracledb` driver.
 
 ---
 
 ## 2. Generated Artifacts
 
-The migration has produced four Python modules corresponding to the legacy KSH files:
+The migration has generated four Python modules corresponding to the legacy KSH scripts:
 
-| Legacy File | Migrated Python File | Role / Responsibility |
+| Legacy KSH File | Migrated Python File | Role & Responsibility |
 | :--- | :--- | :--- |
-| `f_alis_msgerr.ksh` | `f_alis_msgerr.py` | **Centralized Error & Run Tracker:** Interfaces with the `BERT_MELDUNG` Oracle package to register job runs, log application errors, record execution metrics, and handle aborted states. |
-| `h_alis_date.ksh` | `h_alis_date.py` | **Date Arithmetic Library:** Performs leap-year-safe date calculations, format validations, and reporting-window offset computations natively in Python. Includes a CLI wrapper for shell compatibility. |
-| `h_alis_parameter.ksh` | `h_alis_parameter.py` | **Parameter Parser & Validator:** Standardizes and validates KPIs (Kennzahlen), source systems, master data names, and timeframes. Manages global error states (`ErrNr`, `ErrArg`). |
-| `h_alis_sqlplus.ksh` | `h_alis_sqlplus.py` | **SQL\*Plus Execution Wrapper:** Safely executes external SQL scripts with parameter validation, file readability checks, and error code propagation. |
+| `f_alis_msgerr.ksh` | `f_alis_msgerr.py` | **Centralized Logging & State Ledger:** Manages execution registration, status updates (`OK`, `Abbruch`), error reporting, and timing metrics using direct Oracle PL/SQL calls (`BERT_MELDUNG` package). |
+| `h_alis_date.ksh` | `h_alis_date.py` | **Date Arithmetic & Validation:** Performs calendar calculations, leap-year checks, month-end validation, and sliding window calculations. Uses native Python `datetime` with a BigQuery SQL fallback for complex Oracle formats. |
+| `h_alis_parameter.ksh` | `h_alis_parameter.py` | **Parameter Normalization & Routing:** Standardizes long business terms into short codes, validates system-metric compatibility, and maps metrics to functional domains (`tn`, `us`, `gd`) and schedules (`t`, `m`). |
+| `h_alis_sqlplus.ksh` | `h_alis_sqlplus.py` | **SQL Execution Wrapper:** Safely executes external SQL scripts via `sqlplus` subprocesses, ensuring file readability and non-interactive execution (`</dev/null`). |
 
 ---
 
 ## 3. Key Design Decisions
 
-### Python-Native Date Math over Database Queries
-In the legacy shell scripts, simple operations like validating a date format or checking if one date was less than another required launching a heavy `sqlplus` session to query the Oracle `DUAL` table. 
-* **Decision:** All date validations, leap-year checks, and day/month additions in `h_alis_date.py` have been rewritten using Python's standard `datetime`, `calendar`, and `dateutil` libraries.
-* **Trade-off:** This completely eliminates database network latency and connection overhead, resulting in a significant performance increase during parameter parsing phases.
+### Python as the Target Language
+The legacy scripts define a complex library of utility functions containing validation logic, database client sessions, file operations, error handling wrappers, and dynamic variable evaluations. These operations cannot be modeled in pure SQL, making Python the optimal target language.
 
-### State Preservation via Environment Variables
-The legacy parameter utility (`h_alis_parameter.ksh`) relies on mutating global shell variables (`ErrNr`, `ErrArg`) and using `eval` to pass values back to caller scripts.
-* **Decision:** The migrated `h_alis_parameter.py` synchronizes its internal state with `os.environ` dynamically.
-* **Trade-off:** While direct environment mutation is generally discouraged in pure Python, this approach was chosen to guarantee that legacy-style calling scripts (which may still be running in a hybrid migration phase) can source or call this utility without breaking their state-tracking logic.
+### Native Python vs. Database Roundtrips
+*   **Legacy Approach:** The legacy date utility (`h_alis_date.ksh`) frequently initiated SQL\*Plus sessions to perform basic date validations and arithmetic.
+*   **Migrated Approach:** All standard date arithmetic (`LetzterTagDesMonats`, `TageimMonat`, `AddiereDatum`) has been rewritten using native Python `datetime` and `calendar` libraries. This eliminates database roundtrips, reducing execution latency and network overhead.
+*   **Fallback Mechanism:** For highly complex Oracle-specific date formats, `h_alis_date.py` leverages the `google.cloud.bigquery` client SDK to evaluate the format safely in the cloud.
 
-### Transitional Subprocess Wrapper for SQL*Plus
-The `h_alis_sqlplus.py` module retains the ability to launch `sqlplus` via Python's `subprocess` module.
-* **Decision:** Keep the `sqlplus` command-line execution interface intact rather than immediately converting all SQL scripts to native Python database client executions.
-* **Trade-off:** This allows downstream ETL jobs to be migrated incrementally without requiring a simultaneous rewrite of hundreds of legacy `.sql` files. It is flagged as a candidate for future B4 Redesign (see Section 5).
+### State Management & Thread Safety
+*   **Legacy Approach:** The KSH scripts relied heavily on dynamic variable assignment via `eval` (e.g., `eval "$VarName=$Value"`) to modify the caller's environment.
+*   **Migrated Approach:** Python functions return values directly or manipulate a structured context dictionary (`context_dict`). This ensures thread safety, prevents environment variable pollution, and aligns with modern programming practices.
+
+### Transitional Oracle Support
+To support a phased migration where the database is not yet fully migrated to BigQuery, `f_alis_msgerr.py` utilizes the `oracledb` driver to interact directly with the legacy `BERT_MELDUNG` PL/SQL package.
 
 ---
 
 ## 4. Manual Steps Before Go-Live
 
-Before deploying these utilities to production, the following infrastructure and configuration steps must be completed:
+### 1. Schema & Dataset Creation
+*   **BigQuery Audit Dataset:** Ensure the BigQuery dataset defined by the `BQ_DATASET` environment variable exists and contains the necessary audit/logging tables if logging is redirected to BigQuery.
+*   **Transitional Oracle DB:** Ensure the transitional Oracle database contains the `BERT_MELDUNG` package and the `BERT_SEQ` sequence.
 
-### 1. Database Schema & Objects
-Ensure that the target tracking database (Oracle) contains the required logging schema and packages:
-* The `BERT_MELDUNG` PL/SQL package must be compiled and accessible.
-* The sequence generator `SEQ_BERT_MELDUNG_ID` must be active.
-* The execution tracking tables must be granted read/write permissions for the migration database user.
+### 2. IAM & Permissions
+*   **GCP Service Account:** The Cloud Composer service account must have the following roles:
+    *   `roles/bigquery.jobUser` (to run validation queries)
+    *   `roles/bigquery.dataViewer` / `roles/bigquery.dataEditor` on the `BQ_DATASET`
+    *   `roles/secretmanager.secretAccessor` (if database credentials are stored in Secret Manager)
 
-### 2. IAM & Secret Management
-The database connection string (`DW_ORAUSER`) contains sensitive credentials and must not be hardcoded.
-* **Action:** Store the connection string in **GCP Secret Manager** (e.g., `projects/PROJECT_ID/secrets/dw-oracle-user`).
-* **Permissions:** Grant the Cloud Composer service account the Secret Manager Secret Accessor (`roles/secretmanager.secretAccessor`) role.
+### 3. Connection Strings & Secrets
+*   **`DW_ORAUSER` Configuration:** Store the Oracle connection string securely in Google Cloud Secret Manager or as an Airflow Connection. At runtime, this must be exposed to the Python environment as the `DW_ORAUSER` environment variable (e.g., `user/password@hostname:port/service_name`).
 
-### 3. Environment Variables
-Configure the following environment variables in the Cloud Composer (Airflow) environment:
-* `DW_ORAUSER`: Sourced dynamically from Secret Manager at runtime.
-* `DW_DIR_ROOT`: Points to the root directory of the migrated system scripts (typically `/home/airflow/gcs/dags/`).
-* `DW_DIR_PROT`: Points to the GCS bucket or local mount directory where execution logs are deposited.
-
-### 4. Scheduling & Deployment
-These files are shared utility libraries and **must not** be scheduled as standalone Airflow DAGs.
-* **Action:** Deploy these files to the `/dags/dependencies/` or `/plugins/` directory of your Cloud Composer GCS bucket so they are available in the Python search path (`sys.path`) for all executing DAG tasks.
+### 4. Deployment & Scheduling
+*   **Shared Library Path:** These files are utility libraries and **must not** be scheduled as standalone Airflow DAGs.
+*   **Deployment Location:** Deploy these files to the Airflow `dags/` or `plugins/` directory, or package them as a private library and install them in the Cloud Composer environment's `PYTHONPATH` so they can be imported by other DAGs:
+    ```python
+    from is.util.bin.h_alis_date import AddiereDatum
+    ```
 
 ---
 
 ## 5. Known Gaps & Unresolved References
 
-### B4 Redesign: SQL*Plus Retirement
-* **Gap:** `h_alis_sqlplus.py` still relies on the local availability of the `sqlplus` binary within the Airflow worker containers.
-* **Redesign Plan:** This is a temporary transitional state. Once the downstream SQL scripts are migrated to BigQuery, this module should be retired. Downstream DAGs must be refactored to use native Airflow BigQuery operators (`BigQueryInsertJobOperator`) or the Google Cloud BigQuery Python client, eliminating the need for SQL*Plus entirely.
+### 1. Unmigrated Downstream Dependencies
+The following 12 downstream jobs depend on these utility libraries and are currently **not yet migrated**. End-to-end integration and execution state reporting cannot be finalized until these jobs are migrated to GCP:
+*   `DW.BERT_ABLAUFSTEUERUNG`
+*   `DW.BERT_AUSD_BP_TA_MSISDN`
+*   `DW.BERT_AUSD_BP_TA_P_BASISPROD`
+*   `DW.BERT_AUSD_V_TA_PERIOD`
+*   `DW.BERT_AUSD_V_TA_P_VERTRAG`
+*   `DW.BERT_AUSD_V_TA_VERTRAG_TMP`
+*   `DW.BERT_DROP_TEMP_TABLE`
+*   `DW.BERT_P_ADRESSEN`
+*   `DW.BERT_P_AUSTAUSCH`
+*   `DW.BERT_P_GESCHAEFTSP`
+*   `DW.BERT_P_RECH_EMPF`
+*   `DW.BERT_RECHNUNGSDATEN`
 
-### Unmigrated Downstream Callers
-There are 12 downstream jobs that source or execute these utilities which are **not yet migrated**:
-* `DW.BERT_ABLAUFSTEUERUNG`
-* `DW.BERT_AUSD_BP_TA_MSISDN`
-* `DW.BERT_AUSD_BP_TA_P_BASISPROD`
-* `DW.BERT_AUSD_V_TA_PERIOD`
-* `DW.BERT_AUSD_V_TA_P_VERTRAG`
-* `DW.BERT_AUSD_V_TA_VERTRAG_TMP`
-* `DW.BERT_DROP_TEMP_TABLE`
-* `DW.BERT_P_ADRESSEN`
-* `DW.BERT_P_AUSTAUSCH`
-* `DW.BERT_P_GESCHAEFTSP`
-* `DW.BERT_P_RECH_EMPF`
-* `DW.BERT_RECHNUNGSDATEN`
+### 2. Missing External SQL Scripts
+The following external SQL scripts referenced by the date and error utilities were not supplied in the source code and must be verified during downstream migration:
+*   `d_alis_vormonat.sql` (referenced by `DWDate_Vormonat`)
+*   `d_alis_datum_zeitraum.sql` (referenced by `DWDate_Gib_Zeitraum`)
+*   `d_al_is_ermittlenr.sql` (referenced by `DWMSG_ErmittleNr`)
 
-*Impact:* End-to-end integration testing of these utilities cannot be fully finalized until these downstream consumers are migrated to Python/Airflow.
-
-### Global Trap Interception
-* **Gap:** Legacy KSH scripts captured uncaught errors globally using shell-level traps (`trap 'DWMSG_Fehlerbehandlung' ERR`). Python does not have a direct equivalent for shell traps.
-* **Mitigation:** Migrated Python tasks must wrap their execution blocks in standard `try...except` blocks, or utilize Airflow's `on_failure_callback` to explicitly call `fehlerbehandlung` in the event of a task failure.
+### 3. B4 Redesign Items (Logging Architecture)
+*   **Issue:** The central logging mechanism (`f_alis_msgerr.py`) currently performs row-by-row transactional updates to an Oracle database via `oracledb`. In a serverless cloud environment (BigQuery), transactional row-by-row logging is an anti-pattern that can lead to concurrency bottlenecks.
+*   **Recommendation:** Redesign the logging architecture to write structured logs to **Google Cloud Logging** or **Cloud Pub/Sub**, or buffer log entries and perform batch inserts into BigQuery.
 
 ---
 
 ## 6. Validation
 
-To validate the correctness of the migrated Python utilities, execute the following test suites:
+To validate the migrated Python modules, execute them from the command line in an environment with the appropriate environment variables set.
 
-### Unit Testing
-Run the pytest suite designed for the date and parameter utilities:
+### 1. Validate Date Arithmetic (`h_alis_date.py`)
+Run the following commands to verify native Python date calculations:
 ```bash
-pytest test_h_alis_date.py
-pytest test_h_alis_parameter.py
+# Test date addition (Expected output: 20231031)
+python3 h_alis_date.py AddiereDatum 20231026 5
+
+# Test month-end check (Expected output: 0 for True)
+python3 h_alis_date.py LetzterTagDesMonats 20231031
+echo $?
+
+# Test date comparison (Expected output: 0 for True)
+python3 h_alis_date.py DWDate_Datum_LE 20231001 20231026
+echo $?
 ```
 
-### CLI Integration Testing
-Verify that the CLI wrappers produce the exact outputs expected by legacy shell scripts.
-
-#### 1. Date Addition Validation
+### 2. Validate Parameter Normalization (`h_alis_parameter.py`)
+Verify that parameter mappings and system-metric compatibility checks function correctly:
 ```bash
-python3 h_alis_date.py AddiereDatum 20231024 5
-# Expected Output: 20231029
+# Set environment variables for testing
+export TEST_VAR="gutschrift"
+
+# Run normalization (Expected: TEST_VAR is updated to "gut" in os.environ)
+python3 -c "import os, h_alis_parameter; h_alis_parameter.konvertiereKennzahl('TEST_VAR'); print(os.environ['TEST_VAR'])"
 ```
 
-#### 2. Date Range Calculation Validation
-```bash
-python3 h_alis_date.py DWDate_Gib_Zeitraum -1 M YYYYMMDD START_VAR END_VAR
-# Expected Output:
-# START_VAR=20230901
-# END_VAR=20230930
-```
-
-#### 3. Error Output Verification
-Verify that invalid inputs trigger the exact German error messages and exit codes:
-```bash
-python3 h_alis_date.py DWDate_Gib_Zeitraum -1 X YYYYMMDD START_VAR END_VAR
-# Expected Standard Error Output:
-# !! Interner Fehler bei der Rueckgabe von Datumswerten
-#    Funktion: DWDate_Gib_Zeitraum
-#    1 Zeile erwartet, 0 Zeile(n) bekommen
-# Expected Exit Code: 1
-```
+### 3. Success Criteria
+*   All CLI test commands return an exit code of `0`.
+*   Date calculations match the legacy Oracle output exactly (including leap years).
+*   German console outputs and error messages are preserved exactly as-is (e.g., `"Datum {datum1} ist groesser als {datum2}"`).
 
 ---
 
 ## 7. Rollback Procedure
 
-In the event of an issue during deployment or integration testing, follow these rollback steps:
+If issues are encountered during the deployment of these utility libraries, follow these steps to roll back to the legacy environment:
 
-1. **Remove Python Dependencies:** Delete the migrated `.py` files from the Cloud Composer GCS bucket `/dags/dependencies/` directory to prevent downstream tasks from importing them.
-2. **Restore Legacy Sourcing:** If running in a hybrid environment, re-enable the sourcing of the legacy `.ksh` files in the wrapper scripts.
-3. **Database State Reset:** If a job failed during validation and left an entry in the `BERT_MELDUNG` table in an inconsistent state, manually reset the status using SQL*Plus:
-   ```sql
-   -- To reset a stuck run status to Aborted
-   EXEC BERT_MELDUNG.SetzeStatusAbbruch(&eintrags_nr);
-   COMMIT;
-   ```
+1.  **Revert Environment Variables:** Point the environment variables (`DW_DIR_ROOT`, `DW_DIR_PROT`) back to the legacy on-premises NFS mount paths.
+2.  **Restore Sourcing Links:** Revert any migrated wrapper scripts that import the Python modules to source the legacy `.ksh` files instead:
+    ```bash
+    # Revert this:
+    # python3 f_alis_msgerr.py DWMSG_SetzeStatusOK 12345
+    
+    # Back to this:
+    . f_alis_msgerr.ksh
+    DWMSG_SetzeStatusOK 12345
+    ```
+3.  **Verify Oracle Logging State:** Check the Oracle database `BERT_MELDUNG` table to ensure no orphaned or corrupted log entries exist from the failed Python execution. If necessary, manually update the status of active runs using SQL\*Plus:
+    ```sql
+    EXEC BERT_MELDUNG.SetzeStatusAbbruch(:eintrags_nr);
+    COMMIT;
+    ```
