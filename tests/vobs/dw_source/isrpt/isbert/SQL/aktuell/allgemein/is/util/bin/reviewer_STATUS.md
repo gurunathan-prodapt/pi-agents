@@ -6,9 +6,9 @@ The automated reviewer rejected this output after 3 attempt(s). The generated fi
 
 ## Final Rejection Reason
 
-Generated Python does not parse — the migrated job cannot run at all:
-  - vobs/dw_source/isrpt/isbert/SQL/aktuell/allgemein/is/util/bin/f_alis_msgerr.py: line 74: '(' was never closed
+Generated Python calls source-language (Ab Initio DML) primitives that were never translated — these are undefined at runtime and raise NameError:
+  - vobs/dw_source/isrpt/isbert/SQL/aktuell/allgemein/is/util/bin/f_alis_msgerr.py: SYSDATE
 
 ## Required Changes
 
-Re-generate the listed file(s) as syntactically valid Python; if the output was truncated mid-statement, emit the complete file.
+Replace each untranslated primitive with its target-platform equivalent (e.g. string_lrtrim -> trim(), string_substring -> substring(), re_index -> regexp_instr()/locate(), SYSDATE -> current_timestamp()).
