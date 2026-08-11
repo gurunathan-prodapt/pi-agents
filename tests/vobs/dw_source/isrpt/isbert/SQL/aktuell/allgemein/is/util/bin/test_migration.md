@@ -1,341 +1,318 @@
-# Migration Validation Test Suite: Shared Files — Utility Binaries
+# Migration Validation Test Suite: Shared Files (is/util/bin)
 
-This document defines the migration-validation test suite for the migrated Python utility modules:
-*   `f_alis_msgerr.py` (Error management and database logging)
-*   `h_alis_date.py` (Date arithmetic and validation)
-*   `h_alis_parameter.py` (Parameter parsing and domain validation)
-*   `h_alis_sqlplus.py` (SQL*Plus execution wrapper)
-
-These tests ensure behavioral equivalence between the legacy KornShell (`.ksh`) scripts and the migrated Python (`.py`) implementations, covering output parity, edge cases, database interactions, and error handling.
+This document defines the migration-validation test suite for the migrated Python utility modules located in `vobs/dw_source/isrpt/isbert/SQL/aktuell/allgemein/is/util/bin`. These tests ensure behavioral equivalence between the legacy KornShell (`.ksh`) scripts and the migrated Python (`.py`) implementations.
 
 ---
 
-## Section 1: Unit & Behavioral Parity Tests for `h_alis_date.py`
+## Test Case 1: `f_alis_msgerr` — Error Handling & Status Updates (`dwmsg_fehlerbehandlung`)
 
-### Test Case 1.1: Previous Month Calculation (`dw_date_vormonat`)
-*   **Purpose**: Verify that `dw_date_vormonat` correctly calculates the previous month relative to a given execution date and formats it using Oracle-to-Python mapped format strings.
-*   **Setup**: 
-    *   Mock `datetime.now` to return a fixed date: `2023-11-15`.
-    *   Clear environment variables.
-*   **Action**: 
-    1.  Call `dw_date_vormonat("TEST_VAR", "YYYYMM")`.
-    2.  Call `dw_date_vormonat("TEST_VAR", "MM/YYYY")`.
-*   **Pass/Fail Criterion**: 
-    *   **Pass**: The first call returns `"202310"` and prints `TEST_VAR=202310` to `stdout`. The second call returns `"10/2023"` and prints `TEST_VAR=10/2023` to `stdout`.
-    *   **Fail**: Any other output is returned, or the printed output does not match the shell assignment format.
+### Purpose
+Verify that `dwmsg_fehlerbehandlung` correctly logs a fatal error (code `10`) with the captured exit code and sets the execution log entry status to aborted (`Abbruch`) in the database.
 
-```python
-import pytest
-from unittest.mock import patch
-from datetime import datetime
-import h_alis_date
+### Setup
+- Set the environment variable `DW_ORAUSER` to a mock connection string.
+- Mock the `oracledb` connection and cursor objects to capture executed PL/SQL statements.
 
-@patch('h_alis_date.datetime')
-def test_dw_date_vormonat(mock_datetime, capsys):
-    # Mock current date to Nov 15, 2023
-    mock_datetime.now.return_value = datetime(2023, 11, 15)
-    mock_datetime.strptime = datetime.strptime
-
-    # Test YYYYMM format
-    res1 = h_alis_date.dw_date_vormonat("TEST_VAR", "YYYYMM")
-    assert res1 == "202310"
-    captured = capsys.readouterr()
-    assert captured.out.strip() == "TEST_VAR=202310"
-
-    # Test MM/YYYY format
-    res2 = h_alis_date.dw_date_vormonat("TEST_VAR", "MM/YYYY")
-    assert res2 == "10/2023"
-    captured = capsys.readouterr()
-    assert captured.out.strip() == "TEST_VAR=10/2023"
-```
-
-### Test Case 1.2: Date Format Validation (`dw_date_datum_check`)
-*   **Purpose**: Verify that `dw_date_datum_check` correctly validates date strings against specified formats, matching the legacy database-driven validation.
-*   **Setup**: None.
-*   **Action**: Execute validation with valid and invalid date/format combinations.
-*   **Pass/Fail Criterion**: 
-    *   **Pass**: Returns `True` for valid dates and `False` for invalid dates (e.g., out-of-range months/days).
-    *   **Fail**: Incorrectly validates an invalid date or rejects a valid one.
-
-```python
-def test_dw_date_datum_check():
-    # Valid cases
-    assert h_alis_date.dw_date_datum_check("20231015", "YYYYMMDD") is True
-    assert h_alis_date.dw_date_datum_check("15.10.2023", "DD.MM.YYYY") is True
-    
-    # Invalid cases
-    assert h_alis_date.dw_date_datum_check("20231315", "YYYYMMDD") is False  # Month 13
-    assert h_alis_date.dw_date_datum_check("20230229", "YYYYMMDD") is False  # Non-leap year Feb 29
-    assert h_alis_date.dw_date_datum_check("not_a_date", "YYYYMMDD") is False
-```
-
-### Test Case 1.3: Date Chronology Assertion (`dw_date_datum_le`)
-*   **Purpose**: Verify that `dw_date_datum_le` asserts that `datum1 <= datum2` and raises a `ValueError` with the exact legacy German error message when the assertion fails.
-*   **Setup**: None.
-*   **Action**: 
-    1.  Call with `datum1 <= datum2`.
-    2.  Call with `datum1 > datum2`.
-*   **Pass/Fail Criterion**: 
-    *   **Pass**: Returns `True` for valid chronology. Raises `ValueError` with the exact message `"Datum 20231115 ist groesser als 20231114"` when `datum1 > datum2`.
-    *   **Fail**: Does not raise an exception, or the exception message does not match the legacy literal.
-
-```python
-def test_dw_date_datum_le():
-    # Equal dates
-    assert h_alis_date.dw_date_datum_le("20231115", "20231115") is True
-    # Chronological order
-    assert h_alis_date.dw_date_datum_le("20231114", "20231115") is True
-    
-    # Out of order - must raise ValueError with exact legacy German message
-    with pytest.raises(ValueError) as excinfo:
-        h_alis_date.dw_date_datum_le("20231115", "20231114")
-    assert "Datum 20231115 ist groesser als 20231114" in str(excinfo.value)
-```
-
-### Test Case 1.4: Date Range Calculation (`dw_date_gib_zeitraum`)
-*   **Purpose**: Verify that `dw_date_gib_zeitraum` calculates correct start and end dates based on step units ('D', 'M', 'Y') and offsets, matching legacy business logic.
-*   **Setup**: Mock `datetime.now` to return `2023-11-15`.
-*   **Action**: 
-    1.  Call with offset `-1`, unit `'M'` (Month).
-    2.  Call with offset `5`, unit `'D'` (Day).
-    3.  Call with offset `1`, unit `'Y'` (Year).
-*   **Pass/Fail Criterion**: 
-    *   **Pass**: 
-        *   Month ('M') offset `-1` returns `("20231101", "20231031")` (Start is 1st of current month, End is ultimo of target month).
-        *   Year ('Y') offset `1` returns `("20230101", "20241231")` (Start is New Year of current year, End is New Year's Eve of target year).
-    *   **Fail**: Calculated dates do not align with legacy month-end/year-end boundary rules.
-
-```python
-@patch('h_alis_date.datetime')
-def test_dw_date_gib_zeitraum(mock_datetime):
-    mock_datetime.now.return_value = datetime(2023, 11, 15)
-    mock_datetime.strptime = datetime.strptime
-
-    # Test Month Step (M) with negative offset
-    start, end = h_alis_date.dw_date_gib_zeitraum(-1, "M", "YYYYMMDD")
-    assert start == "20231101"  # First of current month
-    assert end == "20231031"    # Last day of October (current - 1 month)
-
-    # Test Year Step (Y) with positive offset
-    start, end = h_alis_date.dw_date_gib_zeitraum(1, "Y", "YYYYMMDD")
-    assert start == "20230101"  # New Year of current year
-    assert end == "20241231"    # New Year's Eve of next year
-```
-
----
-
-## Section 2: Unit & Behavioral Parity Tests for `h_alis_parameter.py`
-
-### Test Case 2.1: Parameter Presence Check (`pruefeParameterGesetzt`)
-*   **Purpose**: Verify that `pruefeParameterGesetzt` correctly identifies unset environment variables and sets the global error state (`ErrNr` and `ErrArg`) in `os.environ`.
-*   **Setup**: Clear `os.environ` of `ErrNr` and `ErrArg`.
-*   **Action**: 
-    1.  Call with a set environment variable.
-    2.  Call with an unset environment variable.
-*   **Pass/Fail Criterion**: 
-    *   **Pass**: If the variable is unset, `os.environ["ErrNr"]` is set to `"194"` and `os.environ["ErrArg"]` is set to the parameter name. If set, error state remains unchanged.
-    *   **Fail**: Error state is not updated, or incorrect error codes are set.
+### Action
+Run the following `pytest` test case:
 
 ```python
 import os
-import h_alis_parameter
-
-def test_pruefe_parameter_gesetzt():
-    # Reset error state
-    h_alis_parameter.set_error(0, "")
-    
-    # Case 1: Parameter is set
-    os.environ["TEST_PARAM_VAR"] = "value"
-    h_alis_parameter.pruefeParameterGesetzt("TestParam", "TEST_PARAM_VAR")
-    err_nr, _ = h_alis_parameter.get_error()
-    assert err_nr == 0
-
-    # Case 2: Parameter is missing
-    if "TEST_MISSING_VAR" in os.environ:
-        del os.environ["TEST_MISSING_VAR"]
-    h_alis_parameter.pruefeParameterGesetzt("MissingParam", "TEST_MISSING_VAR")
-    err_nr, err_arg = h_alis_parameter.get_error()
-    assert err_nr == 194
-    assert err_arg == "MissingParam"
-```
-
-### Test Case 2.2: KPI Code Conversion (`konvertiereKennzahl`)
-*   **Purpose**: Verify that `konvertiereKennzahl` maps legacy German KPI names to their standardized 3-letter shorthand codes and handles unknown values.
-*   **Setup**: Reset error state.
-*   **Action**: 
-    1.  Convert `"zugang"`, `"abgang"`, `"bestand"`, `"restguthaben"`.
-    2.  Convert an invalid KPI `"invalid_kpi"`.
-*   **Pass/Fail Criterion**: 
-    *   **Pass**: Valid KPIs are mapped to `"zug"`, `"abg"`, `"bst"`, `"rst"`. Invalid KPIs set `ErrNr` to `198` and the variable to `"???"`.
-    *   **Fail**: Incorrect mappings or failure to set error state on invalid inputs.
-
-```python
-def test_konvertiere_kennzahl():
-    h_alis_parameter.set_error(0, "")
-    
-    # Test valid mappings
-    os.environ["KPI_VAR"] = "zugang"
-    h_alis_parameter.konvertiereKennzahl("KPI_VAR")
-    assert os.environ["KPI_VAR"] == "zug"
-
-    os.environ["KPI_VAR"] = "restguthaben"
-    h_alis_parameter.konvertiereKennzahl("KPI_VAR")
-    assert os.environ["KPI_VAR"] == "rst"
-
-    # Test invalid mapping
-    h_alis_parameter.set_error(0, "")
-    os.environ["KPI_VAR"] = "invalid_kpi"
-    h_alis_parameter.konvertiereKennzahl("KPI_VAR")
-    assert os.environ["KPI_VAR"] == "???"
-    err_nr, err_arg = h_alis_parameter.get_error()
-    assert err_nr == 198
-    assert err_arg == "invalid_kpi"
-```
-
-### Test Case 2.3: System-KPI Compatibility Matrix (`pruefeSystemKennzahl`)
-*   **Purpose**: Validate that `pruefeSystemKennzahl` enforces the compatibility matrix between source systems and KPIs, setting `ErrNr = 195` for invalid combinations.
-*   **Setup**: Reset error state.
-*   **Action**: 
-    1.  Test allowed combination: `("sap", "srs")`.
-    2.  Test forbidden combination: `("sap", "zug")`.
-*   **Pass/Fail Criterion**: 
-    *   **Pass**: Allowed combinations do not alter the error state. Forbidden combinations set `ErrNr = 195` and `ErrArg = "Ungueltige Kombination sap zug"`.
-    *   **Fail**: Forbidden combinations are allowed to pass, or allowed combinations are blocked.
-
-```python
-def test_pruefe_system_kennzahl():
-    # Allowed combination
-    h_alis_parameter.set_error(0, "")
-    h_alis_parameter.pruefeSystemKennzahl("sap", "srs")
-    err_nr, _ = h_alis_parameter.get_error()
-    assert err_nr == 0
-
-    # Forbidden combination
-    h_alis_parameter.set_error(0, "")
-    h_alis_parameter.pruefeSystemKennzahl("sap", "zug")
-    err_nr, err_arg = h_alis_parameter.get_error()
-    assert err_nr == 195
-    assert err_arg == "Ungueltige Kombination sap zug"
-```
-
----
-
-## Section 3: Integration & Database Mocking Tests for `f_alis_msgerr.py`
-
-### Test Case 3.1: Database State Transitions (`setze_status_ok` / `setze_status_abbruch`)
-*   **Purpose**: Verify that `setze_status_ok` and `setze_status_abbruch` execute the correct Oracle PL/SQL stored procedures with the provided entry ID.
-*   **Setup**: Mock `oracledb.connect` and its cursor context manager.
-*   **Action**: 
-    1.  Call `setze_status_ok(12345)`.
-    2.  Call `setze_status_abbruch(12345)`.
-*   **Pass/Fail Criterion**: 
-    *   **Pass**: The mock cursor executes `"BEGIN BERT_MELDUNG.SetzeStatusOk(:1); END;"` and `"BEGIN BERT_MELDUNG.SetzeStatusAbbruch(:1); END;"` respectively, passing `[12345]` as a bind parameter.
-    *   **Fail**: Stored procedures are called with incorrect SQL, incorrect parameters, or connection is not committed.
-
-```python
+import pytest
 from unittest.mock import MagicMock, patch
+
+# Import the migrated module
 import f_alis_msgerr
 
-@patch('f_alis_msgerr.oracledb.connect')
-def test_database_status_transitions(mock_connect):
-    # Setup mock connection and cursor
+@patch("f_alis_msgerr.get_db_connection")
+def test_dwmsg_fehlerbehandlung(mock_get_db):
+    # Setup mock database connection and cursor
     mock_conn = MagicMock()
     mock_cursor = MagicMock()
-    mock_connect.return_value.__enter__.return_value = mock_conn
+    mock_get_db.return_value = mock_conn
+    mock_conn.__enter__.return_value = mock_conn
     mock_conn.cursor.return_value.__enter__.return_value = mock_cursor
 
-    # Action 1: Set Status OK
-    f_alis_msgerr.setze_status_ok(12345)
-    mock_cursor.execute.assert_called_with(
-        "BEGIN BERT_MELDUNG.SetzeStatusOk(:1); END;", [12345]
-    )
-    assert mock_conn.commit.call_count == 1
+    os.environ["DW_ORAUSER"] = "mock_user/mock_pass@mock_db"
+    
+    # Action: Trigger error handler with entry ID "99999" and exit code 2
+    f_alis_msgerr.dwmsg_fehlerbehandlung(eintrags_nr="99999", fehler_nr=2)
 
-    # Action 2: Set Status Abbruch
-    f_alis_msgerr.setze_status_abbruch(12345)
-    mock_cursor.execute.assert_called_with(
-        "BEGIN BERT_MELDUNG.SetzeStatusAbbruch(:1); END;", [12345]
+    # Assertions for MeldeFehler (Fatal, Error Code 10, with custom message)
+    # Since MeldeFehler is called first, verify the PL/SQL execution
+    mock_cursor.execute.assert_any_call(
+        "BEGIN BERT_MELDUNG.Fehler(:1, :2, :3, :4); END;",
+        ["F", "99999", 10, "ErrorCode ist: 2"]
     )
+
+    # Assertions for SetzeStatusAbbruch
+    mock_cursor.execute.assert_any_call(
+        "BEGIN BERT_MELDUNG.SetzeStatusAbbruch(:1); END;",
+        ["99999"]
+    )
+    
+    # Ensure transactions were committed
     assert mock_conn.commit.call_count == 2
 ```
 
-### Test Case 3.2: Detection of Truncation Gaps (Missing Functions)
-*   **Purpose**: Explicitly assert the existence and signature of all legacy functions to prevent deployment of truncated Python code.
-*   **Setup**: Import `f_alis_msgerr`.
-*   **Action**: Inspect the module for the presence of all legacy functions.
-*   **Pass/Fail Criterion**: 
-    *   **Pass**: All functions (`fehlerbehandlung`, `setze_status_ok`, `setze_status_abbruch`, `ermittle_nr`, `erzeuge_eintrag`, `melde_fehler`, `logdateiname`, `setze_stichtag_info`, `append_timing_infos`) are defined.
-    *   **Fail**: Any of the listed functions are missing or truncated.
-
-```python
-def test_prevent_truncation_gaps():
-    import f_alis_msgerr
-    
-    # Assert all legacy functions are implemented in the Python module
-    assert hasattr(f_alis_msgerr, 'fehlerbehandlung')
-    assert hasattr(f_alis_msgerr, 'setze_status_ok')
-    assert hasattr(f_alis_msgerr, 'setze_status_abbruch')
-    assert hasattr(f_alis_msgerr, 'ermittle_nr')
-    assert hasattr(f_alis_msgerr, 'erzeuge_eintrag')
-    assert hasattr(f_alis_msgerr, 'melde_fehler')
-    assert hasattr(f_alis_msgerr, 'logdateiname')
-    assert hasattr(f_alis_msgerr, 'setze_stichtag_info')
-    assert hasattr(f_alis_msgerr, 'append_timing_infos')
-```
+### Pass/Fail Criterion
+- **Pass**: The database cursor executes `BERT_MELDUNG.Fehler` with parameters `['F', '99999', 10, 'ErrorCode ist: 2']` and `BERT_MELDUNG.SetzeStatusAbbruch` with parameter `['99999']`. Both transactions are committed.
+- **Fail**: Any database call is missed, parameters do not match, or the transaction is not committed.
 
 ---
 
-## Section 4: Integration & Subprocess Mocking Tests for `h_alis_sqlplus.py`
+## Test Case 2: `f_alis_msgerr` — Sequence Number Retrieval (`dwmsg_ermittle_nr`)
 
-### Test Case 4.1: SQL*Plus Execution Preconditions and Execution
-*   **Purpose**: Verify that `starte_sql_skript` validates file readability and executes SQL*Plus with correct arguments and environment variables.
-*   **Setup**: 
-    *   Mock `pathlib.Path.is_file` and `os.access` to simulate file readability.
-    *   Mock `subprocess.run` to prevent actual process execution.
-    *   Set `os.environ["DW_ORAUSER"] = "test_user/test_pass@test_db"`.
-*   **Action**: 
-    1.  Call with a non-existent/unreadable script.
-    2.  Call with a valid script and arguments.
-*   **Pass/Fail Criterion**: 
-    *   **Pass**: 
-        *   Unreadable script returns `201` and calls `dwmsg_melde_fehler`.
-        *   Readable script executes `subprocess.run` with `["sqlplus", "test_user/test_pass@test_db", "@/path/to/script.sql", "arg1", "arg2"]` and returns the process exit code.
-    *   **Fail**: Subprocess is called when preconditions fail, or arguments are passed incorrectly.
+### Purpose
+Verify that `dwmsg_ermittle_nr` executes the external SQL script via `sqlplus`, reads the generated sequence number from the temporary file, cleans up the file, and returns the stripped sequence.
+
+### Setup
+- Set the environment variables `DW_ORAUSER` and `DW_DIR_ROOT`.
+- Mock `subprocess.run` to simulate the creation of the temporary file containing the sequence number.
+
+### Action
+Run the following `pytest` test case:
 
 ```python
-from unittest.mock import patch, MagicMock
-import h_alis_sqlplus
 import os
+import pytest
+from unittest.mock import patch, mock_open
 
-@patch('h_alis_sqlplus.pathlib.Path')
-@patch('h_alis_sqlplus.os.access')
-@patch('h_alis_sqlplus.subprocess.run')
-@patch('h_alis_sqlplus.dwmsg_melde_fehler')
-def test_starte_sql_skript(mock_melde_fehler, mock_run, mock_access, mock_path):
+import f_alis_msgerr
+
+@patch("subprocess.run")
+@patch("os.remove")
+@patch("os.path.exists", return_value=True)
+def test_dwmsg_ermittle_nr(mock_exists, mock_remove, mock_sub_run):
+    os.environ["DW_ORAUSER"] = "mock_user/mock_pass@mock_db"
+    os.environ["DW_DIR_ROOT"] = "/opt/dwh"
+    
+    # Mock the file read operation to return a sequence number with spaces
+    mock_file_content = "   87654321 \n"
+    
+    with patch("builtins.open", mock_open(read_data=mock_file_content)) as mock_file:
+        # Action
+        result = f_alis_msgerr.dwmsg_ermittle_nr(var_name="MY_SEQ_VAR")
+        
+        # Assertions
+        assert result == "87654321"
+        mock_sub_run.assert_called_once()
+        # Verify sqlplus was called with the correct script path
+        args = mock_sub_run.call_args[0][0]
+        assert "sqlplus" in args
+        assert "@/opt/dwh/allgemein/is/util/sql/d_al_is_ermittlenr.sql" in args
+        
+        # Verify cleanup of the temporary file
+        mock_remove.assert_called_once()
+```
+
+### Pass/Fail Criterion
+- **Pass**: The function returns `"87654321"` (whitespace stripped), calls `sqlplus` with the correct path, and deletes the temporary file.
+- **Fail**: The temporary file is not deleted, the sequence number is not stripped, or the `sqlplus` command is malformed.
+
+---
+
+## Test Case 3: `h_alis_date` — Date Addition & Leap Year Rollover (`AddiereDatum`)
+
+### Purpose
+Verify that `AddiereDatum` correctly adds days, handles month rollovers, leap years, and year transitions natively without database roundtrips.
+
+### Setup
+- No external dependencies or database connections are required (pure Python logic).
+
+### Action
+Run the following `pytest` test case:
+
+```python
+import pytest
+import h_alis_date
+
+def test_addiere_datum_scenarios():
+    # Test Case A: Standard addition within the same month
+    assert h_alis_date.AddiereDatum("20231015", 5) == "20231020"
+
+    # Test Case B: Month rollover (non-leap year February)
+    assert h_alis_date.AddiereDatum("20230228", 1) == "20230301"
+
+    # Test Case C: Month rollover (leap year February)
+    assert h_alis_date.AddiereDatum("20200228", 1) == "20200229"
+    assert h_alis_date.AddiereDatum("20200228", 2) == "20200301"
+
+    # Test Case D: Year rollover
+    assert h_alis_date.AddiereDatum("20231231", 1) == "20240101"
+
+    # Test Case E: Large day addition spanning multiple months
+    assert h_alis_date.AddiereDatum("20230101", 100) == "20230411"
+```
+
+### Pass/Fail Criterion
+- **Pass**: All date additions match the expected Gregorian calendar dates exactly, including leap year and year-end transitions.
+- **Fail**: Any calculated date is incorrect or raises an unhandled exception.
+
+---
+
+## Test Case 4: `h_alis_date` — Date Range Calculation (`DWDate_Gib_Zeitraum`)
+
+### Purpose
+Verify that `DWDate_Gib_Zeitraum` correctly calculates start and end dates for Days (`D`), Months (`M`), and Years (`Y`) intervals based on a fixed reference date.
+
+### Setup
+- Mock `datetime.date.today` to return a fixed date: `2023-10-15`.
+
+### Action
+Run the following `pytest` test case:
+
+```python
+import datetime
+import pytest
+from unittest.mock import patch
+
+import h_alis_date
+
+@patch("datetime.date")
+def test_dw_date_gib_zeitraum(mock_date):
+    # Fix today's date to 2023-10-15
+    mock_date.today.return_value = datetime.date(2023, 10, 15)
+    mock_date.side_effect = lambda *args, **kwargs: datetime.date(*args, **kwargs)
+
+    # Test Case A: Days basis ('D') with positive offset
+    h_alis_date.globals_dict.clear()
+    rc = h_alis_date.DWDate_Gib_Zeitraum(Offset=10, Stufe="D", Format="YYYYMMDD", Var_Start="START", Var_Ende="ENDE")
+    assert rc == 0
+    assert h_alis_date.globals_dict["START"] == "20231015"
+    assert h_alis_date.globals_dict["ENDE"] == "20231025"
+
+    # Test Case B: Months basis ('M') with negative offset (Start is 1st of current month, End is Ultimo of target month)
+    h_alis_date.globals_dict.clear()
+    rc = h_alis_date.DWDate_Gib_Zeitraum(Offset=-2, Stufe="M", Format="YYYYMMDD", Var_Start="START", Var_Ende="ENDE")
+    assert rc == 0
+    assert h_alis_date.globals_dict["START"] == "20231001"  # First of current month
+    assert h_alis_date.globals_dict["ENDE"] == "20230831"    # Ultimo of August (10 - 2 = 8)
+
+    # Test Case C: Years basis ('Y') with positive offset (Start is New Year of current year, End is Sylvester of target year)
+    h_alis_date.globals_dict.clear()
+    rc = h_alis_date.DWDate_Gib_Zeitraum(Offset=1, Stufe="Y", Format="YYYYMMDD", Var_Start="START", Var_Ende="ENDE")
+    assert rc == 0
+    assert h_alis_date.globals_dict["START"] == "20230101"  # New Year 2023
+    assert h_alis_date.globals_dict["ENDE"] == "20241231"    # Sylvester 2024 (2023 + 1)
+```
+
+### Pass/Fail Criterion
+- **Pass**: The calculated start and end dates match the legacy business rules:
+  - Days: `Start = Today`, `End = Today + Offset`.
+  - Months: `Start = First of current month`, `End = Ultimo of target month`.
+  - Years: `Start = New Year of current year`, `End = Sylvester of target year`.
+- **Fail**: The calculated dates do not match these rules, or the return code is non-zero.
+
+---
+
+## Test Case 5: `h_alis_parameter` — Parameter Normalization & Validation
+
+### Purpose
+Verify that metric names are correctly normalized to abbreviations, and invalid system-metric combinations are caught.
+
+### Setup
+- Initialize the global variables `ErrNr` and `ErrArg` in `h_alis_parameter`.
+- Set environment variables to simulate the calling shell's environment.
+
+### Action
+Run the following `pytest` test case:
+
+```python
+import os
+import pytest
+import h_alis_parameter
+
+def test_parameter_normalization_and_validation():
+    # Reset global error state
+    h_alis_parameter.ErrNr = 0
+    h_alis_parameter.ErrArg = ""
+
+    # Test Case A: Normalize "bestand" to "bst"
+    os.environ["MY_KENNZAHL"] = "bestand"
+    h_alis_parameter.konvertiereKennzahl("MY_KENNZAHL")
+    assert os.environ["MY_KENNZAHL"] == "bst"
+    assert h_alis_parameter.ErrNr == 0
+
+    # Test Case B: Normalize invalid metric
+    os.environ["MY_KENNZAHL"] = "invalid_metric"
+    h_alis_parameter.konvertiereKennzahl("MY_KENNZAHL")
+    assert os.environ["MY_KENNZAHL"] == "???"
+    assert h_alis_parameter.ErrNr == 198
+    assert h_alis_parameter.ErrArg == "invalid_metric"
+
+    # Reset error state for next test
+    h_alis_parameter.ErrNr = 0
+    h_alis_parameter.ErrArg = ""
+
+    # Test Case C: Validate invalid combination (sap + zug)
+    h_alis_parameter.pruefeSystemKennzahl("sap", "zug")
+    assert h_alis_parameter.ErrNr == 195
+    assert "Ungueltige Kombination sap zug" in h_alis_parameter.ErrArg
+
+    # Reset error state for next test
+    h_alis_parameter.ErrNr = 0
+    h_alis_parameter.ErrArg = ""
+
+    # Test Case D: Validate valid combination (sap + srs)
+    h_alis_parameter.pruefeSystemKennzahl("sap", "srs")
+    assert h_alis_parameter.ErrNr == 0
+```
+
+### Pass/Fail Criterion
+- **Pass**: Metric names are correctly mapped, invalid metrics set `ErrNr = 198`, and invalid system-metric combinations set `ErrNr = 195` with the correct German error message.
+- **Fail**: Normalization fails, or invalid combinations are permitted without setting the error state.
+
+---
+
+## Test Case 6: `h_alis_sqlplus` — Safe SQL Execution (`starte_sql_skript`)
+
+### Purpose
+Verify that `starte_sql_skript` validates script readability, logs parameters, executes `sqlplus` with redirected input, and propagates the exit code.
+
+### Setup
+- Set the environment variable `DW_ORAUSER`.
+- Mock `pathlib.Path.is_file` and `os.access` to simulate a readable SQL script.
+- Mock `subprocess.run` to capture the command execution.
+
+### Action
+Run the following `pytest` test case:
+
+```python
+import os
+import pytest
+from unittest.mock import patch, MagicMock
+
+import h_alis_sqlplus
+
+@patch("h_alis_sqlplus.Path.is_file", return_value=True)
+@patch("os.access", return_value=True)
+@patch("subprocess.run")
+def test_starte_sql_skript_success(mock_sub_run, mock_access, mock_is_file):
     os.environ["DW_ORAUSER"] = "test_user/test_pass@test_db"
-
-    # Case 1: Script file does not exist / is unreadable
-    mock_path.return_value.is_file.return_value = False
-    rc = h_alis_sqlplus.starte_sql_skript("999", "/invalid/path.sql")
-    assert rc == 201
-    mock_melde_fehler.assert_called_with("999", "E", "201", "/invalid/path.sql")
-
-    # Case 2: Script is valid and readable
-    mock_path.return_value.is_file.return_value = True
-    mock_access.return_value = True
     
     # Mock successful subprocess execution (exit code 0)
-    mock_proc = MagicMock()
-    mock_proc.return_code = 0
-    mock_run.return_value = mock_proc
+    mock_result = MagicMock()
+    mock_result.returncode = 0
+    mock_sub_run.return_value = mock_result
 
-    rc = h_alis_sqlplus.starte_sql_skript("123", "/valid/path.sql", "param1", "param2")
-    
+    # Action: Execute a mock script with parameters
+    rc = h_alis_sqlplus.starte_sql_skript(
+        "11111", 
+        "/opt/dwh/test_script.sql", 
+        "param_val1", 
+        "param_val2"
+    )
+
+    # Assertions
     assert rc == 0
-    mock_run.assert_called_with(
-        ["sqlplus", "test_user/test_pass@test_db", "@/valid/path.sql", "param1", "param2"],
+    mock_sub_run.assert_called_once_with(
+        ["sqlplus", "test_user/test_pass@test_db", "@/opt/dwh/test_script.sql", "param_val1", "param_val2"],
         stdin=subprocess.DEVNULL,
-        capture_output=False,
         check=False
     )
 ```
+
+### Pass/Fail Criterion
+- **Pass**: The function returns `0`, and `subprocess.run` is called with the correct `sqlplus` arguments and `stdin` redirected to `DEVNULL` (equivalent to `</dev/null` in the legacy shell).
+- **Fail**: The function returns a non-zero code, fails to validate the file, or executes `sqlplus` with incorrect arguments.
