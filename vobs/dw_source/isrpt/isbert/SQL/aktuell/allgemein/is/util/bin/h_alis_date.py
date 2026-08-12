@@ -3,323 +3,293 @@
 # Zweck:
 #   Hilfsroutinen fuer das Rechnen mit Datumswerten
 #   Konvertiert von KornShell (h_alis_date.ksh) zu nativem Python.
-#   Mithilfe von Pythons standardmaessigen 'datetime' und 'calendar' Bibliotheken
-#   werden die alten SQLPLUS-Datenbankabfragen fuer hervorragende Performance
-#   und Plattformunabhaengigkeit komplett vermieden.
+#   Ersetzt Oracle-Datenbankaufrufe durch in-memory Python datetime-Operationen.
 #
 # Vorbedingung:
-#   Laeuft autonom und plattformunabhaengig.
+#   Keine Datenbankverbindung erforderlich. Verwaltet Kalenderlogik,
+#   Schaltjahre, Monatslaengen und Datumsberechnungen lokal in Python.
 #
-# Erzeugt von : Ralf Biermanns
-# Erzeugt am  : 03.09.1998
-# Aenderungshistorie (Legacy):
-#    0.1.0; 03.09.1998; rb
-#      - Initialversion, nur Funktion zur Berechnung des Vormonats
-#    2.5.0; 27.09.1999; Thorsten Juergens
-#      - Funktion DW_Date_Datum_Check und DW_Date_Datum_LE erstellt 
-#    2.5.1; 28.09.1999; Thorsten Juergens
-#      - Funktion DWDate_Gib_Zeitraum erstellt 
-#    2.5.2; 29.09.1999; Thorsten Juergens
-#      - Suche nach Pattern bei DWDate_Gib_Zeitraum zum Umgang mit 
-#        Tracing-Ausgaben der SQLPLUS-Session
-#    2.5.3; 04.11.1999; Thorsten Juergens
-#      - Verhalten von DW_Gib_Zeitraum hat sich geaendert.
-#        Monate und Jahre werden nicht mehr Tagesbasis bestimmt,
-#        sondern aufgrund von Ultimo und Ersten.
-#    3.0.0; 31.01.2000; Ingo Schwitters
-#      - Funktion LetzterTagDesMonats hinzugefuegt
-#    3.0.1; 15.5.2000; Ingo Schwitters
-#      - Funktion AddiereDatum und TageimMonat hinzugefuegt
+# Erzeugt von : Ralf Biermanns / Thorsten Juergens / Ingo Schwitters (Original KSH)
+# Migriert von : Senior Data Engineer (Target: BigQuery/Python)
 
-import os
 import sys
+import os
 import datetime
 import calendar
-import argparse
 
-def translate_format(oracle_fmt: str) -> str:
+def dw_date_vormonat(format_fmt: str) -> str:
     """
-    Translates common Oracle date format masks to Python's strftime/strptime equivalents.
+    Calculates the previous month relative to today's date.
+    Equivalent to legacy d_alis_vormonat.sql execution.
     """
+    today = datetime.date.today()
+    first_of_this_month = today.replace(day=1)
+    previous_month_dt = first_of_this_month - datetime.timedelta(days=1)
+    
+    # Map Oracle format symbols to Python strftime format symbols
     fmt_map = {
         "YYYYMMDD": "%Y%m%d",
-        "YYYYMM": "%Y%m",
         "YYYY-MM-DD": "%Y-%m-%d",
         "DD.MM.YYYY": "%d.%m.%Y",
-        "YYYY": "%Y",
-        "MM": "%m",
-        "DD": "%d"
+        "YYYYMM": "%Y%m",
     }
-    cleaned = oracle_fmt.strip("'\"").upper()
-    return fmt_map.get(cleaned, "%Y%m%d")
+    py_fmt = fmt_map.get(format_fmt.upper(), "%Y%m")
+    return previous_month_dt.strftime(py_fmt)
 
-def DWDate_Vormonat(fmt: str) -> str:
+def dw_date_datum_check(wert: str, format_str: str) -> bool:
     """
-    Calculates the previous month of the current system time and formats it.
-    """
-    now = datetime.datetime.now()
-    # Go to the first day of the current month, then subtract 1 day to reach the previous month
-    first_of_this_month = now.replace(day=1)
-    last_of_prev_month = first_of_this_month - datetime.timedelta(days=1)
-    py_fmt = translate_format(fmt)
-    return last_of_prev_month.strftime(py_fmt)
-
-def DWDate_Datum_Check(wert: str, format_str: str) -> int:
-    """
-    Funktion:
-      DWDate_Datum_Check
-    Parameter:
-      P1: zu pruefender Datumswert
-      P2: Datumsformat von P1
-    Rueckgabe:
-      =0, falls Wert P1 ein gueltiges Datum des Formats P1 ist, sonst 1.
+    Validates if a date string is a valid date under the specified format.
+    Replaces Oracle select to_date(...) check.
     """
     if not wert or not format_str:
-        return 1
+        raise ValueError("DWDate_Datum_Check requires exactly 2 parameters")
+        
+    # Map Oracle format symbols to Python strftime format symbols
+    fmt_map = {
+        "YYYYMMDD": "%Y%m%d",
+        "YYYY-MM-DD": "%Y-%m-%d",
+        "DD.MM.YYYY": "%d.%m.%Y",
+        "YYYYMM": "%Y%m",
+    }
+    py_fmt = fmt_map.get(format_str.upper(), format_str)
     
-    py_fmt = translate_format(format_str)
     try:
         datetime.datetime.strptime(wert, py_fmt)
-        return 0
+        return True
     except ValueError:
-        return 1
+        return False
 
-def DWDate_Datum_LE(datum1: str, datum2: str) -> int:
+def dw_date_datum_le(datum1: str, datum2: str) -> bool:
     """
-    Funktion:
-      DWDate_Datum_LE
-    Parameter:
-      P1: Datum1 im Format YYYYMMDD
-      P2: Datum2 im Format YYYYMMDD
-    Rueckgabe:
-      =0, falls P1<=P2 ist, sonst 1.
+    Verifies if datum1 <= datum2 where dates are in YYYYMMDD format.
+    Replaces PL/SQL block assertion with native exception matching original error text.
     """
     if not datum1 or not datum2:
-        return 1
-
+        raise ValueError("DWDate_Datum_LE requires exactly 2 parameters")
+        
     try:
         d1 = datetime.datetime.strptime(datum1, "%Y%m%d")
         d2 = datetime.datetime.strptime(datum2, "%Y%m%d")
-    except ValueError:
-        return 1
+    except ValueError as e:
+        print(f"Fehler beim Parsen der Daten: {e}", file=sys.stderr)
+        return False
 
     if d1 > d2:
-        # OUTPUT/PRINT LITERAL RULE: Exact legacy German error message preserved
-        print(f"Datum {datum1} ist groesser als {datum2}", file=sys.stderr)
-        return 1
-    return 0
+        # Original error message from PL/SQL: 'Datum $datum1 ist groesser als $datum2'
+        err_msg = f"Datum {datum1} ist groesser als {datum2}"
+        print(err_msg, file=sys.stderr)
+        raise ValueError(err_msg)
+        
+    return True
 
-def DWDate_Gib_Zeitraum(offset: int, stufe: str, format_str: str) -> tuple:
+def _calculate_zeitraum(offset: int, stufe: str, format_str: str) -> tuple:
     """
-    Funktion:
-      DWDate_Gib_Zeitraum
-    Parameter:
-      I-P1: Offset (ganze Zahl)
-      I-P2: Stufe ('Y','M','D')
-      I-P3: Ergebnisformat der Datumswerte
-    Rueckgabe:
-      Tuple of (Start_Date, End_Date) on success, or None on failure
+    Internal helper to generate start and end dates based on offset and step unit.
     """
-    start_dt = datetime.datetime.now()
+    today = datetime.date.today()
     
-    try:
-        offset_val = int(offset)
-    except ValueError:
-        anzahl = 0
-        print("!! Interner Fehler bei der Rueckgabe von Datumswerten", file=sys.stderr)
-        print("   Funktion: DWDate_Gib_Zeitraum", file=sys.stderr)
-        print(f"   1 Zeile erwartet, {anzahl} Zeile(n) bekommen", file=sys.stderr)
-        return None
-
     if stufe == 'D':
-        end_dt = start_dt + datetime.timedelta(days=offset_val)
+        start_dt = today
+        end_dt = today + datetime.timedelta(days=offset)
     elif stufe == 'M':
-        start_dt = start_dt.replace(day=1)
-        # Calculate month shifting
-        total_months = (start_dt.month - 1) + offset_val
-        year_offset = total_months // 12
-        new_month = (total_months % 12) + 1
-        new_year = start_dt.year + year_offset
-        last_day = calendar.monthrange(new_year, new_month)[1]
-        end_dt = start_dt.replace(year=new_year, month=new_month, day=last_day)
+        # Start is always the first day of the current month
+        start_dt = today.replace(day=1)
+        
+        # Calculate end month/year using math to handle overflow of offsets safely
+        end_month_val = today.month + offset
+        year_offset = (end_month_val - 1) // 12
+        end_month = (end_month_val - 1) % 12 + 1
+        end_year = today.year + year_offset
+        
+        _, last_day = calendar.monthrange(end_year, end_month)
+        end_dt = datetime.date(end_year, end_month, last_day)
     elif stufe == 'Y':
-        start_dt = start_dt.replace(month=1, day=1)
-        end_dt = start_dt.replace(year=start_dt.year + offset_val, month=12, day=31)
+        # Start is New Year (Jan 1 of current year)
+        start_dt = today.replace(month=1, day=1)
+        # End is New Year's Eve (Dec 31 of target year)
+        end_year = today.year + offset
+        end_dt = datetime.date(end_year, 12, 31)
     else: 
-        anzahl = 0
-        print("!! Interner Fehler bei der Rueckgabe von Datumswerten", file=sys.stderr)
-        print("   Funktion: DWDate_Gib_Zeitraum", file=sys.stderr)
-        print(f"   1 Zeile erwartet, {anzahl} Zeile(n) bekommen", file=sys.stderr)
-        return None
-
-    py_fmt = translate_format(format_str)
+        raise ValueError(f"Invalid Stufe: {stufe}")
+        
+    fmt_map = {
+        "YYYYMMDD": "%Y%m%d",
+        "YYYY-MM-DD": "%Y-%m-%d",
+        "DD.MM.YYYY": "%d.%m.%Y",
+        "YYYYMM": "%Y%m",
+    }
+    py_fmt = fmt_map.get(format_str.upper(), "%Y%m%d")
+    
     return start_dt.strftime(py_fmt), end_dt.strftime(py_fmt)
 
-def LetzterTagDesMonats(datum: str) -> int:
+def dw_date_gib_zeitraum(offset: int, stufe: str, format_str: str) -> tuple:
     """
-    Funktion:
-      LetzterTagDesMonats
-    Parameter:
-      P1: zu pruefender Datumswert (Format YYYYMMDD)
-    Rueckgabe:
-      =0, falls Wert P1 der Letzte Tag des Monats ist, sonst 1.
+    Generates start and end dates based on offset and steps.
+    Replaces legacy d_alis_datum_zeitraum.sql execution.
     """
-    if len(datum) != 8:
-        return 1
-    
     try:
-        jahr = int(datum[0:4])
-        monat = int(datum[4:6])
-        tag = int(datum[6:8])
-    except ValueError:
-        return 1
+        offset_val = int(offset)
+    except (ValueError, TypeError):
+        print("!! Interner Fehler bei der Rueckgabe von Datumswerten", file=sys.stderr)
+        print("   Funktion: DWDate_Gib_Zeitraum", file=sys.stderr)
+        print("   1 Zeile erwartet, 0 Zeile(n) bekommen", file=sys.stderr)
+        return None
+        
+    if stufe not in ('Y', 'M', 'D') or not format_str:
+        print("!! Interner Fehler bei der Rueckgabe von Datumswerten", file=sys.stderr)
+        print("   Funktion: DWDate_Gib_Zeitraum", file=sys.stderr)
+        print("   1 Zeile erwartet, 0 Zeile(n) bekommen", file=sys.stderr)
+        return None
+        
+    try:
+        return _calculate_zeitraum(offset_val, stufe, format_str)
+    except Exception:
+        print("!! Interner Fehler bei der Rueckgabe von Datumswerten", file=sys.stderr)
+        print("   Funktion: DWDate_Gib_Zeitraum", file=sys.stderr)
+        print("   1 Zeile erwartet, 0 Zeile(n) bekommen", file=sys.stderr)
+        raise
 
-    if ((jahr % 4 == 0) and (jahr % 100 != 0)) or (jahr % 400 == 0):
+def letzter_tag_des_monats(date_str: str) -> bool:
+    """
+    Returns True (equivalent to exit code 0) if date_str (YYYYMMDD) is the last day of the month.
+    """
+    if len(date_str) < 8:
+        raise ValueError("Input date must be in YYYYMMDD format")
+        
+    jahr = int(date_str[0:4])
+    monat = int(date_str[4:6])
+    tag = int(date_str[6:8])
+    
+    if (jahr % 4 == 0 and jahr % 100 != 0) or (jahr % 400 == 0):
         letzter_feb = 29
     else:
         letzter_feb = 28
-
+        
     letzter_tag = [0, 31, letzter_feb, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
     
-    try:
-        if letzter_tag[monat] == tag:
-            return 0
-        else:
-            return 1
-    except IndexError:
-        return 1
+    if 1 <= monat <= 12:
+        return letzter_tag[monat] == tag
+    return False
 
-def TageimMonat(jahr_str: str, monat_str: str) -> int:
+def tage_im_monat(jahr: int, monat: int) -> int:
     """
-    Funktion:
-      TageimMonat
-    Parameter:
-      P1: Jahr (YYYY)
-      P2: Monat (MM)
-    Rueckgabe:
-      gibt die Anzahl der Tage des Monats P2 im Jahr P1 zurueck
+    Returns the number of days in the specified month and year.
     """
-    try:
-        jahr = int(jahr_str)
-        monat = int(monat_str)
-    except ValueError:
-        return 0
-
-    if ((jahr % 4 == 0) and (jahr % 100 != 0)) or (jahr % 400 == 0):
+    if (jahr % 4 == 0 and jahr % 100 != 0) or (jahr % 400 == 0):
         letzter_feb = 29
     else:
         letzter_feb = 28
-
+        
     letzter_tag = [0, 31, letzter_feb, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
-    
-    try:
+    if 1 <= monat <= 12:
         return letzter_tag[monat]
-    except IndexError:
-        return 0
+    raise ValueError(f"Invalid month: {monat}")
 
-def AddiereDatum(datum: str, tage_str: str) -> str:
+def addiere_datum(date_str: str, days_to_add: int) -> str:
     """
-    Funktion:
-      AddiereDatum
-    Parameter:
-      P1: Datumswert (Format YYYYMMDD)
-      P2: Anzahl der Tage die addiert wird
-    Rueckgabe:
-      Datum: P1+(n Tage) im Format YYYYMMDD
+    Adds offset days to a given YYYYMMDD date string.
     """
-    try:
-        dt = datetime.datetime.strptime(datum, "%Y%m%d")
-        tage = int(tage_str)
-        result_dt = dt + datetime.timedelta(days=tage)
-        return result_dt.strftime("%Y%m%d")
-    except ValueError:
-        return ""
+    dt = datetime.datetime.strptime(date_str, "%Y%m%d")
+    new_dt = dt + datetime.timedelta(days=days_to_add)
+    return new_dt.strftime("%Y%m%d")
 
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Helper routines for date calculations.")
-    subparsers = parser.add_subparsers(dest="command", help="Sub-command to run")
-    
-    # Sub-command: DWDate_Vormonat
-    p_vormonat = subparsers.add_parser("DWDate_Vormonat")
-    p_vormonat.add_argument("var_name", help="Name of variables to assign the result (legacy compatibility)")
-    p_vormonat.add_argument("format", help="Date format (e.g. YYYYMM)")
-    
-    # Sub-command: DWDate_Datum_Check
-    p_check = subparsers.add_parser("DWDate_Datum_Check")
-    p_check.add_argument("wert", help="Date value to check")
-    p_check.add_argument("format", help="Date format mask")
-    
-    # Sub-command: DWDate_Datum_LE
-    p_le = subparsers.add_parser("DWDate_Datum_LE")
-    p_le.add_argument("datum1", help="Date 1 (YYYYMMDD)")
-    p_le.add_argument("datum2", help="Date 2 (YYYYMMDD)")
-    
-    # Sub-command: DWDate_Gib_Zeitraum
-    p_zeitraum = subparsers.add_parser("DWDate_Gib_Zeitraum")
-    p_zeitraum.add_argument("offset", help="Offset value")
-    p_zeitraum.add_argument("stufe", choices=["Y", "M", "D"], help="Stufe ('Y', 'M', 'D')")
-    p_zeitraum.add_argument("format", help="Date format mask")
-    p_zeitraum.add_argument("var_start", help="Legacy variable name for start")
-    p_zeitraum.add_argument("var_ende", help="Legacy variable name for end")
-    
-    # Sub-command: LetzterTagDesMonats
-    p_letzter = subparsers.add_parser("LetzterTagDesMonats")
-    p_letzter.add_argument("datum", help="Date string (YYYYMMDD)")
-    
-    # Sub-command: TageimMonat
-    p_tage = subparsers.add_parser("TageimMonat")
-    p_tage.add_argument("jahr", help="Year (YYYY)")
-    p_tage.add_argument("monat", help="Month (MM)")
-    
-    # Sub-command: AddiereDatum
-    p_add = subparsers.add_parser("AddiereDatum")
-    p_add.add_argument("datum", help="Date string (YYYYMMDD)")
-    p_add.add_argument("days", help="Days to add")
-    
-    args = parser.parse_args()
-    
-    if not args.command:
-        parser.print_help()
-        return 1
+def main():
+    if len(sys.argv) < 2:
+        print("Usage: h_alis_date.py <function_name> [args...]", file=sys.stderr)
+        sys.exit(1)
         
-    if args.command == "DWDate_Vormonat":
-        result = DWDate_Vormonat(args.format)
-        # Print in a format evaluable by legacy shell scripts: value
-        print(result)
-        return 0
+    func_name = sys.argv[1]
+    
+    if func_name == "DWDate_Vormonat":
+        if len(sys.argv) != 4:
+            print("Usage: h_alis_date.py DWDate_Vormonat <var_name> <format>", file=sys.stderr)
+            sys.exit(1)
+        var_name = sys.argv[2]
+        format_fmt = sys.argv[3]
+        result = dw_date_vormonat(format_fmt)
+        # Output shell variable assignment statement so parent shells can eval this output
+        print(f"{var_name}='{result}'")
+        sys.exit(0)
         
-    elif args.command == "DWDate_Datum_Check":
-        rc = DWDate_Datum_Check(args.wert, args.format)
-        return rc
+    elif func_name == "DWDate_Datum_Check":
+        if len(sys.argv) != 4:
+            print("Usage: h_alis_date.py DWDate_Datum_Check <wert> <format>", file=sys.stderr)
+            sys.exit(1)
+        wert = sys.argv[2]
+        format_str = sys.argv[3]
+        valid = dw_date_datum_check(wert, format_str)
+        sys.exit(0 if valid else 1)
         
-    elif args.command == "DWDate_Datum_LE":
-        rc = DWDate_Datum_LE(args.datum1, args.datum2)
-        return rc
-        
-    elif args.command == "DWDate_Gib_Zeitraum":
-        res = DWDate_Gib_Zeitraum(args.offset, args.stufe, args.format)
+    elif func_name == "DWDate_Datum_LE":
+        if len(sys.argv) != 4:
+            print("Usage: h_alis_date.py DWDate_Datum_LE <datum1> <datum2>", file=sys.stderr)
+            sys.exit(1)
+        datum1 = sys.argv[2]
+        datum2 = sys.argv[3]
+        try:
+            valid = dw_date_datum_le(datum1, datum2)
+            sys.exit(0 if valid else 1)
+        except ValueError:
+            sys.exit(1)
+            
+    elif func_name == "DWDate_Gib_Zeitraum":
+        if len(sys.argv) != 7:
+            print("Usage: h_alis_date.py DWDate_Gib_Zeitraum <offset> <stufe> <format> <var_start> <var_ende>", file=sys.stderr)
+            sys.exit(1)
+        offset = int(sys.argv[2])
+        stufe = sys.argv[3]
+        format_str = sys.argv[4]
+        var_start = sys.argv[5]
+        var_ende = sys.argv[6]
+        res = dw_date_gib_zeitraum(offset, stufe, format_str)
         if res:
-            # Print in standard environment evaluation layout:
-            print(f"{args.var_start}={res[0]}")
-            print(f"{args.var_ende}={res[1]}")
-            return 0
-        return 1
+            start, ende = res
+            # Output shell variable assignment statements so parent shells can eval this output
+            print(f"{var_start}='{start}'")
+            print(f"{var_ende}='{ende}'")
+            sys.exit(0)
+        else: 
+            sys.exit(1)
+            
+    elif func_name == "LetzterTagDesMonats":
+        if len(sys.argv) != 3:
+            print("Usage: h_alis_date.py LetzterTagDesMonats <date_str>", file=sys.stderr)
+            sys.exit(1)
+        date_str = sys.argv[2]
+        is_last = letzter_tag_des_monats(date_str)
+        sys.exit(0 if is_last else 1)
         
-    elif args.command == "LetzterTagDesMonats":
-        rc = LetzterTagDesMonats(args.datum)
-        return rc
-        
-    elif args.command == "TageimMonat":
-        days = TageimMonat(args.jahr, args.monat)
-        print(days)
-        return 0
-        
-    elif args.command == "AddiereDatum":
-        new_date = AddiereDatum(args.datum, args.days)
-        print(new_date)
-        return 0
-        
-    return 0
+    elif func_name == "TageimMonat":
+        if len(sys.argv) != 4:
+            print("Usage: h_alis_date.py TageimMonat <jahr> <monat>", file=sys.stderr)
+            sys.exit(1)
+        jahr = int(sys.argv[2])
+        monat = int(sys.argv[3])
+        try:
+            days = tage_im_monat(jahr, monat)
+            print(days)
+            sys.exit(0)
+        except ValueError as e:
+            print(str(e), file=sys.stderr)
+            sys.exit(1)
+            
+    elif func_name == "AddiereDatum":
+        if len(sys.argv) != 4:
+            print("Usage: h_alis_date.py AddiereDatum <date_str> <days_to_add>", file=sys.stderr)
+            sys.exit(1)
+        date_str = sys.argv[2]
+        days_to_add = int(sys.argv[3])
+        try:
+            result = addiere_datum(date_str, days_to_add)
+            print(result)
+            sys.exit(0)
+        except ValueError as e:
+            print(str(e), file=sys.stderr)
+            sys.exit(1)
+            
+    else:
+        print(f"Unknown function: {func_name}", file=sys.stderr)
+        sys.exit(1)
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()
