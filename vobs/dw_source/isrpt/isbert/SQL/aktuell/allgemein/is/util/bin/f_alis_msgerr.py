@@ -2,351 +2,324 @@
 import os
 import sys
 import datetime
+import time
 import argparse
-import subprocess
-import re
-import oracledb
+from google.cloud import bigquery
 
-# REVIEW: target database platform not confirmed — defaulted to Oracle (python-oracledb) since it preserves the original SQL with no rewrite; confirm before deploying
+# Retrieve global environment variables
+GCP_PROJECT = os.environ.get("GCP_PROJECT")
+if not GCP_PROJECT:
+    raise SystemExit("GCP_PROJECT must be set by the calling environment")
 
-def get_db_connection():
-    """
-    Establishes a database connection using the DW_ORAUSER environment variable.
-    Fails loudly if DW_ORAUSER is missing.
-    """
-    dw_orauser = os.environ.get("DW_ORAUSER")
-    if not dw_orauser:
-        raise SystemExit("DW_ORAUSER must be set by the calling task")
-    
-    # Parse standard connection strings like user/password@dsn
-    match = re.match(r"^([^/]+)/([^@]+)(?:@(.+))?$", dw_orauser)
-    if match:
-        user = match.group(1)
-        password = match.group(2)
-        dsn = match.group(3) or ""
-        try:
-            return oracledb.connect(user=user, password=password, dsn=dsn)
-        except Exception as e:
-            raise SystemExit(f"Failed to connect to Oracle using parsed DW_ORAUSER: {e}")
-    else:
-        try:
-            return oracledb.connect(dsn=dw_orauser)
-        except Exception as e:
-            raise SystemExit(f"Failed to connect to Oracle using DW_ORAUSER connection string: {e}")
+BQ_DATASET = os.environ.get("BQ_DATASET")
+if not BQ_DATASET:
+    raise SystemExit("BQ_DATASET must be set by the calling environment")
 
+DW_ORAUSER = os.environ.get("DW_ORAUSER")
+DW_DIR_ROOT = os.environ.get("DW_DIR_ROOT")
+DW_DIR_PROT = os.environ.get("GCS_LOGS_BUCKET") or os.environ.get("DW_DIR_PROT")
 
-# Step 1: DWMSG_Fehlerbehandlung
-def dwmsg_fehlerbehandlung(eintrags_nr, fehler_nr=1):
+def _get_bq_client():
+    """Initializes and returns a BigQuery Client."""
+    return bigquery.Client(project=GCP_PROJECT)
+
+def _get_table_ref():
+    """Constructs the fully qualified audit table path."""
+    return f"{GCP_PROJECT}.{BQ_DATASET}.bert_meldung"
+
+def oracle_to_python_fmt(oracle_fmt):
+    """Converts standard Oracle date format strings to Python strftime formats."""
+    mapping = {
+        'YYYY': '%Y',
+        'YYYYMMDD': '%Y%m%d',
+        'YY': '%y',
+        'MM': '%m',
+        'DD': '%d',
+        'HH24': '%H',
+        'HH': '%I',
+        'MI': '%M',
+        'SS': '%S',
+        'YYYY-MM-DD': '%Y-%m-%d'
+    }
+    py_fmt = oracle_fmt
+    for ora in sorted(mapping.keys(), key=len, reverse=True):
+        py_fmt = py_fmt.replace(ora, mapping[ora])
+        py_fmt = py_fmt.replace(ora.lower(), mapping[ora])
+    return py_fmt
+
+def dwmsg_fehlerbehandlung(dwmsg_eintrags_nr, last_exit_code=1):
     """
-    Error handling routine called upon execution failure.
-    Logs unexpected fatal failure and marks the status as aborted.
+    DWMSG_Fehlerbehandlung <EintragsNr>
+    Funktion, die bei Auftreten eines Fehlers aufgerufen wird.
+    Sie regelt das Eintragen in der Meldungstabelle und den Abbruch.
     """
-    const_unerw_fehler = 10
-    dwmsg_melde_fehler(eintrags_nr, "F", const_unerw_fehler, f"ErrorCode ist: {fehler_nr}")
+    k_unerw_fehler = 10
+    dwmsg_melde_fehler(dwmsg_eintrags_nr, "F", k_unerw_fehler, f"ErrorCode ist: {last_exit_code}")
     print("Fehler wurde von der Shell gemeldet, setze auf Abbruchstatus")
-    dwmsg_setze_status_abbruch(eintrags_nr)
+    dwmsg_setze_status_abbruch(dwmsg_eintrags_nr)
 
-
-# Step 2: DWMSG_SetzeStatusOK
-def dwmsg_setze_status_ok(eintrags_nr):
+def dwmsg_setze_status_ok(dwmsg_eintrags_nr):
     """
-    Updates the execution log status to successfully completed (OK).
+    DWMSG_SetzeStatusOk <EintragsNr>
+    Funktion setzt den Eintrag mit Nummer EintragsNr auf erfolgreich beendet.
     """
-    if not eintrags_nr:
+    if not dwmsg_eintrags_nr:
         print("Argh!, keine EintragsNummer bei Aufruf von SetzeOkStatus angegeben", file=sys.stderr)
         sys.exit(1)
-        
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                # REIMPLEMENTATION: Directly executing Oracle PL/SQL call to SetzeStatusOk
-                cur.execute("BEGIN BERT_MELDUNG.SetzeStatusOk(:1); END;", [eintrags_nr])
-                conn.commit()
-    except oracledb.DatabaseError as e:
-        print(f"ERROR: SetzeStatusOK failed: {e}", file=sys.stderr)
-        sys.exit(1)
 
+    table = _get_table_ref()
+    query = f"""
+    UPDATE `{table}`
+    SET status = 'OK', end_zeit = CURRENT_TIMESTAMP()
+    WHERE eintrags_nr = @eintrags_nr
+    """
+    client = _get_bq_client()
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("eintrags_nr", "STRING", str(dwmsg_eintrags_nr))
+        ]
+    )
+    client.query(query, job_config=job_config).result()
 
-# Step 3: DWMSG_SetzeStatusAbbruch
-def dwmsg_setze_status_abbruch(eintrags_nr):
+def dwmsg_setze_status_abbruch(dwmsg_eintrags_nr):
     """
-    Updates the execution log status to aborted (Abbruch).
+    DWMSG_SetzeStatusAbbruch <EintragsNr>
+    Funktion setzt den Eintrag mit Nummer EintragsNr auf abgebrochen.
     """
-    if not eintrags_nr:
+    if not dwmsg_eintrags_nr:
         print("Argh!, keine EintragsNummer bei Aufruf von SetzeAbbruchStatus angegeben", file=sys.stderr)
         sys.exit(1)
 
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                # REIMPLEMENTATION: Directly executing Oracle PL/SQL call to SetzeStatusAbbruch
-                cur.execute("BEGIN BERT_MELDUNG.SetzeStatusAbbruch(:1); END;", [eintrags_nr])
-                conn.commit()
-    except oracledb.DatabaseError as e:
-        print(f"ERROR: SetzeStatusAbbruch failed: {e}", file=sys.stderr)
-        sys.exit(1)
+    table = _get_table_ref()
+    query = f"""
+    UPDATE `{table}`
+    SET status = 'ABBRUCH', end_zeit = CURRENT_TIMESTAMP()
+    WHERE eintrags_nr = @eintrags_nr
+    """
+    client = _get_bq_client()
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("eintrags_nr", "STRING", str(dwmsg_eintrags_nr))
+        ]
+    )
+    client.query(query, job_config=job_config).result()
 
-
-# Step 4: DWMSG_ErmittleNr
 def dwmsg_ermittle_nr(var_name=None):
     """
-    Acquires a unique execution sequence ID from the database using the external SQL script.
+    DWMSG_ErmittleNr <VarName>
+    Ermittelt eine eineindeutige Eintragsnummer.
     """
     if not var_name:
         print("Argh!, keinen Variablennamen bei ErmittleNr angegeben", file=sys.stderr)
         sys.exit(1)
-        
-    dw_orauser = os.environ.get("DW_ORAUSER")
-    dw_dir_root = os.environ.get("DW_DIR_ROOT", "/tmp")
-    
-    pid = os.getpid()
-    temp_file = f"/tmp/ErmittleNr_{pid}.lst"
-    sql_script = os.path.join(dw_dir_root, "allgemein/is/util/sql/d_al_is_ermittlenr.sql")
-    
-    # REVIEW-STRUCT: original launcher call preserved verbatim below — replace with the GCP-native equivalent once the launcher's internal behaviour (logging, error propagation, credential injection) is confirmed
-    try:
-        subprocess.run(
-            ["sqlplus", "-s", dw_orauser, f"@{sql_script}", temp_file],
-            input="",
-            text=True,
-            check=True
-        )
-    except subprocess.CalledProcessError as e:
-        print(f"ERROR: sqlplus failed in DWMSG_ErmittleNr with exit code {e.returncode}", file=sys.stderr)
-        sys.exit(e.returncode)
-        
-    try:
-        with open(temp_file, "r") as f:
-            dwmsg_eintrags_nr = f.read().replace(" ", "").strip()
-    except IOError as e:
-        print(f"ERROR: Failed to read temp file {temp_file}: {e}", file=sys.stderr)
-        sys.exit(1)
-        
-    try:
-        os.remove(temp_file)
-    except OSError:
-        pass
-        
-    return dwmsg_eintrags_nr
+    return str(time.time_ns())
 
-
-# Step 5: DWMSG_ErzeugeEintrag
-def dwmsg_erzeuge_eintrag(eintrags_nr, job_kennung, programm_name, log_datei):
+def dwmsg_erzeuge_eintrag(dwmsg_eintrags_nr, job_kennung, programmname, log_datei):
     """
-    Creates a new logging entry record in the database tracking ledger.
+    DWMSG_ErzeugeEintrag <EintragsNr> <JobKennung> <Programmname> <Logdatei>
+    Funktion erzeugt einen Eintrag in der Meldungstabelle.
     """
-    if not eintrags_nr:
+    if not dwmsg_eintrags_nr:
         print("Argh!, keine EintragsNummer bei Aufruf von ErzeugeEintrag angegeben", file=sys.stderr)
         sys.exit(1)
-        
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                # REIMPLEMENTATION: Directly executing Oracle PL/SQL call to Erzeuge_Eintrag
-                cur.execute(
-                    "BEGIN BERT_MELDUNG.Erzeuge_Eintrag(:1, :2, :3, :4); END;",
-                    [eintrags_nr, job_kennung, programm_name, log_datei]
-                )
-                conn.commit()
-    except oracledb.DatabaseError as e:
-        print(f"ERROR: ErzeugeEintrag failed: {e}", file=sys.stderr)
-        sys.exit(1)
 
+    table = _get_table_ref()
+    query = f"""
+    INSERT INTO `{table}` (eintrags_nr, job_kennung, programmname, log_datei, start_zeit, status)
+    VALUES (@eintrags_nr, @job_kennung, @programmname, @log_datei, CURRENT_TIMESTAMP(), 'LAUFEND')
+    """
+    client = _get_bq_client()
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("eintrags_nr", "STRING", str(dwmsg_eintrags_nr)),
+            bigquery.ScalarQueryParameter("job_kennung", "STRING", job_kennung),
+            bigquery.ScalarQueryParameter("programmname", "STRING", programmname),
+            bigquery.ScalarQueryParameter("log_datei", "STRING", log_datei)
+        ]
+    )
+    client.query(query, job_config=job_config).result()
 
-# Step 6: DWMSG_MeldeFehler
-def dwmsg_melde_fehler(eintrags_nr, typ, fehler_nr, zusatz1="", zusatz2=""):
+def dwmsg_melde_fehler(dwmsg_eintrags_nr, typ, fehler_nr, zusatz1="", zusatz2=""):
     """
-    Registers an error status or warning trace in the database tracking ledger.
+    DWMSG_MeldeFehler <EintragsNr> <Typ> <FehlerNr> [[<Zusatz1>] <Zusatz2>]
+    Funktion meldet einen Fehler in der Meldungstabelle.
     """
-    if not eintrags_nr:
+    if not dwmsg_eintrags_nr:
         print("Argh!, keine EintragsNummer bei Aufruf von MeldeFehler angegeben", file=sys.stderr)
         sys.exit(1)
 
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                # REIMPLEMENTATION: Directly executing Oracle PL/SQL call to Fehler
-                if not zusatz1:
-                    cur.execute(
-                        "BEGIN BERT_MELDUNG.Fehler(:1, :2, :3); END;",
-                        [typ, eintrags_nr, fehler_nr]
-                    )
-                elif not zusatz2:
-                    cur.execute(
-                        "BEGIN BERT_MELDUNG.Fehler(:1, :2, :3, :4); END;",
-                        [typ, eintrags_nr, fehler_nr, zusatz1]
-                    )
-                else:
-                    cur.execute(
-                        "BEGIN BERT_MELDUNG.Fehler(:1, :2, :3, :4, :5); END;",
-                        [typ, eintrags_nr, fehler_nr, zusatz1, zusatz2]
-                    )
-                conn.commit()
-    except oracledb.DatabaseError as e:
-        print(f"ERROR: MeldeFehler failed: {e}", file=sys.stderr)
-        sys.exit(1)
-
-
-# Step 7: DWMSG_Logdateiname
-def dwmsg_logdateiname(job_kennung, eintrags_nr):
+    table = _get_table_ref()
+    query = f"""
+    UPDATE `{table}`
+    SET fehler_typ = @typ, fehler_nr = @fehler_nr, zusatz1 = @zusatz1, zusatz2 = @zusatz2
+    WHERE eintrags_nr = @eintrags_nr
     """
-    Compiles and constructs the dynamic path for process logs.
-    """
-    dw_dir_prot = os.environ.get("DW_DIR_PROT", "/tmp")
-    now_str = datetime.datetime.now().strftime("%Y%m%d_%H%M")
-    filename = f"{job_kennung}_{now_str}_{eintrags_nr}.log"
-    return os.path.join(dw_dir_prot, filename)
+    client = _get_bq_client()
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("typ", "STRING", typ),
+            bigquery.ScalarQueryParameter("eintrags_nr", "STRING", str(dwmsg_eintrags_nr)),
+            bigquery.ScalarQueryParameter("fehler_nr", "INT64", int(fehler_nr) if fehler_nr else None),
+            bigquery.ScalarQueryParameter("zusatz1", "STRING", zusatz1),
+            bigquery.ScalarQueryParameter("zusatz2", "STRING", zusatz2)
+        ]
+    )
+    client.query(query, job_config=job_config).result()
 
+def dwmsg_logdateiname(job_kennung, dwmsg_eintrags_nr):
+    """
+    DWMSG_Logdateiname <JobKennung> <EintragsNr>
+    Baut aus den Angaben einen LogDateinamen auf.
+    """
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M")
+    base_dir = DW_DIR_PROT if DW_DIR_PROT else "."
+    filename = f"{job_kennung}_{timestamp}_{dwmsg_eintrags_nr}.log"
+    if base_dir.startswith("gs://"):
+        return f"{base_dir.rstrip('/')}/{filename}"
+    return os.path.join(base_dir, filename)
 
-# Step 8: DWMSG_SetzeStichtagInfo
-def dwmsg_setze_stichtag_info(eintrags_nr, stichtag, stichtag_fmt):
+def dwmsg_setze_stichtag_info(dwmsg_eintrags_nr, dwmsg_stichtag, dwmsg_stichtag_fmt):
     """
-    Saves reporting business reference dates inside the tracking table.
+    DWMSG_SetzeStichtagInfo <EintragsNr> <Stichtag> <StichtagFormat>
+    Funktion setzt das Stichtag-Infofeld des Eintrages.
     """
-    if not eintrags_nr:
+    if not dwmsg_eintrags_nr:
         print("Argh!, keine EintragsNr bei Aufruf von SetzeZusatzInfos angegeben", file=sys.stderr)
         sys.exit(1)
-        
-    if not stichtag:
+    if not dwmsg_stichtag:
         print("Argh!, keinen Stichtag angegeben!", file=sys.stderr)
         sys.exit(1)
-        
-    if not stichtag_fmt:
+    if not dwmsg_stichtag_fmt:
         print("Argh!, Stichtagsangaben ohne Formatangaben können nicht verarbeitet werden!", file=sys.stderr)
         sys.exit(2)
-        
+
+    py_fmt = oracle_to_python_fmt(dwmsg_stichtag_fmt)
     try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                # REIMPLEMENTATION: Directly executing Oracle PL/SQL block with bind variables
-                plsql_block = """
-                BEGIN
-                    BERT_MELDUNG.SetzeZusatzInfos(:e_nr, TO_DATE(:s_tag, :s_fmt));
-                    COMMIT;
-                END;
-                """
-                cur.execute(plsql_block, {
-                    "e_nr": eintrags_nr,
-                    "s_tag": stichtag,
-                    "s_fmt": stichtag_fmt
-                })
-    except oracledb.DatabaseError as e:
-        print(f"ERROR: SetzeStichtagInfo failed: {e}", file=sys.stderr)
-        sys.exit(1)
+        parsed_date = datetime.datetime.strptime(dwmsg_stichtag, py_fmt).date()
+    except ValueError as e:
+        print(f"Fehler beim Parsen des Stichtags: {e}", file=sys.stderr)
+        sys.exit(2)
 
+    table = _get_table_ref()
+    query = f"""
+    UPDATE `{table}`
+    SET stichtag = @stichtag
+    WHERE eintrags_nr = @eintrags_nr
+    """
+    client = _get_bq_client()
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("stichtag", "DATE", parsed_date),
+            bigquery.ScalarQueryParameter("eintrags_nr", "STRING", str(dwmsg_eintrags_nr))
+        ]
+    )
+    client.query(query, job_config=job_config).result()
 
-# Step 9: DWMSG_AppendTimingInfos
-def dwmsg_append_timing_infos(eintrags_nr, info_text, date_format):
+def dwmsg_append_timing_infos(dwmsg_eintrags_nr, dwmsg_infotext, dwmsg_dateformat):
     """
-    Appends formatted metrics checkpoints to execution record auxiliary fields.
+    DWMSG_AppendTimingInfos <EintragsNr> <InfoText> <DateFormat>
+    Funktion fuegt Timinginfos in die Spalte ZUSATZINFOS hinzu.
     """
-    if not eintrags_nr:
+    if not dwmsg_eintrags_nr:
         print("Argh!, keine EintragsNr bei Aufruf von SetzeZusatzInfos angegeben", file=sys.stderr)
         sys.exit(1)
-        
-    if not date_format:
+    if not dwmsg_dateformat:
         print("Argh!, Formatangabe erforderlich!", file=sys.stderr)
         sys.exit(2)
-        
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                # REIMPLEMENTATION: Directly executing Oracle PL/SQL block.
-                # Replaced SYSDATE with CURRENT_TIMESTAMP per instructions.
-                plsql_block = """
-                BEGIN
-                    BERT_MELDUNG.SetzeZusatzInfos(
-                        :e_nr,
-                        NULL,
-                        :i_txt || ' ' || TO_CHAR(CURRENT_TIMESTAMP, :d_fmt) || ' '
-                    );
-                    COMMIT;
-                END;
-                """
-                cur.execute(plsql_block, {
-                    "e_nr": eintrags_nr,
-                    "i_txt": info_text if info_text is not None else "",
-                    "d_fmt": date_format
-                })
-    except oracledb.DatabaseError as e:
-        print(f"ERROR: AppendTimingInfos failed: {e}", file=sys.stderr)
-        sys.exit(1)
 
+    py_fmt = oracle_to_python_fmt(dwmsg_dateformat)
+    now_str = datetime.datetime.now().strftime(py_fmt)
+    append_val = f"{dwmsg_infotext} {now_str} "
+
+    table = _get_table_ref()
+    query = f"""
+    UPDATE `{table}`
+    SET zusatzinfos = CONCAT(COALESCE(zusatzinfos, ''), @append_val)
+    WHERE eintrags_nr = @eintrags_nr
+    """
+    client = _get_bq_client()
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("append_val", "STRING", append_val),
+            bigquery.ScalarQueryParameter("eintrags_nr", "STRING", str(dwmsg_eintrags_nr))
+        ]
+    )
+    client.query(query, job_config=job_config).result()
 
 def main():
-    parser = argparse.ArgumentParser(description="Python CLI wrapper for f_alis_msgerr.ksh routines.")
-    parser.add_argument("function", help="Name of the KSH library function to run")
-    parser.add_argument("args", nargs="*", help="Function positional arguments")
-    
-    parsed_args = parser.parse_args()
-    func_name = parsed_args.function.lower().replace("_", "")
-    func_args = parsed_args.args
-    
-    # Map KSH function names to python functions
-    if func_name == "dwmsgfehlerbehandlung":
-        if len(func_args) < 1:
-            print("ERROR: dwmsg_fehlerbehandlung requires: eintrags_nr [fehler_nr]", file=sys.stderr)
-            sys.exit(1)
-        e_nr = func_args[0]
-        err_code = int(func_args[1]) if len(func_args) > 1 else 1
-        dwmsg_fehlerbehandlung(e_nr, err_code)
-        
-    elif func_name == "dwmsgsetzestatusok":
-        if len(func_args) < 1:
-            print("ERROR: dwmsg_setze_status_ok requires: eintrags_nr", file=sys.stderr)
-            sys.exit(1)
-        dwmsg_setze_status_ok(func_args[0])
-        
-    elif func_name == "dwmsgsetzestatusabbruch":
-        if len(func_args) < 1:
-            print("ERROR: dwmsg_setze_status_abbruch requires: eintrags_nr", file=sys.stderr)
-            sys.exit(1)
-        dwmsg_setze_status_abbruch(func_args[0])
-        
-    elif func_name == "dwmsgermittlenr":
-        if len(func_args) < 1:
-            print("ERROR: dwmsg_ermittle_nr requires: var_name", file=sys.stderr)
-            sys.exit(1)
-        val = dwmsg_ermittle_nr(func_args[0])
-        print(val)
-        
-    elif func_name == "dwmsgerzeugeeintrag":
-        if len(func_args) < 4:
-            print("ERROR: dwmsg_erzeuge_eintrag requires: eintrags_nr job_kennung programm_name log_datei", file=sys.stderr)
-            sys.exit(1)
-        dwmsg_erzeuge_eintrag(func_args[0], func_args[1], func_args[2], func_args[3])
-        
-    elif func_name == "dwmsgmeldefehler":
-        if len(func_args) < 3:
-            print("ERROR: dwmsg_melde_fehler requires: eintrags_nr typ fehler_nr [zusatz1] [zusatz2]", file=sys.stderr)
-            sys.exit(1)
-        z1 = func_args[3] if len(func_args) > 3 else ""
-        z2 = func_args[4] if len(func_args) > 4 else ""
-        dwmsg_melde_fehler(func_args[0], func_args[1], func_args[2], z1, z2)
-        
-    elif func_name == "dwmsglogdateiname":
-        if len(func_args) < 2:
-            print("ERROR: dwmsg_logdateiname requires: job_kennung eintrags_nr", file=sys.stderr)
-            sys.exit(1)
-        val = dwmsg_logdateiname(func_args[0], func_args[1])
-        print(val)
-        
-    elif func_name == "dwmsgsetzezstichtaginfo" or func_name == "dwmsgsetzestichtaginfo":
-        if len(func_args) < 3:
-            print("ERROR: dwmsg_setze_stichtag_info requires: eintrags_nr stichtag stichtag_fmt", file=sys.stderr)
-            sys.exit(1)
-        dwmsg_setze_stichtag_info(func_args[0], func_args[1], func_args[2])
-        
-    elif func_name == "dwmsgappendtiminginfos":
-        if len(func_args) < 3:
-            print("ERROR: dwmsg_append_timing_infos requires: eintrags_nr info_text date_format", file=sys.stderr)
-            sys.exit(1)
-        dwmsg_append_timing_infos(func_args[0], func_args[1], func_args[2])
-        
-    else:
-        print(f"ERROR: Unknown function '{parsed_args.function}'", file=sys.stderr)
-        sys.exit(1)
+    parser = argparse.ArgumentParser(description="Python utility module for Session Log & Telemetry")
+    subparsers = parser.add_subparsers(dest="command", help="Centralized functions")
 
+    p_err = subparsers.add_parser("DWMSG_Fehlerbehandlung")
+    p_err.add_argument("eintrags_nr")
+    p_err.add_argument("last_exit_code", nargs="?", default="1")
+
+    p_ok = subparsers.add_parser("DWMSG_SetzeStatusOK")
+    p_ok.add_argument("eintrags_nr")
+
+    p_abb = subparsers.add_parser("DWMSG_SetzeStatusAbbruch")
+    p_abb.add_argument("eintrags_nr")
+
+    p_erm = subparsers.add_parser("DWMSG_ErmittleNr")
+    p_erm.add_argument("var_name", nargs="?", default=None)
+
+    p_erz = subparsers.add_parser("DWMSG_ErzeugeEintrag")
+    p_erz.add_argument("eintrags_nr")
+    p_erz.add_argument("job_kennung")
+    p_erz.add_argument("programmname")
+    p_erz.add_argument("log_datei")
+
+    p_mel = subparsers.add_parser("DWMSG_MeldeFehler")
+    p_mel.add_argument("eintrags_nr")
+    p_mel.add_argument("typ")
+    p_mel.add_argument("fehler_nr")
+    p_mel.add_argument("zusatz1", nargs="?", default="")
+    p_mel.add_argument("zusatz2", nargs="?", default="")
+
+    p_log = subparsers.add_parser("DWMSG_Logdateiname")
+    p_log.add_argument("job_kennung")
+    p_log.add_argument("eintrags_nr")
+
+    p_stich = subparsers.add_parser("DWMSG_SetzeStichtagInfo")
+    p_stich.add_argument("eintrags_nr")
+    p_stich.add_argument("stichtag")
+    p_stich.add_argument("stichtag_fmt")
+
+    p_time = subparsers.add_parser("DWMSG_AppendTimingInfos")
+    p_time.add_argument("eintrags_nr")
+    p_time.add_argument("info_text")
+    p_time.add_argument("date_format")
+
+    args = parser.parse_args()
+    if not args.command:
+        parser.print_help()
+        return 1
+
+    try:
+        if args.command == "DWMSG_Fehlerbehandlung":
+            dwmsg_fehlerbehandlung(args.eintrags_nr, int(args.last_exit_code))
+        elif args.command == "DWMSG_SetzeStatusOK":
+            dwmsg_setze_status_ok(args.eintrags_nr)
+        elif args.command == "DWMSG_SetzeStatusAbbruch":
+            dwmsg_setze_status_abbruch(args.eintrags_nr)
+        elif args.command == "DWMSG_ErmittleNr":
+            nr = dwmsg_ermittle_nr(args.var_name)
+            print(nr)
+        elif args.command == "DWMSG_ErzeugeEintrag":
+            dwmsg_erzeuge_eintrag(args.eintrags_nr, args.job_kennung, args.programmname, args.log_datei)
+        elif args.command == "DWMSG_MeldeFehler":
+            dwmsg_melde_fehler(args.eintrags_nr, args.typ, args.fehler_nr, args.zusatz1, args.zusatz2)
+        elif args.command == "DWMSG_Logdateiname":
+            path = dwmsg_logdateiname(args.job_kennung, args.eintrags_nr)
+            print(path)
+        elif args.command == "DWMSG_SetzeStichtagInfo":
+            dwmsg_setze_stichtag_info(args.eintrags_nr, args.stichtag, args.stichtag_fmt)
+        elif args.command == "DWMSG_AppendTimingInfos":
+            dwmsg_append_timing_infos(args.eintrags_nr, args.info_text, args.date_format)
+    except Exception as e:
+        print(f"Error executing {args.command}: {e}", file=sys.stderr)
+        return 1
+    return 0
 
 if __name__ == "__main__":
     sys.exit(main())

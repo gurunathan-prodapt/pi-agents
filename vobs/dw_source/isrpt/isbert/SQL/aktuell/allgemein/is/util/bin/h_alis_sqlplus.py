@@ -1,101 +1,93 @@
 #!/usr/bin/env python3
 import os
 import sys
+import argparse
+import pathlib
 import subprocess
-from pathlib import Path
 
-# Step 1: Initialize global module variables
-MODUL_NAME = "alis_sqlplus"
-MODUL_VERSION = "V1.1.3"
+# Step 1: Initialize module identifying parameters
+# Source script defines ModulName/ModulVersion but references Modul_Name/Modul_Version.
+# Defining both patterns here to maintain backward-compatibility and fix the original typo.
+ModulName = "alis_sqlplus"
+ModulVersion = "V1.1.3"
+Modul_Name = ModulName
+Modul_Version = ModulVersion
 
 
-# Step 2: Define starteSQLSkript utility function
-def starte_sql_skript(p_eintragsnr: str, p_skript: str, *args) -> int:
+# Step 2: Define Python wrapper for legacy error utility
+def call_dwmsg_meldefehler(eintragsnr, status_char, error_code, msg_text):
     """
-    Python equivalent of the starteSQLSkript shell function.
-    Validates arguments and file readability, then runs sqlplus.
+    Invokes the external DWMSG_MeldeFehler log management script.
     """
-    # Step 3: Parameter validation
-    if not p_eintragsnr or not p_skript:
-        modul_name_u = os.environ.get("Modul_Name", MODUL_NAME)
-        modul_version_u = os.environ.get("Modul_Version", MODUL_VERSION)
-        
-        # REVIEW-STRUCT: original launcher call preserved verbatim below — replace with the GCP-native equivalent once the launcher's internal behaviour (logging, error propagation, credential injection) is confirmed
-        cmd_err = [ 
-            "DWMSG_MeldeFehler",
-            p_eintragsnr if p_eintragsnr else "",
-            "E",
-            "196",
-            f"{modul_name_u} {modul_version_u} starteSQLSkript"
-        ]
-        try:
-            subprocess.run(cmd_err, check=False)
-        except Exception as e:
-            print(f"Error calling DWMSG_MeldeFehler: {e}", file=sys.stderr)
+    # REVIEW-STRUCT: original launcher call preserved verbatim below — replace with the GCP-native equivalent once the launcher's internal behaviour (logging, error propagation, credential injection) is confirmed
+    cmd = [
+        "DWMSG_MeldeFehler",
+        str(eintragsnr),
+        str(status_char),
+        str(error_code),
+        str(msg_text)
+    ]
+    try:
+        subprocess.run(cmd, check=True)
+    except subprocess.CalledProcessError as e:
+        print(f"Failed to execute DWMSG_MeldeFehler: {e}", file=sys.stderr)
+
+
+# Step 3: Define starteSQLSkript utility function
+def starteSQLSkript(p_Eintragsnr, p_Skript, *script_args):
+    """
+    Verifies parameters and readability of a SQL file, then executes it via SQL*Plus.
+    """
+    # Step 3.1: Validate parameter inputs (replicates -z checks)
+    if not p_Eintragsnr or not p_Skript:
+        error_msg = f"{Modul_Name} {Modul_Version} starteSQLSkript"
+        call_dwmsg_meldefehler(p_Eintragsnr, "E", 196, error_msg)
         return 196
 
-    # Step 4: Validate file accessibility
-    script_path = Path(p_skript)
-    if not script_path.is_file() or not os.access(script_path, os.R_OK):
-        # REVIEW-STRUCT: original launcher call preserved verbatim below — replace with the GCP-native equivalent once the launcher's internal behaviour (logging, error propagation, credential injection) is confirmed
-        cmd_err = [ 
-            "DWMSG_MeldeFehler",
-            p_eintragsnr,
-            "E",
-            "201",
-            p_skript
-        ]
-        try:
-            subprocess.run(cmd_err, check=False)
-        except Exception as e:
-            print(f"Error calling DWMSG_MeldeFehler: {e}", file=sys.stderr)
+    # Step 3.2: Check if script is readable on filesystem (replicates [ ! -r $p_Skript ])
+    script_path = pathlib.Path(p_Skript)
+    if not script_path.exists() or not os.access(script_path, os.R_OK):
+        call_dwmsg_meldefehler(p_Eintragsnr, "E", 201, str(p_Skript))
         return 201
 
-    # Step 5: Log operation parameters
+    # Step 3.3: Output parameters for standard logging
     print("Rufe SQL*PLUS auf mit folgenden Einstellungen")
-    print(f"Sql*Plus-Skript : {p_skript}")
-    print(f"Skript-Parameter: {' '.join(args)}")
+    print(f"Sql*Plus-Skript : {p_Skript}")
+    print(f"Skript-Parameter: {' '.join(script_args)}")
 
-    # Step 6: Execute external SQL*Plus program
-    dw_orauser = os.environ.get("DW_ORAUSER")
-    if not dw_orauser:
-        raise SystemExit("DW_ORAUSER must be set by the calling environment")
+    # Step 3.4: Resolve DB user credentials from environment
+    dw_orauser = os.environ.get("DW_ORAUSER", "")
 
-    sqlplus_cmd = ["sqlplus", dw_orauser, f"@{p_skript}"] + list(args)
-
+    # Step 3.5: Execute SQL*Plus command line
     # REVIEW-STRUCT: original launcher call preserved verbatim below — replace with the GCP-native equivalent once the launcher's internal behaviour (logging, error propagation, credential injection) is confirmed
+    sqlplus_cmd = ["sqlplus", dw_orauser, f"@{p_Skript}"] + list(script_args)
+    
     try:
-        # Redirecting stdin from DEVNULL corresponds to </dev/null
-        # check=False mimics 'set +e' logic, allowing manual capture and propagation of exit code
-        result = subprocess.run(
+        # set +e / set -e simulation: we capture returncode without raising exception
+        completed_process = subprocess.run(
             sqlplus_cmd,
             stdin=subprocess.DEVNULL,
-            check=False
+            capture_output=False,
+            text=True
         )
-        errcode = result.returncode
+        errcode = completed_process.returncode
     except Exception as e:
-        print(f"Fehler bei der Ausfuehrung von sqlplus: {e}", file=sys.stderr)
-        errcode = 1  # Generic execution failure
+        print(f"System execution error starting SQL*Plus: {e}", file=sys.stderr)
+        errcode = -1  # Standard fallback error code
 
-    # Step 7: Return SQLPlus execution exit code
+    # Step 3.6: Return captured execution code
     return errcode
 
 
-def main(argv=None):
-    import argparse
-    parser = argparse.ArgumentParser(description="Run SQL*Plus scripts using starteSQLSkript logic.")
-    parser.add_argument("p_eintragsnr", help="Error tracking ID (Eintragsnummer)")
-    parser.add_argument("p_skript", help="Path to the SQL script to be run")
-    parser.add_argument("sql_args", nargs="*", help="Dynamic parameters passed to the SQL script")
-
-    args = parser.parse_args(argv)
-
-    # Fail loudly if required environment variable is missing
-    dw_orauser = os.environ.get("DW_ORAUSER")
-    if not dw_orauser:
-        raise SystemExit("DW_ORAUSER must be set by the calling environment")
-
-    rc = starte_sql_skript(args.p_eintragsnr, args.p_skript, *args.sql_args)
+def main():
+    parser = argparse.ArgumentParser(description="Wrapper for executing SQL*Plus scripts.")
+    parser.add_argument("eintragsnr", help="Fehlereintragsnummer")
+    parser.add_argument("skript", help="Name of the script to execute")
+    parser.add_argument("script_args", nargs="*", help="Optional script arguments")
+    
+    args = parser.parse_args()
+    
+    rc = starteSQLSkript(args.eintragsnr, args.skript, *args.script_args)
     return rc
 
 

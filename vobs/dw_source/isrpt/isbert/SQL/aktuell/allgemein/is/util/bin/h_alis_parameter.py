@@ -1,22 +1,24 @@
 #!/usr/bin/env python3
+
 import os
 import sys
 import datetime
 from dateutil.relativedelta import relativedelta
+import argparse
 
-# Global module parameters as per KSH source environment logic
-ErrNr = 0
-ErrArg = ""
+# Module Metadata
 ModulName = "alis_parameter"
 ModulVersion = "V3.0.9"
 
-# ==============================================================================
+# Global Error State to mimic legacy shell behavior
+ErrNr = 0
+ErrArg = ""
+
 # Step 1: pruefeParameterGesetzt
-# ==============================================================================
 def pruefeParameterGesetzt(param_name, param_var):
     """
-    Checks if the specified environment variable is set and contains a value.
-    If not, updates global ErrNr and ErrArg.
+    Checks if the specified environment variable contains a value.
+    If not, sets the appropriate global error state.
     """
     global ErrNr, ErrArg
     if ErrNr != 0:
@@ -27,253 +29,248 @@ def pruefeParameterGesetzt(param_name, param_var):
         ErrArg = f"{ModulName} {ModulVersion} pruefeParameterGesetzt"
         return
 
-    param_wert = os.environ.get(param_var, "")
+    param_wert = os.environ.get(param_var)
 
     if not param_wert:
         ErrNr = 194
         ErrArg = param_name
 
-# ==============================================================================
 # Step 2: konvertiereKennzahl
-# ==============================================================================
-def konvertiereKennzahl(VarName):
+def konvertiereKennzahl(var_name):
     """
-    Converts descriptive metric names into normalized abbreviations.
-    Modifies the variable in os.environ in-place.
+    Converts a long key figure description to a standardized 3-character abbreviation.
     """
     global ErrNr, ErrArg
     if ErrNr != 0:
         return
 
-    if not VarName:
+    if not var_name:
         ErrNr = 196
         ErrArg = f"{ModulName} {ModulVersion} konvertiereKennzahl"
         return
 
-    Kennzahl = os.environ.get(VarName, "").lower()
+    kennzahl = os.environ.get(var_name, "").lower()
 
-    if Kennzahl == "zugang":
-        Kennzahl = "zug"
-    elif Kennzahl == "abgang":
-        Kennzahl = "abg"
-    elif Kennzahl == "abgang_zukunft":
-        Kennzahl = "abz"
-    elif Kennzahl == "bestand":
-        Kennzahl = "bst"
-    elif Kennzahl == "tarifwechsel":
-        Kennzahl = "twe"
-    elif Kennzahl == "plan":
-        Kennzahl = "pln"
-    elif Kennzahl == "gutschrift":
-        Kennzahl = "gut"
-    elif Kennzahl == "aufladung":
-        Kennzahl = "auf"
-    elif Kennzahl == "restguthaben":
-        Kennzahl = "rst"
-    elif Kennzahl == "teilnehmerverbindungsdaten":
-        Kennzahl = "tvd"
-    elif Kennzahl == "uskonto":
-        Kennzahl = "usk"
-    elif Kennzahl == "usteilnehmer":
-        Kennzahl = "ust"
-    elif Kennzahl == "leistungsklasse":
-        Kennzahl = "lkl"
-    elif Kennzahl == "loeschung":
-        Kennzahl = "loe"
-    elif Kennzahl == "reaktivierung":
-        Kennzahl = "rak"
-    elif Kennzahl == "standard_rechnung":
-        Kennzahl = "srs"
-    elif Kennzahl == "standard_gutschrift":
-        Kennzahl = "sgs"
-    elif Kennzahl == "gutschrift_rv":
-        Kennzahl = "sg_rv"
-    elif Kennzahl == "rechnungen_rv_dpps":
-        Kennzahl = "sr_rv_dpps"
-    elif Kennzahl == "bewegart":
-        Kennzahl = "bwa"
-    elif Kennzahl == "kundenstamm":
-        Kennzahl = "ksd"
-    elif Kennzahl == "mahnstufe":
-        Kennzahl = "mahn"
-    elif Kennzahl == "metadatenstruktur":
-        Kennzahl = "mds"
-    elif Kennzahl == "d1news":
-        Kennzahl = "d1n"
-    elif Kennzahl == "rubrik":
-        Kennzahl = "rub"
-    elif Kennzahl == "liefermodus":
-        Kennzahl = "lmo"
-    elif Kennzahl == "netznutzungsklassen":
-        Kennzahl = "nnk"
-    elif Kennzahl == "tagesverkehrskurven":
-        Kennzahl = "tvk"
-    elif Kennzahl == "gespraechsziele":
-        Kennzahl = "gz"
-    elif Kennzahl == "gespraechslaengenverteilung":
-        Kennzahl = "glv"
-    elif Kennzahl == "zonenkennung":
-        Kennzahl = "zonek"
-    elif Kennzahl == "zonentyp":
-        Kennzahl = "zonet"
-    elif Kennzahl == "netznutzungsklassentyp":
-        Kennzahl = "nnkt"
-    elif Kennzahl == "tarifart":
-        Kennzahl = "trfa"
-    elif Kennzahl == "gespraechstyp":
-        Kennzahl = "gtyp"
-    elif Kennzahl == "basisdienst":
-        Kennzahl = "basisd"
-    elif Kennzahl == "nationalinternational":
-        Kennzahl = "natint"
-    elif Kennzahl == "glaengenintervall":
-        Kennzahl = "glint"
+    if kennzahl == "zugang":
+        kennzahl = "zug"
+    elif kennzahl == "abgang":
+        kennzahl = "abg"
+    elif kennzahl == "abgang_zukunft":
+        kennzahl = "abz"
+    elif kennzahl == "bestand":
+        kennzahl = "bst"
+    elif kennzahl == "tarifwechsel":
+        kennzahl = "twe"
+    elif kennzahl == "plan":
+        kennzahl = "pln"
+    elif kennzahl == "gutschrift":
+        kennzahl = "gut"
+    elif kennzahl == "aufladung":
+        kennzahl = "auf"
+    elif kennzahl == "restguthaben":
+        kennzahl = "rst"
+    elif kennzahl == "teilnehmerverbindungsdaten":
+        kennzahl = "tvd"
+    elif kennzahl == "uskonto":
+        kennzahl = "usk"
+    elif kennzahl == "usteilnehmer":
+        kennzahl = "ust"
+    elif kennzahl == "leistungsklasse":
+        kennzahl = "lkl"
+    elif kennzahl == "loeschung":
+        kennzahl = "loe"
+    elif kennzahl == "reaktivierung":
+        kennzahl = "rak"
+    elif kennzahl == "standard_rechnung":
+        kennzahl = "srs"
+    elif kennzahl == "standard_gutschrift":
+        kennzahl = "sgs"
+    elif kennzahl == "gutschrift_rv":
+        kennzahl = "sg_rv"
+    elif kennzahl == "rechnungen_rv_dpps":
+        kennzahl = "sr_rv_dpps"
+    elif kennzahl == "bewegart":
+        kennzahl = "bwa"
+    elif kennzahl == "kundenstamm":
+        kennzahl = "ksd"
+    elif kennzahl == "mahnstufe":
+        kennzahl = "mahn"
+    elif kennzahl == "metadatenstruktur":
+        kennzahl = "mds"
+    elif kennzahl == "d1news":
+        kennzahl = "d1n"
+    elif kennzahl == "rubrik":
+        kennzahl = "rub"
+    elif kennzahl == "liefermodus":
+        kennzahl = "lmo"
+    elif kennzahl == "netznutzungsklassen":
+        kennzahl = "nnk"
+    elif kennzahl == "tagesverkehrskurven":
+        kennzahl = "tvk"
+    elif kennzahl == "gespraechsziele":
+        kennzahl = "gz"
+    elif kennzahl == "gespraechslaengenverteilung":
+        kennzahl = "glv"
+    elif kennzahl == "zonenkennung":
+        kennzahl = "zonek"
+    elif kennzahl == "zonentyp":
+        kennzahl = "zonet"
+    elif kennzahl == "netznutzungsklassentyp":
+        kennzahl = "nnkt"
+    elif kennzahl == "tarifart":
+        kennzahl = "trfa"
+    elif kennzahl == "gespraechstyp":
+        kennzahl = "gtyp"
+    elif kennzahl == "basisdienst":
+        kennzahl = "basisd"
+    elif kennzahl == "nationalinternational":
+        kennzahl = "natint"
+    elif kennzahl == "glaengenintervall":
+        kennzahl = "glint"
     else:
         ErrNr = 198
-        ErrArg = Kennzahl
-        Kennzahl = "???"
+        ErrArg = kennzahl
+        kennzahl = "???"
 
-    os.environ[VarName] = Kennzahl
+    os.environ[var_name] = kennzahl
 
-# ==============================================================================
 # Step 3: konvertiereSystem
-# ==============================================================================
-def konvertiereSystem(VarName):
+def konvertiereSystem(var_name):
     """
-    Validates and normalizes source system names.
-    Modifies the variable in os.environ in-place.
+    Normalizes a source system name to lowercase and validates it.
     """
     global ErrNr, ErrArg
     if ErrNr != 0:
         return
 
-    if not VarName:
+    if not var_name:
         ErrNr = 196
         ErrArg = f"{ModulName} {ModulVersion} konvertiereSystem"
         return
 
-    System = os.environ.get(VarName, "").lower()
+    system = os.environ.get(var_name, "").lower()
 
-    if System in ["sap", "carmen", "dpps", "d1", "xtra", "ctel", "nnv", "dwh", "brunet", "sigma"]:
+    valid_systems = {
+        "sap", "carmen", "dpps", "d1", "xtra", "ctel",
+        "nnv", "dwh", "brunet", "sigma"
+    }
+
+    if system in valid_systems:
         pass
     else:
         ErrNr = 195
-        ErrArg = f"Unbekannte Datenherkunft {System} !"
-        System = "???"
+        ErrArg = f"Unbekannte Datenherkunft {system} !"
+        system = "???"
 
-    os.environ[VarName] = System
+    os.environ[var_name] = system
 
-# ==============================================================================
 # Step 4: konvertiereSDName
-# ==============================================================================
-def konvertiereSDName(VarName):
+def konvertiereSDName(var_name):
     """
-    Converts master data system labels into standard abbreviations.
-    Modifies the variable in os.environ in-place.
+    Normalizes a master data source name to standard abbreviations.
     """
     global ErrNr, ErrArg
     if ErrNr != 0:
         return
 
-    if not VarName:
+    if not var_name:
         ErrNr = 196
+        # Note: KSH source literally says "konvertiereSDSystem" here
         ErrArg = f"{ModulName} {ModulVersion} konvertiereSDSystem"
         return
 
-    System = os.environ.get(VarName, "").lower()
+    system = os.environ.get(var_name, "").lower()
 
-    if System == "vo":
+    if system == "vo":
         pass
-    elif System == "rahmenvertrag":
-        System = "rv"
-    elif System == "tarif":
-        System = "trf"
-    elif System == "tstatus":
-        System = "ts"
-    elif System == "zahlmodus":
-        System = "zm"
-    elif System == "kdg_grund":
-        System = "kdg"
-    elif System == "gutschrift":
-        System = "gut"
-    elif System == "aufladung":
-        System = "auf"
-    elif System == "leistung":
-        System = "l_leist"
-    elif System == "gutschrift_grund":
-        System = "l_gutgr"
-    elif System == "sap_gutschrift_grund":
-        System = "sap_l_gutgr"
-    elif System == "produkt":
-        System = "l_prod"
-    elif System == "mahnverfahren_sapist":
-        System = "l_mahnv_ist"
-    elif System == "mahnverfahren_sapfi":
-        System = "l_mahnv_fi"
-    elif System == "mahnstufentyp_sapist":
-        System = "l_mahnstyp_ist"
-    elif System == "bewegart":
-        System = "bwa"
+    elif system == "rahmenvertrag":
+        system = "rv"
+    elif system == "tarif":
+        system = "trf"
+    elif system == "tstatus":
+        system = "ts"
+    elif system == "zahlmodus":
+        system = "zm"
+    elif system == "kdg_grund":
+        system = "kdg"
+    elif system == "gutschrift":
+        system = "gut"
+    elif system == "aufladung":
+        system = "auf"
+    elif system == "leistung":
+        system = "l_leist"
+    elif system == "gutschrift_grund":
+        system = "l_gutgr"
+    elif system == "sap_gutschrift_grund":
+        system = "sap_l_gutgr"
+    elif system == "produkt":
+        system = "l_prod"
+    elif system == "mahnverfahren_sapist":
+        system = "l_mahnv_ist"
+    elif system == "mahnverfahren_sapfi":
+        system = "l_mahnv_fi"
+    elif system == "mahnstufentyp_sapist":
+        system = "l_mahnstyp_ist"
+    elif system == "bewegart":
+        system = "bwa"
     else:
         ErrNr = 195
-        ErrArg = f"Unbekannte Stammdaten-Datenherkunft {System} !"
-        System = "???"
+        ErrArg = f"Unbekannte Stammdaten-Datenherkunft {system} !"
+        system = "???"
 
-    os.environ[VarName] = System
+    os.environ[var_name] = system
 
-# ==============================================================================
 # Step 5: konvertiereAufbStufeXtra
-# ==============================================================================
-def konvertiereAufbStufeXtra(VarName):
+def konvertiereAufbStufeXtra(var_name):
     """
-    Normalizes processing phase names for Xtra.
-    Modifies the variable in os.environ in-place.
+    Converts Xtra aggregation step name to a standardized key.
     """
     global ErrNr, ErrArg
     if ErrNr != 0:
         return
 
-    if not VarName:
+    if not var_name:
         ErrNr = 196
         ErrArg = f"{ModulName} {ModulVersion} konvertiereAufbStufeXtra"
         return
 
-    Stufe = os.environ.get(VarName, "").lower()
+    stufe = os.environ.get(var_name, "").lower()
 
-    if Stufe == "zusammenfuehrung":
-        Stufe = "mrg"
-    elif Stufe == "befuellung":
-        Stufe = "fill"
+    if stufe == "zusammenfuehrung":
+        stufe = "mrg"
+    elif stufe == "befuellung":
+        stufe = "fill"
     else:
         ErrNr = 195
-        ErrArg = f"Unbekannte Stufenangabe {Stufe} !"
-        Stufe = "???"
+        ErrArg = f"Unbekannte Stufenangabe {stufe} !"
+        stufe = "???"
 
-    os.environ[VarName] = Stufe
+    os.environ[var_name] = stufe
 
-# ==============================================================================
 # Step 6: pruefeSystemKennzahl
-# ==============================================================================
-def pruefeSystemKennzahl(System, Kennzahl):
+def pruefeSystemKennzahl(system, kennzahl):
     """
-    Validates if the specified system and metric combination is supported.
+    Checks if a combination of system and KPI is valid and supported.
     """
     global ErrNr, ErrArg
     if ErrNr != 0:
         return
 
-    if not System or not Kennzahl:
+    if not system or not kennzahl:
         ErrNr = 196
         ErrArg = f"{ModulName} {ModulVersion} pruefeSystemKennzahl"
         return
 
-    err_arg_local = ""
+    err_arg_tmp = ""
 
-    if System != "nnv" and (Kennzahl == "tvd" or Kennzahl == "lkl"):
-        err_arg_local = f"Ungueltige Kombination {System} {Kennzahl}"
-    elif System == "carmen":
-        if Kennzahl in ["twe", "pln", "rst", "srs", "sgs", "ust", "mahn", "sg_rv", "sr_rv_dpps", "bwa"]:
-            err_arg_local = f"Ungueltige Kombination {System} {Kennzahl}"
-    elif System == "sap":
-        if Kennzahl in ["zug", "abg", "abz", "bst", "twe", "pln", "gut", "auf", "rst", "tvd", "usk", "ust", "lkl", "loe", "rak", "ksd", "bwa"]:
-            err_arg_local = f
+    if system != "nnv" and (kennzahl == "tvd" or kennzahl == "lkl"):
+        err_arg_tmp = f"Ungueltige Kombination {system} {kennzahl}"
+    elif system == "carmen":
+        if kennzahl in ["twe", "pln", "rst", "srs", "sgs", "ust", "mahn", "sg_rv", "sr_rv_dpps", "bwa"]:
+            err_arg_tmp = f"Ungueltige Kombination {system} {kennzahl}"
+    elif system == "sap":
+        if kennzahl in ["zug", "abg", "abz", "bst", "twe", "pln", "gut", "auf", "rst", "tvd", "usk", "ust", "lkl", "loe", "rak", "ksd", "bwa"]:
+            err_arg_tmp = f"Ungueltige Kombination {system} {kennzahl}"
+    elif system == "dpps":
+        if kennzahl in ["twe", "pln", "loe", "rak", "srs", "sgs", "mahn", "sg_rv", "sr_rv_dpps"]:
+            err_arg_tmp = f
