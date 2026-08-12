@@ -373,395 +373,353 @@ EOF
 
 === CONVERSION VERDICT ===
 VERDICT: PYTHON
-REASON: The script is a reusable KornShell utility library defining multiple error-handling and logging functions that invoke external SQL*Plus processes and manipulate environment variables.
+REASON: This is a KornShell utility library defining several error handling and logging functions that invoke PL/SQL stored procedures via SQL*Plus and manage local temporary files.
 
 EVIDENCE
-- Business logic found: KSH custom logic. The script defines a series of reusable functions for job registration, status updates, timing instrumentation, and exception reporting in an Oracle database.
+- Business logic found: KSH custom logic. The script implements a centralized logging and error-management framework ("Information Services") consisting of nine functions to handle unexpected failures, log events, create execution records, and update execution state in an Oracle DB.
 - AWK: none
-- SQL-expressible: no. While it executes PL/SQL procedures, the script functions as an orchestration/utility library to be sourced by other processes to manage shell-level state and generate filesystem path names.
-- Non-SQL side effects: Temporary file creation/cleanup (`/tmp/ErmittleNr_$$.lst`), dynamic environment variable setting via `eval`, and log file path formatting.
-- Against this verdict: If the database is migrated to BigQuery and the orchestration system is completely rewritten in a workflow engine like Airflow, these functions might be replaced by native Airflow task listeners or logging handlers, making a 1-to-1 conversion unnecessary. However, as written, the script contains procedural execution-tracking logic that must be translated into Python equivalents.
+- SQL-expressible: no. While it executes PL/SQL database procedures, it contains heavy shell orchestration features (such as trapping signals, creating/manipulating temporary files, dynamic log naming, and shell parameter validations) that cannot be expressed purely in BigQuery SQL.
+- Non-SQL side effects: Creating, reading, and removing temporary files (`/tmp/ErmittleNr_$$.lst`), formatting log file names, writing to standard error, and environment variable manipulation.
+- Against this verdict: none. This is a library script designed to be sourced by other shells, requiring functional modernization in Python to serve as an importable module.
 
 =======================================================================================
 PART A — PYTHON DESIGN DOCUMENT
 =======================================================================================
 
 1. SCRIPT OVERVIEW
-   This script is a reusable KornShell utility library (`f_alis_msgerr.ksh`) that provides standardized error handling, database-backed logging, and status tracking for the "Information Services" (IS) data warehouse project. It is intended to be sourced by parent shell scripts which register their execution status by calling these utility routines (often bound to a shell exit trap). The script coordinates the insertion of log statements, status transitions (OK, ABORTED), and execution metadata inside an Oracle database schema.
+   This script (`f_alis_msgerr.ksh`) acts as a utility library for error management and execution status tracking within the "Information Services" system. It provides shell functions that standardize log-file naming, sequence/ID generation, error reporting, and status tracking (e.g. success or failure/abort) by executing Oracle PL/SQL stored procedures. Other scripts source this library to invoke these handlers dynamically during batch processing.
 
 2. INVOCATION CONTEXT
-   - Who calls this script: Sourced internally by other KornShell ETL scripts via `. f_alis_msgerr.ksh`. It does not execute as a standalone UC4 job but runs within the context of any wrapper script that imports it.
-   - UC4 includes: None referenced in the extracted block.
-   - Environment files sourced: None. It expects the calling environment to have configured variables such as `$DW_ORAUSER`, `$DW_DIR_ROOT`, and `$DW_DIR_PROT`.
+   - Who calls this script: Sourced by other KSH batch jobs using `. f_alis_msgerr.ksh`. No direct UC4 invocation context exists for this library itself, but its sourced functions run under various UC4 jobs.
+   - UC4 includes: None referenced directly in this file.
+   - Environment files sourced: None. It expects global variables like `DW_ORAUSER`, `DW_DIR_ROOT`, and `DW_DIR_PROT` to be set by the calling shell context.
 
 3. PARAMETERS / INPUTS
-   The script does not consume direct command-line arguments but utilizes global environment variables and parameters passed directly to its shell functions:
-   - `DW_ORAUSER` (Environment Variable): Database connection credentials (e.g., `user/password@db`). Used to authenticate `sqlplus` sessions.
-   - `DW_DIR_ROOT` (Environment Variable): The root path to the project's codebase, used to locate auxiliary `.sql` utility wrappers.
-   - `DW_DIR_PROT` (Environment Variable): Protocol directory where log files are stored.
-   - Function-specific positional parameters:
-     - `DWMSG_EintragsNr` (Positional): The tracking log ID used to identify the current execution instance in the database.
-     - `JobKennung` (Positional): Unique code identifying the parent job.
-     - `Programmname` (Positional): Name of the script/binary being executed.
-     - `LogDatei` (Positional): File path to the execution protocol.
-     - `Typ` (Positional): Error severity level (`F` for Fatal, `E` for Error, `W` for Warning).
-     - `FehlerNr` (Positional): Application-specific error identifier.
-     - `Zusatz1`, `Zusatz2` (Positional): Optional error context strings (e.g. filenames, database error states).
-     - `VarName` (Positional): Dynamically evaluated shell variable name used to return values to the caller.
+   - `DW_ORAUSER` (env var): Database connection string. Actually used in SQL*Plus invocations. Surface in Python as an environment variable or via a centralized database config.
+   - `DW_DIR_ROOT` (env var): Root directory of the source scripts. Actually used to construct SQL script execution paths. Surface as `os.environ.get("DW_DIR_ROOT")`.
+   - `DW_DIR_PROT` (env var): Destination directory for protocol logs. Actually used in `DWMSG_Logdateiname`. Surface as `os.environ.get("DW_DIR_PROT")`.
+
+   Functions Parameters (mapped to Python arguments):
+   - `DWMSG_Fehlerbehandlung`:
+     - `$1` (`DWMSG_EintragsNr`): Log entry ID. Mapped to function argument `eintrags_nr`.
+   - `DWMSG_SetzeStatusOK`:
+     - `$1` (`DWMSG_EintragsNr`): Log entry ID. Mapped to function argument `eintrags_nr`.
+   - `DWMSG_SetzeStatusAbbruch`:
+     - `$1` (`DWMSG_EintragsNr`): Log entry ID. Mapped to function argument `eintrags_nr`.
+   - `DWMSG_ErmittleNr`:
+     - `$1` (`VarName`): Variable name to write result to via `eval`. Mapped to a Python function return value.
+   - `DWMSG_ErzeugeEintrag`:
+     - `$1` (`DWMSG_EintragsNr`), `$2` (`JobKennung`), `$3` (`Programmname`), `$4` (`LogDatei`): Log entry metadata. Mapped to function arguments.
+   - `DWMSG_MeldeFehler`:
+     - `$1` (`DWMSG_EintragsNr`), `$2` (`Typ`), `$3` (`FehlerNr`), `$4` (`Zusatz1`), `$5` (`Zusatz2`): Error severity and message info. Mapped to function arguments (with `$4` and `$5` optional).
+   - `DWMSG_Logdateiname`:
+     - `$1` (`VarName`), `$2` (`JobKennung`), `$3` (`DWMSG_EintragsNr`): File metadata. Mapped to return a string path.
+   - `DWMSG_SetzeStichtagInfo`:
+     - `$1` (`DWMSG_EintragsNr`), `$2` (`DWMSG_Stichtag`), `$3` (`DWMSG_StichtagFmt`): Dates and metadata. Mapped to function arguments.
+   - `DWMSG_AppendTimingInfos`:
+     - `$1` (`DWMSG_EintragsNr`), `$2` (`DWMSG_InfoText`), `$3` (`DWMSG_DateFormat`): Timing metadata. Mapped to function arguments.
 
 4. EXTERNAL COMMANDS / PROGRAMS INVOKED
-   - `sqlplus` (Oracle SQL*Plus Client): Used to connect to the database and execute both dynamic inline PL/SQL blocks and parameterized SQL scripts.
-     - *Exact command examples*:
-       - `sqlplus -s $DW_ORAUSER @$DW_DIR_ROOT/allgemein/is/util/sql/d_alis_spaufruf_p1.sql BERT_MELDUNG.SetzeStatusOk $DWMSG_EintragsNr`
-       - `sqlplus $DW_ORAUSER @$DW_DIR_ROOT/allgemein/is/util/sql/d_alis_spaufruf_p1.sql BERT_MELDUNG.SetzeStatusAbbruch $DWMSG_EintragsNr`
-       - `sqlplus -s $DW_ORAUSER @$DW_DIR_ROOT/allgemein/is/util/sql/d_al_is_ermittlenr.sql "$TempFile"`
-       - `sqlplus -s $DW_ORAUSER @$DW_DIR_ROOT/allgemein/is/util/sql/d_alis_spaufruf_p4.sql BERT_MELDUNG.Erzeuge_Eintrag $DWMSG_EintragsNr $JobKennung $Programmname $LogDatei`
-     - *Purpose*: Executes logging/status tracking stored procedures on the `BERT_MELDUNG` package.
-     - *Python transformation*: This qualifies as a **RESOLVABLE LAUNCHER**. Rather than invoking `sqlplus` as an external subprocess, these operations should be converted into native database client operations using a Python database connector (such as `oracledb`).
-     - *Resolvable launcher analysis*:
-       - # REVIEW-STRUCT: connection parameters inferred from a cross-referenced .ksh file — confirm these exact env var names are set in this job's actual runtime environment before deploying
-       - The SQL scripts (`d_alis_spaufruf_p1.sql`, `d_al_is_ermittlenr.sql`, etc.) are simple wrappers used to invoke PL/SQL procedures on the database. In Python, these can be mapped directly to calling stored procedures via `cursor.callproc()` or direct anonymous PL/SQL blocks.
+   - `sqlplus` invocations (RESOLVABLE LAUNCHER):
+     - `sqlplus -s $DW_ORAUSER @$DW_DIR_ROOT/allgemein/is/util/sql/d_alis_spaufruf_p1.sql BERT_MELDUNG.SetzeStatusOk $DWMSG_EintragsNr </dev/null`
+     - `sqlplus $DW_ORAUSER @$DW_DIR_ROOT/allgemein/is/util/sql/d_alis_spaufruf_p1.sql BERT_MELDUNG.SetzeStatusAbbruch $DWMSG_EintragsNr </dev/null`
+     - `sqlplus -s $DW_ORAUSER @$DW_DIR_ROOT/allgemein/is/util/sql/d_al_is_ermittlenr.sql "$TempFile" </dev/null`
+     - `sqlplus -s $DW_ORAUSER @$DW_DIR_ROOT/allgemein/is/util/sql/d_alis_spaufruf_p4.sql BERT_MELDUNG.Erzeuge_Eintrag $DWMSG_EintragsNr $JobKennung $Programmname $LogDatei </dev/null`
+     - `sqlplus -s $DW_ORAUSER @$Dateipfad BERT_MELDUNG.Fehler $Typ $DWMSG_EintragsNr $FehlerNr \'$Zusatz1\' \'$Zusatz2\' </dev/null`
+     - `sqlplus -s $DW_ORAUSER` (via inline HERE-docs inside `DWMSG_SetzeStichtagInfo` and `DWMSG_AppendTimingInfos`).
+     - **Purpose:** Invoke PL/SQL procedures from the `BERT_MELDUNG` package.
+     - **Modernization Recommendation:** Since SQL dialect features (Oracle PL/SQL blocks, dynamic connection string `DW_ORAUSER`) are identified, these qualify as a **RESOLVABLE LAUNCHER** pattern. Rather than invoking external `sqlplus` processes, convert them to native Python DB Client calls (e.g., using `oracledb` or your target's corresponding driver/client library) directly invoking the PL/SQL database procedures.
+     - # REVIEW-STRUCT: SQL wrapper scripts (e.g., d_alis_spaufruf_p1.sql, d_al_is_ermittlenr.sql) are not supplied in this extraction. The proposed conversion uses Python native cursor calls directly executing BERT_MELDUNG package functions to eliminate dependencies on these wrapper files.
 
 5. EMBEDDED SQL
-   - Dialect is explicitly **Oracle SQL\*Plus**, identified by SQL*Plus variables, anonymous blocks, and specific package calls (`BERT_MELDUNG`).
-   - SQL Calls within helper functions:
-     1. **SetzeStatusOk**:
-        - Source: `@$DW_DIR_ROOT/allgemein/is/util/sql/d_alis_spaufruf_p1.sql` (Wrapper not supplied)
-        - PL/SQL call: `BERT_MELDUNG.SetzeStatusOk(<EintragsNr>)`
-     2. **SetzeStatusAbbruch**:
-        - Source: `@$DW_DIR_ROOT/allgemein/is/util/sql/d_alis_spaufruf_p1.sql` (Wrapper not supplied)
-        - PL/SQL call: `BERT_MELDUNG.SetzeStatusAbbruch(<EintragsNr>)`
-     3. **ErmittleNr**:
-        - Source: `@$DW_DIR_ROOT/allgemein/is/util/sql/d_al_is_ermittlenr.sql` (Wrapper not supplied)
-        - PL/SQL call: Selects next sequence value into a file. In Python, this can be written as `SELECT bert_sequence.NEXTVAL FROM dual`.
-     4. **ErzeugeEintrag**:
-        - Source: `@$DW_DIR_ROOT/allgemein/is/util/sql/d_alis_spaufruf_p4.sql` (Wrapper not supplied)
-        - PL/SQL call: `BERT_MELDUNG.Erzeuge_Eintrag(<EintragsNr>, <JobKennung>, <Programmname>, <LogDatei>)`
-     5. **MeldeFehler**:
-        - Source: `@$DW_DIR_ROOT/allgemein/is/util/sql/d_alis_spaufruf_p[3-5].sql` (Dynamic wrapper depending on argument count)
-        - PL/SQL call: `BERT_MELDUNG.Fehler(<Typ>, <EintragsNr>, <FehlerNr>, <Zusatz1>, <Zusatz2>)`
-     6. **SetzeStichtagInfo**:
-        - Inline PL/SQL:
-          ```sql
-          EXEC BERT_MELDUNG.SetzeZusatzInfos(:DWMSG_EintragsNr, to_date(:DWMSG_Stichtag, :DWMSG_StichtagFmt));
-          commit;
-          ```
-     7. **AppendTimingInfos**:
-        - Inline PL/SQL:
-          ```sql
-          EXEC BERT_MELDUNG.SetzeZusatzInfos(:DWMSG_EintragsNr, null, :DWMSG_InfoText || ' ' || to_char(SYSDATE, :DWMSG_DateFormat) || ' ');
-          commit;
-          ```
+   - **Source:** Inline HERE-doc inside `DWMSG_SetzeStichtagInfo`:
+     ```sql
+     EXEC BERT_MELDUNG.SetzeZusatzInfos($DWMSG_EintragsNr, to_date('$DWMSG_Stichtag', '$DWMSG_StichtagFmt'));
+     commit;
+     ```
+     - Statement type: PL/SQL Block.
+     - Dialect: Oracle SQL*Plus.
+     - Table touched: Underlying logging tables updated via the `BERT_MELDUNG` package.
+
+   - **Source:** Inline HERE-doc inside `DWMSG_AppendTimingInfos`:
+     ```sql
+     EXEC BERT_MELDUNG.SetzeZusatzInfos($DWMSG_EintragsNr,null,'$DWMSG_InfoText'||' '||to_char(SYSDATE,'$DWMSG_DateFormat')||' ');
+     commit;
+     ```
+     - Statement type: PL/SQL Block.
+     - Dialect: Oracle SQL*Plus.
+     - Table touched: Underlying logging tables updated via the `BERT_MELDUNG` package.
+
+   - # REVIEW: Target database platform is assumed to be Oracle because of the extensive use of PL/SQL packages (`BERT_MELDUNG`), `to_date`, `to_char`, and `SYSDATE`. If migrating to BigQuery, these package operations must be completely refactored into standard BigQuery DML writes on an equivalent log table.
 
 6. CONTROL FLOW
-   Since this is a library file, the control flow is structured around the lifecycle of individual routines:
-   1. **DWMSG_Fehlerbehandlung**: Slices off the active error signal `$IFS` ($?), dispatches standard fatal error log payload to DB via `DWMSG_MeldeFehler`, and transitions the job tracking record to an aborted state via `DWMSG_SetzeStatusAbbruch`.
-   2. **DWMSG_SetzeStatusOK**: Asserts presence of `EintragsNr`, then calls the `BERT_MELDUNG.SetzeStatusOk` database procedure.
-   3. **DWMSG_SetzeStatusAbbruch**: Asserts presence of `EintragsNr`, then calls the `BERT_MELDUNG.SetzeStatusAbbruch` database procedure.
-   4. **DWMSG_ErmittleNr**: Asserts name parameter for output variable context, runs sequential query tracking block, handles file system synchronization (saving stdout to `/tmp/ErmittleNr_$$`), parses value, removes temp file, and assigns back to dynamically called scope using `eval`.
-   5. **DWMSG_ErzeugeEintrag**: Asserts `EintragsNr`, calls `BERT_MELDUNG.Erzeuge_Eintrag`.
-   6. **DWMSG_MeldeFehler**: Resolves parameter counts, chooses dynamic execution template depending on whether optional context arguments are specified, and routes telemetry to `BERT_MELDUNG.Fehler`.
-   7. **DWMSG_Logdateiname**: Formats file path relative to `$DW_DIR_PROT` matching prefix format: `{JobKennung}_{YYYYMMDD_HHMM}_{EintragsNr}.log`.
-   8. **DWMSG_SetzeStichtagInfo**: Asserts inputs, invokes inline PL/SQL block mapping the provided string timestamp to a date using `to_date`.
-   9. **DWMSG_AppendTimingInfos**: Asserts inputs, appends executing user timing checkpoints to supplementary fields inside the execution record database entity.
+   Each shell library function maps to a dedicated logical routine:
+   - **Routine 1 (`DWMSG_Fehlerbehandlung`)**: Captures status code of last failing execution, triggers error registration via DB call (`BERT_MELDUNG.Fehler`), and flags run status to abort (`BERT_MELDUNG.SetzeStatusAbbruch`).
+   - **Routine 2 (`DWMSG_SetzeStatusOK`)**: Validates parameter, executes `BERT_MELDUNG.SetzeStatusOk` on the database.
+   - **Routine 3 (`DWMSG_SetzeStatusAbbruch`)**: Validates parameter, executes `BERT_MELDUNG.SetzeStatusAbbruch` on the database.
+   - **Routine 4 (`DWMSG_ErmittleNr`)**: Employs a temporary file to write database sequence output and read it back. In Python, replace this by executing sequence queries directly on the DB cursor and fetching the result into memory, bypassing the file system.
+   - **Routine 5 (`DWMSG_ErzeugeEintrag`)**: Validates run metadata, executes `BERT_MELDUNG.Erzeuge_Eintrag` on the database.
+   - **Routine 6 (`DWMSG_MeldeFehler`)**: Resolves argument count (3 to 5 parameters) and routes to `BERT_MELDUNG.Fehler` call.
+   - **Routine 7 (`DWMSG_Logdateiname`)**: Formats system timestamp (`%Y%m%d_%H%M`) and constructs the target log path in `DW_DIR_PROT`.
+   - **Routine 8 (`DWMSG_SetzeStichtagInfo`)**: Validates parameters and commits date/timing information through `BERT_MELDUNG.SetzeZusatzInfos`.
+   - **Routine 9 (`DWMSG_AppendTimingInfos`)**: Validates parameter inputs and appends custom timeline progress descriptions into the DB.
 
 7. ERROR HANDLING & EXIT CODES
-   - Library missing-parameter assertions are handled with explicit `exit 1` or `exit 2` statements.
-   - Shell command failures inside functions (e.g. `sqlplus` failing to connect) are not explicitly caught inside the secondary functions but rely on the parent script's `set -e` or `trap ERR` settings.
-   - Python migration equivalent: Define an `OracleLoggingManager` class. Missing arguments will raise a native `ValueError`. Database communication issues will raise `oracledb.DatabaseError` exceptions.
+   - If a function is called with empty key arguments (e.g. `DWMSG_EintragsNr` is empty), it issues an error to stdout/stderr and halts execution with `exit 1` or `exit 2`.
+   - In Python, this validation should be translated to raising a standard `ValueError` or custom exception rather than forcing a script termination (since these functions will be imported and used as a module).
+   - Database operations should handle connection and driver exceptions gracefully (e.g., throwing a wrapped custom logging exception).
 
 8. OUTPUTS / SIDE EFFECTS
-   - Central auditing logs updated inside the Oracle database (`BERT_MELDUNG` package side effects).
-   - Temporary file generation at `/tmp/ErmittleNr_<PID>.lst` (subsequently deleted).
-   - Generates protocol log paths matching timestamp standards.
+   - Logs: Status and runtime changes recorded directly in the DB log tables.
+   - Temp Files: Creation/removal of `/tmp/ErmittleNr_*.lst` files. This side effect is removed in Python.
+   - Output files: Path name generator for logs.
 
 9. BUSINESS SUMMARY
-   - **Central Auditing Protocol**: Provides a standard audit framework for reporting the lifecycles of ETL operations.
-   - **Job State Management**: Handles transition state triggers (Job Start, Success status, Aborted status).
-   - **Real-Time Error Telemetry**: Transmits error severity, system/application error codes, and supplementary metadata to a relational tracking model.
-   - **Timing Performance Tracking**: Provides checkpoint registration metrics to support service level agreements (SLAs) profiling.
+   - Standardizes batch program registration and execution logging across the environment.
+   - Captures application/command failures and maps them to clean logging records in the target database.
+   - Allows fine-grained timing checks and business date association with specific workflow processes.
+   - Coordinates with downstream monitoring by providing status endpoints (Success / Aborted) for batch runs.
 
 =======================================================================================
 PSEUDOCODE OUTLINE (PYTHON)
 =======================================================================================
 
 ```python
-# dwmsg_manager.py
-# Reusable logging utility translating f_alis_msgerr.ksh to native Python.
-
+# Step 1: Import standard modules and declare environment parameter bindings
 import os
 import sys
 import datetime
-import oracledb  # Or cx_Oracle depending on environment deployment
+import tempfile
 
 # REVIEW-STRUCT: connection parameters inferred from a cross-referenced .ksh file — confirm these exact env var names are set in this job's actual runtime environment before deploying
-# REVIEW: target database platform not specified; DB-client library choice (oracledb) below is provisional
+DW_ORAUSER = os.environ.get("DW_ORAUSER")
+DW_DIR_PROT = os.environ.get("DW_DIR_PROT")
+DW_DIR_ROOT = os.environ.get("DW_DIR_ROOT")
 
-class DwMsgManager:
-    def __init__(self):
-        # Resolve environment variables
-        self.dw_orauser = os.environ.get("DW_ORAUSER")
-        self.dw_dir_root = os.environ.get("DW_DIR_ROOT")
-        self.dw_dir_prot = os.environ.get("DW_DIR_PROT")
+# Dummy DB connection framework (replace with actual oracledb/SQLAlchemy connection setup)
+def get_db_cursor():
+    # Placeholder for database client instantiation using DW_ORAUSER
+    # return conn.cursor()
+    pass
+
+# Step 2: Define DWMSG_Fehlerbehandlung (unexpected error handler)
+def dwmsg_fehlerbehandlung(eintrags_nr, last_exit_code=1):
+    # Capture last error code from subprocess / preceding steps
+    fehler_nr = last_exit_code
+    unerw_fehler = 10
+    
+    # Log the unexpected shell exception details
+    dwmsg_melde_fehler(eintrags_nr, "F", unerw_fehler, f"ErrorCode ist: {fehler_nr}")
+    
+    print("Fehler wurde von der Shell gemeldet, setze auf Abbruchstatus", file=sys.stderr)
+    dwmsg_setze_status_abbruch(eintrags_nr)
+
+# Step 3: Define DWMSG_SetzeStatusOK
+def dwmsg_setze_status_ok(eintrags_nr):
+    if not eintrags_nr:
+        print("Argh!, keine EintragsNummer bei Aufruf von SetzeOkStatus angegeben", file=sys.stderr)
+        raise ValueError("Missing log entry ID")
+    
+    # Execute PL/SQL package procedure natively on database
+    # REVIEW-STRUCT: SQL wrapper script d_alis_spaufruf_p1.sql not supplied. Converting to native call.
+    cursor = get_db_cursor()
+    cursor.callproc("BERT_MELDUNG.SetzeStatusOk", [eintrags_nr])
+    cursor.connection.commit()
+
+# Step 4: Define DWMSG_SetzeStatusAbbruch
+def dwmsg_setze_status_abbruch(eintrags_nr):
+    if not eintrags_nr:
+        print("Argh!, keine EintragsNummer bei Aufruf von SetzeAbbruchStatus angegeben", file=sys.stderr)
+        raise ValueError("Missing log entry ID")
         
-        if not self.dw_orauser:
-            raise ValueError("Environment variable 'DW_ORAUSER' is not set.")
+    # Execute PL/SQL package procedure natively on database
+    # REVIEW-STRUCT: SQL wrapper script d_alis_spaufruf_p1.sql not supplied. Converting to native call.
+    cursor = get_db_cursor()
+    cursor.callproc("BERT_MELDUNG.SetzeStatusAbbruch", [eintrags_nr])
+    cursor.connection.commit()
 
-    def _get_connection(self):
-        # Establish connection to the Oracle database using credentials in DW_ORAUSER
-        # Assumes format: username/password@hostname:port/service_name or TNS alias
-        # In a production context, parse this carefully or use structured environment credentials.
-        return oracledb.connect(dsn=self.dw_orauser)
+# Step 5: Define DWMSG_ErmittleNr (replaces temp-file based sequence generator)
+def dwmsg_ermittle_nr():
+    # Instead of writing output of d_al_is_ermittlenr.sql to local /tmp file, 
+    # query DB sequence directly and capture in variable
+    # REVIEW-STRUCT: d_al_is_ermittlenr.sql not supplied. Assuming sequence/run id query behavior.
+    cursor = get_db_cursor()
+    cursor.execute("SELECT BERT_MELDUNG_SEQ.nextval FROM dual")  # Hypothetical sequence retrieval
+    row = cursor.fetchone()
+    if row:
+        eintrags_nr = str(row[0]).strip()
+        return eintrags_nr
+    else:
+        raise RuntimeError("Could not retrieve entry sequence number from Database")
 
-    # Step 1: DWMSG_Fehlerbehandlung
-    def fehlerbehandlung(self, eintrags_nr: int, error_code: int):
-        """
-        Executed when an error occurs in the parent script context (corresponds to trap handler).
-        """
-        # Step 1.1: Log unexpected fatal error code
-        # kUnerwFehler = 10
-        self.melde_fehler(eintrags_nr, "F", 10, f"ErrorCode ist: {error_code}")
+# Step 6: Define DWMSG_ErzeugeEintrag
+def dwmsg_erzeuge_eintrag(eintrags_nr, job_kennung, programm_name, log_datei):
+    if not eintrags_nr:
+        print("Argh!, keine EintragsNummer bei Aufruf von ErzeugeEintrag angegeben", file=sys.stderr)
+        raise ValueError("Missing log entry ID")
         
-        # Step 1.2: Set status to aborted
-        print("Fehler wurde von der Shell gemeldet, setze auf Abbruchstatus")
-        self.setze_status_abbruch(eintrags_nr)
+    # Execute PL/SQL registration procedure natively
+    # REVIEW-STRUCT: SQL wrapper script d_alis_spaufruf_p4.sql not supplied. Converting to native call.
+    cursor = get_db_cursor()
+    cursor.callproc("BERT_MELDUNG.Erzeuge_Eintrag", [eintrags_nr, job_kennung, programm_name, log_datei])
+    cursor.connection.commit()
 
-    # Step 2: DWMSG_SetzeStatusOK
-    def setze_status_ok(self, eintrags_nr: int):
-        if not eintrags_nr:
-            print("Argh!, keine EintragsNummer bei Aufruf von SetzeOkStatus angegeben", file=sys.stderr)
-            sys.exit(1)
+# Step 7: Define DWMSG_MeldeFehler
+def dwmsg_melde_fehler(eintrags_nr, typ, fehler_nr, zusatz1="", zusatz2=""):
+    if not eintrags_nr:
+        print("Argh!, keine EintragsNummer bei Aufruf von MeldeFehler angegeben", file=sys.stderr)
+        raise ValueError("Missing log entry ID")
         
-        # Step 2.1: Invoke package procedure directly
-        with self._get_connection() as conn:
-            with conn.cursor() as cursor:
-                # REVIEW-STRUCT: SQL script [d_alis_spaufruf_p1.sql] body not supplied; inferred PL/SQL procedure call
-                cursor.callproc("BERT_MELDUNG.SetzeStatusOk", [eintrags_nr])
-                conn.commit()
+    # Execute PL/SQL Fehler procedure natively
+    cursor = get_db_cursor()
+    cursor.callproc("BERT_MELDUNG.Fehler", [typ, eintrags_nr, fehler_nr, zusatz1, zusatz2])
+    cursor.connection.commit()
 
-    # Step 3: DWMSG_SetzeStatusAbbruch
-    def setze_status_abbruch(self, eintrags_nr: int):
-        if not eintrags_nr:
-            print("Argh!, keine EintragsNummer bei Aufruf von SetzeAbbruchStatus angegeben", file=sys.stderr)
-            sys.exit(1)
-            
-        # Step 3.1: Invoke package procedure directly
-        with self._get_connection() as conn:
-            with conn.cursor() as cursor:
-                # REVIEW-STRUCT: SQL script [d_alis_spaufruf_p1.sql] body not supplied; inferred PL/SQL procedure call
-                cursor.callproc("BERT_MELDUNG.SetzeStatusAbbruch", [eintrags_nr])
-                conn.commit()
+# Step 8: Define DWMSG_Logdateiname
+def dwmsg_logdateiname(job_kennung, eintrags_nr):
+    date_str = datetime.datetime.now().strftime("%Y%m%d_%H%M")
+    dw_dir_prot = DW_DIR_PROT if DW_DIR_PROT else "/tmp"
+    
+    dateiname = f"{dw_dir_prot}/{job_kennung}_{date_str}_{eintrags_nr}.log"
+    return dateiname
 
-    # Step 4: DWMSG_ErmittleNr
-    def ermittle_nr(self) -> int:
-        """
-        Queries and returns a unique entry number from the DB (replacing /tmp/ErmittleNr_$$ storage model).
-        """
-        # Step 4.1: Fetch unique transaction log tracking ID directly using sequential fetch
-        # REVIEW-STRUCT: SQL script [d_al_is_ermittlenr.sql] body not supplied; assuming direct dual query equivalent
-        with self._get_connection() as conn:
-            with conn.cursor() as cursor:
-                # Execute the standard sequence acquisition query (substituting the underlying DB wrapper logic)
-                cursor.execute("SELECT bert_sequence.NEXTVAL FROM dual")
-                result = cursor.fetchone()
-                if result:
-                    return int(result[0])
-                else:
-                    raise RuntimeError("Failed to retrieve tracking number from sequence.")
+# Step 9: Define DWMSG_SetzeStichtagInfo
+def dwmsg_setze_stichtag_info(eintrags_nr, stichtag, stichtag_fmt):
+    if not eintrags_nr:
+        print("Argh!, keine EintragsNr bei Aufruf von SetzeZusatzInfos angegeben", file=sys.stderr)
+        raise ValueError("Missing log entry ID")
+    if not stichtag:
+        print("Argh!, keinen Stichtag angegeben!", file=sys.stderr)
+        raise ValueError("Missing Stichtag parameter")
+    if not stichtag_fmt:
+        print("Argh!, Stichtagsangaben ohne Formatangaben können nicht verarbeitet werden!", file=sys.stderr)
+        raise ValueError("Missing Date Format string")
+        
+    cursor = get_db_cursor()
+    # Call stored procedure using native date conversion
+    query = """
+    BEGIN
+        BERT_MELDUNG.SetzeZusatzInfos(:1, TO_DATE(:2, :3));
+    END;
+    """
+    cursor.execute(query, [eintrags_nr, stichtag, stichtag_fmt])
+    cursor.connection.commit()
 
-    # Step 5: DWMSG_ErzeugeEintrag
-    def erzeuge_eintrag(self, eintrags_nr: int, job_kennung: str, programm_name: str, log_datei: str):
-        if not eintrags_nr:
-            print("Argh!, keine EintragsNummer bei Aufruf von ErzeugeEintrag angegeben", file=sys.stderr)
-            sys.exit(1)
-            
-        # Step 5.1: Write transaction initialization metrics using standard procedural call
-        with self._get_connection() as conn:
-            with conn.cursor() as cursor:
-                # REVIEW-STRUCT: SQL script [d_alis_spaufruf_p4.sql] body not supplied; inferred PL/SQL procedure call
-                cursor.callproc("BERT_MELDUNG.Erzeuge_Eintrag", [eintrags_nr, job_kennung, programm_name, log_datei])
-                conn.commit()
-
-    # Step 6: DWMSG_MeldeFehler
-    def melde_fehler(self, eintrags_nr: int, typ: str, fehler_nr: int, zusatz1: str = "", zusatz2: str = ""):
-        if not eintrags_nr:
-            print("Argh!, keine EintragsNummer bei Aufruf von MeldeFehler angegeben", file=sys.stderr)
-            sys.exit(1)
-            
-        # Step 6.1: Call Fehler logging procedure
-        # REVIEW-STRUCT: SQL script [d_alis_spaufruf_p[3-5].sql] body not supplied; mapped parameters directly
-        with self._get_connection() as conn:
-            with conn.cursor() as cursor:
-                cursor.callproc("BERT_MELDUNG.Fehler", [typ, eintrags_nr, fehler_nr, zusatz1, zusatz2])
-                conn.commit()
-
-    # Step 7: DWMSG_Logdateiname
-    def logdateiname(self, job_kennung: str, eintrags_nr: int) -> str:
-        if not self.dw_dir_prot:
-            raise ValueError("Environment variable 'DW_DIR_PROT' is not defined.")
-            
-        # Step 7.1: Format standard timestamp name
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M")
-        filename = f"{job_kennung}_{timestamp}_{eintrags_nr}.log"
-        return os.path.join(self.dw_dir_prot, filename)
-
-    # Step 8: DWMSG_SetzeStichtagInfo
-    def setze_stichtag_info(self, eintrags_nr: int, stichtag: str, stichtag_fmt: str):
-        if not eintrags_nr:
-            print("Argh!, keine EintragsNr bei Aufruf von SetzeZusatzInfos angegeben", file=sys.stderr)
-            sys.exit(1)
-        if not stichtag:
-            print("Argh!, keinen Stichtag angegeben!", file=sys.stderr)
-            sys.exit(1)
-        if not stichtag_fmt:
-            print("Argh!, Stichtagsangaben ohne Formatangaben können nicht verarbeitet werden!", file=sys.stderr)
-            sys.exit(2)
-            
-        # Step 8.1: Bind and parse parameters inside PL/SQL to construct dynamic Stichtag updates
-        with self._get_connection() as conn:
-            with conn.cursor() as cursor:
-                # Construct anonymous PL/SQL block replicating KSH execution
-                plsql = """
-                BEGIN
-                    BERT_MELDUNG.SetzeZusatzInfos(:eintrags_nr, to_date(:stichtag, :stichtag_fmt));
-                    COMMIT;
-                END;
-                """
-                cursor.execute(plsql, eintrags_nr=eintrags_nr, stichtag=stichtag, stichtag_fmt=stichtag_fmt)
-
-    # Step 9: DWMSG_AppendTimingInfos
-    def append_timing_infos(self, eintrags_nr: int, info_text: str, date_format: str):
-        if not eintrags_nr:
-            print("Argh!, keine EintragsNr bei Aufruf von SetzeZusatzInfos angegeben", file=sys.stderr)
-            sys.exit(1)
-        if not date_format:
-            print("Argh!, Formatangabe erforderlich!", file=sys.stderr)
-            sys.exit(2)
-            
-        # Step 9.1: Formulate SQL parameters and execute PL/SQL block modifying ZusatzInfos
-        with self._get_connection() as conn:
-            with conn.cursor() as cursor:
-                plsql = """
-                BEGIN
-                    BERT_MELDUNG.SetzeZusatzInfos(:eintrags_nr, null, :info_text || ' ' || to_char(SYSDATE, :date_format) || ' ');
-                    COMMIT;
-                END;
-                """
-                cursor.execute(plsql, eintrags_nr=eintrags_nr, info_text=info_text, date_format=date_format)
+# Step 10: Define DWMSG_AppendTimingInfos
+def dwmsg_append_timing_infos(eintrags_nr, info_text, date_format):
+    if not eintrags_nr:
+        print("Argh!, keine EintragsNr bei Aufruf von SetzeZusatzInfos angegeben", file=sys.stderr)
+        raise ValueError("Missing log entry ID")
+    if not date_format:
+        print("Argh!, Formatangabe erforderlich!", file=sys.stderr)
+        raise ValueError("Missing Date Format string")
+        
+    cursor = get_db_cursor()
+    # Call stored procedure using DB-native dates
+    query = """
+    BEGIN
+        BERT_MELDUNG.SetzeZusatzInfos(:1, NULL, :2 || ' ' || TO_CHAR(SYSDATE, :3) || ' ');
+    END;
+    """
+    cursor.execute(query, [eintrags_nr, info_text, date_format])
+    cursor.connection.commit()
 ```
 
 ### File Disposition
 
 | Source File Path | Target File / Action | Purpose / Reason for Action |
 | :--- | :--- | :--- |
-| `vobs/dw_source/isrpt/isbert/SQL/aktuell/allgemein/is/util/bin/f_alis_msgerr.ksh` | `vobs/dw_source/isrpt/isbert/SQL/aktuell/allgemein/is/util/bin/f_alis_msgerr.py` | Translates the KornShell utility library into a reusable Python module containing the logging, audit registration, status tracking, and error instrumentation methods. |
+| `vobs/dw_source/isrpt/isbert/SQL/aktuell/allgemein/is/util/bin/f_alis_msgerr.ksh` | `vobs/dw_source/isrpt/isbert/SQL/aktuell/allgemein/is/util/bin/f_alis_msgerr.py` | Migrated from KornShell to Python to serve as an importable shared logging and error handling module in Cloud Composer. |
 
 ---
 
 ### Job Dependencies
-The following downstream jobs consume the output or rely on this utility module. Since they are currently not yet migrated, the runtime logging integration cannot be finalized until these target modules are established:
-*   `DW.BERT_ABLAUFSTEUERUNG` — not yet migrated
-*   `DW.BERT_AUSD_BP_TA_MSISDN` — not yet migrated
-*   `DW.BERT_AUSD_BP_TA_P_BASISPROD` — not yet migrated
-*   `DW.BERT_AUSD_V_TA_PERIOD` — not yet migrated
-*   `DW.BERT_AUSD_V_TA_P_VERTRAG` — not yet migrated
-*   `DW.BERT_AUSD_V_TA_VERTRAG_TMP` — not yet migrated
-*   `DW.BERT_DROP_TEMP_TABLE` — not yet migrated
-*   `DW.BERT_P_ADRESSEN` — not yet migrated
-*   `DW.BERT_P_AUSTAUSCH` — not yet migrated
-*   `DW.BERT_P_GESCHAEFTSP` — not yet migrated
-*   `DW.BERT_P_RECH_EMPF` — not yet migrated
-*   `DW.BERT_RECHNUNGSDATEN` — not yet migrated
+* **Downstream Jobs (not yet migrated)**:
+  * `DW.BERT_ABLAUFSTEUERUNG`
+  * `DW.BERT_AUSD_BP_TA_MSISDN`
+  * `DW.BERT_AUSD_BP_TA_P_BASISPROD`
+  * `DW.BERT_AUSD_V_TA_PERIOD`
+  * `DW.BERT_AUSD_V_TA_P_VERTRAG`
+  * `DW.BERT_AUSD_V_TA_VERTRAG_TMP`
+  * `DW.BERT_DROP_TEMP_TABLE`
+  * `DW.BERT_P_ADRESSEN`
+  * `DW.BERT_P_AUSTAUSCH`
+  * `DW.BERT_P_GESCHAEFTSP`
+  * `DW.BERT_P_RECH_EMPF`
+  * `DW.BERT_RECHNUNGSDATEN`
+
+* **Wiring on BigQuery / Cloud Composer**: 
+  Because these downstream consumer jobs are not yet migrated, their direct import and function-call structures cannot be finalized. Once migrated, they will import `f_alis_msgerr` as a Python module within their respective Airflow DAG execution environments to handle standard process registration, status reporting, and unexpected error logging.
 
 ---
 
 ### Scheduling
-*   **Trigger Mechanism:** This job is not directly triggered by any scheduler. It is a shared library module that is loaded or imported inside parent scheduled workflows. 
-*   **Target Scheduling Strategy:** The migrated Python module must remain an importable, callable utility library without its own standalone schedule on Cloud Composer.
+* **Trigger and Frequency**: This utility script is a passive, shared helper library. It is not directly triggered by any scheduler and has no standalone execution schedule. It will remain a callable, importable Python module invoked dynamically inside other batch workloads' Composer/Airflow DAG tasks.
+
+---
+
+### Schedule & Variables — Must Be Retained
+* **Scheduling Equivalence**: This job remains unscheduled and will be deployed as an importable helper library.
+* **Environment Variables**:
+  * `DW_ORAUSER`: Contains the database credentials. Will be mapped to a standard database connection in the environment or a secure Airflow Connection/Secret Manager reference.
+  * `DW_DIR_ROOT`: Sourced globally to identify root execution directories.
+  * `DW_DIR_PROT`: Sourced globally to identify target log and protocol output directories.
 
 ---
 
 ### Lineage
-*   **External Calls:** Calls the external procedure `SETZEZUSATZINFOS` (which is part of the database-backed logging routines). This is translated into a direct stored procedure call or a parameterized logging insert query inside the Python code.
+* **Upstream Source**: None (invoked as an internal utility).
+* **Downstream Consumers**: Invokes the `BERT_MELDUNG` package procedures in the database context. Specifically, calls procedure `SETZEZUSATZINFOS` (confidence = 0.75).
 
 ---
 
 ### External System Replacements
-*   **Oracle SQL\*Plus Client to BigQuery / Cloud Composer Logging:** The legacy shell script launches `sqlplus` sessions using a wrapper execution model to execute PL/SQL procedures on an Oracle database. In the target architecture, these logging states should be written natively via:
-    *   BigQuery API client calls to a centralized logging table in BigQuery, OR
-    *   Using Cloud Composer’s application database or GCP Cloud Logging to capture runtime states.
-*   **Local Filesystem to Google Cloud Storage (GCS):** Writing temporary sequence logs (previously routed through `/tmp/ErmittleNr_$$.lst`) must be replaced with Python in-memory variables or GCS state tracking if persistence across detached tasks is required.
+* **Oracle SQL*Plus Client**: The legacy system uses `sqlplus` commands to execute the PL/SQL database procedures inside the `BERT_MELDUNG` package.
+* **BigQuery / Target Platform Alternative**: Because the target platform is BigQuery, standard Oracle PL/SQL package execution is not natively supported.
+  * **Option A (Interim / Hybrid Migration)**: Maintain audit metadata on an Oracle instance, migrating `sqlplus` invocations to a native Python Oracle database client (such as `oracledb` or `sqlalchemy`) that connects using `DW_ORAUSER`.
+  * **Option B (BigQuery Native)**: Refactor the logging actions to write structured audit rows directly to a BigQuery dataset table (e.g., `audit_logs.job_status`) using the Python Google Cloud BigQuery client library (`google.cloud.bigquery`).
 
 ---
 
 ### Cross-File Dependencies
-*   **Oracle Stored Procedures:** Relies on the database package `BERT_MELDUNG` and its procedures:
-    *   `BERT_MELDUNG.SetzeStatusOk`
-    *   `BERT_MELDUNG.SetzeStatusAbbruch`
-    *   `BERT_MELDUNG.Erzeuge_Eintrag`
-    *   `BERT_MELDUNG.Fehler`
-    *   `BERT_MELDUNG.SetzeZusatzInfos`
-*   **Legacy Wrapper SQL Scripts:** Legacy KornShell logic invokes specific `.sql` wrappers inside the root directory structure:
-    *   `allgemein/is/util/sql/d_alis_spaufruf_p1.sql`
-    *   `allgemein/is/util/sql/d_al_is_ermittlenr.sql`
-    *   `allgemein/is/util/sql/d_alis_spaufruf_p4.sql`
-    *   `allgemein/is/util/sql/d_alis_spaufruf_p${NumParm}.sql`
+* **SQL Wrapper Scripts**: The legacy utility script depends on several standalone helper SQL scripts:
+  * `@$DW_DIR_ROOT/allgemein/is/util/sql/d_alis_spaufruf_p1.sql` (invokes procedures with 1 parameter)
+  * `@$DW_DIR_ROOT/allgemein/is/util/sql/d_alis_spaufruf_p4.sql` (invokes procedures with 4 parameters)
+  * `@$DW_DIR_ROOT/allgemein/is/util/sql/d_al_is_ermittlenr.sql` (extracts run-IDs / sequence numbers)
+  * Inferred script names like `d_alis_spaufruf_p3.sql` and `d_alis_spaufruf_p5.sql` based on parameter counts.
+* **Modernization Replacement**: In the target Python code, these external wrapper files are retired. All database statements, procedure executions, or sequence queries are issued directly via the connection client object, consolidating the logic and eliminating cross-file dependencies.
 
 ---
 
 ### Target File Plan
-*   `vobs/dw_source/isrpt/isbert/SQL/aktuell/allgemein/is/util/bin/f_alis_msgerr.py`: The native Python module implementing the `DwMsgManager` helper utility. It contains equivalent Python functions to replace the original KornShell trap routines, output log naming rules, and status updating logic.
+* **Target Path**: `vobs/dw_source/isrpt/isbert/SQL/aktuell/allgemein/is/util/bin/f_alis_msgerr.py`
+* **Language**: `python`
+* **Source Path**: `vobs/dw_source/isrpt/isbert/SQL/aktuell/allgemein/is/util/bin/f_alis_msgerr.ksh`
+* **Purpose**: Houses the migrated Python helper functions corresponding to the original KornShell logging functions (such as `dwmsg_setze_status_ok`, `dwmsg_melde_fehler`, and `dwmsg_fehlerbehandlung`) to be imported by downstream PythonOperators.
 
 ---
 
 ### Environment-Specific Values
 
-#### 1. GLOBAL (Environment-Wide)
-*   `DW_ORAUSER` (Legacy variable for Oracle connection string)
-    *   **Target Canonical Name:** `BQ_DATASET` / `GCP_PROJECT` (for audit logging targets) or standard DB Connection IDs.
-    *   **Python Resolution:** Sourced via `Variable.get("DB_CONN_ID")` or environment variables standardly set by Cloud Composer.
-*   `DW_DIR_ROOT` (Legacy root repository path)
-    *   **Target Canonical Name:** `GCS_BUCKET` / `GCP_PROJECT` or standard execution working directory context.
-    *   **Python Resolution:** Handled using relative Python imports or standard execution directory paths in Composer workers.
-*   `DW_DIR_PROT` (Legacy logging directory)
-    *   **Target Canonical Name:** `GCS_BUCKET` (with a `/logs/` prefix) or Cloud Logging handlers.
-    *   **Python Resolution:** Sourced via `os.environ.get("GCS_BUCKET")` or standard logging configuration.
+#### Global (Environment-Wide)
+* **`GCP_PROJECT`**: The target Google Cloud Project ID. Sourced at runtime via `os.environ.get("GCP_PROJECT")` or Cloud Composer configurations.
+* **`BQ_DATASET`**: The target auditing/logging BigQuery dataset. Sourced via Airflow Variables.
+* **`DW_DIR_ROOT`**: Sourced via `os.environ.get("DW_DIR_ROOT")` to resolve script directories.
+* **`DW_DIR_PROT`**: Sourced via `os.environ.get("DW_DIR_PROT")` or mapped to a standard Google Cloud Storage bucket path (`GCS_BUCKET`) for job logs.
+* **`DW_ORAUSER`**: Legacy database connection identifier. Sourced at runtime via `os.environ.get("DW_ORAUSER")` or a secure database connection pool secret.
+
+#### Job-Specific
+* **`BERT_MELDUNG`**: Mapped to the specific audit table/package on the target platform. (e.g. `{GCP_PROJECT}.{BQ_DATASET}.audit_log` inside SQL statements).
 
 ---
 
-### Risks and Manual Steps
+### Risks & Manual Steps
 
-#### 1. Porting of Oracle Database Package `BERT_MELDUNG`
-*   The logging logic is coupled to the Oracle schema package `BERT_MELDUNG`. To make this utility operational, an equivalent auditing structure must be designed and deployed in BigQuery (e.g., target tables or stored procedures performing matching inserts) or standard Logging APIs.
-
-#### 2. Downstream Wiring Constraints
-*   The downstream calling jobs listed in the **Job Dependencies** section have not yet been migrated. The utility integration must be tested once the parent calling workflows are ported to Python.
-*   *Downstream Risks:*
-    *   SOURCE: NOT FOUND — `DW.BERT_ABLAUFSTEUERUNG` — no candidate
-    *   SOURCE: NOT FOUND — `DW.BERT_AUSD_BP_TA_MSISDN` — no candidate
-    *   SOURCE: NOT FOUND — `DW.BERT_AUSD_BP_TA_P_BASISPROD` — no candidate
-    *   SOURCE: NOT FOUND — `DW.BERT_AUSD_V_TA_PERIOD` — no candidate
-    *   SOURCE: NOT FOUND — `DW.BERT_AUSD_V_TA_P_VERTRAG` — no candidate
-    *   SOURCE: NOT FOUND — `DW.BERT_AUSD_V_TA_VERTRAG_TMP` — no candidate
-    *   SOURCE: NOT FOUND — `DW.BERT_DROP_TEMP_TABLE` — no candidate
-    *   SOURCE: NOT FOUND — `DW.BERT_P_ADRESSEN` — no candidate
-    *   SOURCE: NOT FOUND — `DW.BERT_P_AUSTAUSCH` — no candidate
-    *   SOURCE: NOT FOUND — `DW.BERT_P_GESCHAEFTSP` — no candidate
-    *   SOURCE: NOT FOUND — `DW.BERT_P_RECH_EMPF` — no candidate
-    *   SOURCE: NOT FOUND — `DW.BERT_RECHNUNGSDATEN` — no candidate
-
-#### 3. String Literal Retention Requirement
-*   The original utility triggers specific assertion and status prints in German. In accordance with the Output/Print Literal Rule, these precise strings must be preserved character-for-character inside the Python logging code:
-    *   `"Fehler wurde von der Shell gemeldet, setze auf Abbruchstatus"`
-    *   `"Argh!, keine EintragsNummer bei Aufruf von SetzeOkStatus angegeben"`
-    *   `"Argh!, keine EintragsNummer bei Aufruf von SetzeAbbruchStatus angegeben"`
-    *   `"Argh!, keinen Variablennamen bei ErmittleNr angegeben"`
-    *   `"Argh!, keine EintragsNummer bei Aufruf von ErzeugeEintrag angegeben"`
-    *   `"Argh!, keine EintragsNummer bei Aufruf von MeldeFehler angegeben"`
-    *   `"Argh!, keine EintragsNr bei Aufruf von SetzeZusatzInfos angegeben"`
-    *   `"Argh!, keinen Stichtag angegeben!"`
-    *   `"Argh!, Stichtagsangaben ohne Formatangaben können nicht verarbeitet werden!"`
-    *   `"Argh!, Formatangabe erforderlich!"`
+* **Downstream Integration Pipeline**:
+  * **SOURCE: NOT FOUND** — Upstream/Downstream Jobs: The 12 downstream consumers (such as `DW.BERT_ABLAUFSTEUERUNG`, `DW.BERT_AUSD_BP_TA_MSISDN`, etc.) are not yet migrated. The integration wiring and module imports cannot be fully verified or finalized until those components exist on the target system.
+* **PL/SQL Logging Emulation**: The legacy procedures (`BERT_MELDUNG.Fehler`, `BERT_MELDUNG.SetzeStatusOk`, etc.) write to dynamic database schemas and log tables. If migrating fully to BigQuery, these database-side routines must be redesigned as BQ DML operations. If they are to remain on an interim relational database, the client connection credentials and driver libraries must be set up and configured in the Cloud Composer environment.
+* **Local File System Dependencies**: The legacy sequence generator `DWMSG_ErmittleNr` uses `/tmp/ErmittleNr_$$.lst` on local disk to capture database output. The Python script replaces this by resolving the query directly in memory, mitigating local disk access risks in serverless or containerized runtimes.
+* **German Logging Literals**: German log and error output statements (e.g., `"Argh!, keine EintragsNummer bei Aufruf..."`) are retained exactly as-is to preserve operational continuity for existing diagnostic parsers and support teams. Ensure these output formats are strictly preserved downstream.
 
 ---
 
@@ -1066,441 +1024,408 @@ AddiereDatum(){
 
 === CONVERSION VERDICT ===
 VERDICT: PYTHON
-REASON: The script is a date utility library containing multiple shell functions with arithmetic, validation, date manipulation, and database queries that cannot be represented as a pure BigQuery SQL script.
+REASON: This is a date calculation utility library containing multiple KornShell function definitions with nested logic, string slicing, mathematical operations, and inline Oracle SQL*Plus and PL/SQL queries.
 
 EVIDENCE
-- Business logic found: KSH custom logic. It defines functions for date checking, date comparison, finding the last day of a month, adding days to a date, and determining date ranges using SQLPlus and shell arithmetic.
+- Business logic found: KSH custom logic. The script defines a library of reusable date processing functions, including calendar math, range generation, date padding, and format checking.
 - AWK: none
-- SQL-expressible: partly (the SQLPlus queries are simple date calculations, but the shell wrapper, variables, math, and loop structures require Python).
-- Non-SQL side effects: Writes temporary files under `/tmp`, cleans them up, and sets environment variables via `eval`.
-- Against this verdict: If all caller jobs are converted to BigQuery SQL, these date functions could potentially be rewritten as BigQuery User Defined Functions (UDFs) or standard SQL date functions, but as a shell script library, Python is the natural structural equivalent.
+- SQL-expressible: No. While some functions invoke Oracle via SQL*Plus to perform validations and date ranges, the core script is structured as a modular Shell library defining functions, local variables, mathematical assignments, and loops that cannot be expressed as a static BigQuery transformation.
+- Non-SQL side effects: Writes temporary files under `/tmp`, relies on standard output parsing via grep/cut, and modifies script-level variables via dynamic `eval` assignments.
+- Against this verdict: If all dependent scripts were rewritten to use BigQuery's native date functions, this utility library would not need conversion. However, because it is a referenced shell library file, a Python equivalent is required to support the migration of the surrounding orchestration scripts.
 
 =======================================================================================
 PART A — PYTHON DESIGN DOCUMENT
 =======================================================================================
 
 1. SCRIPT OVERVIEW
-   This script (`h_alis_date.ksh`) is a reusable utility library providing helper routines for date arithmetic, validation, and range calculations. It uses both local shell-based logic (leap year arithmetic, day addition) and Oracle database queries via SQL*Plus to perform complex date evaluations. The script is designed to be sourced by other KornShell ETL scripts in the Data Warehouse environment.
+This script (`h_alis_date.ksh`) is a reusable KornShell date utility library. It provides helper functions for performing date arithmetic, checking date validity, validating date order, and determining date ranges. These routines are used by other Data Warehouse scripts to establish date boundaries and execute partition validation against an Oracle database.
 
 2. INVOCATION CONTEXT
-   - Who calls this script: It is sourced (via `. h_alis_date.ksh`) by other Data Warehouse shell scripts rather than executed directly as a standalone UC4 job. The calling scripts are typically triggered by UC4 jobs.
-   - UC4 native includes: None referenced in this script.
-   - Environment files sourced:
-     - The script comments state that `.dw_init` must have been executed beforehand, or environment variables `DW_DIR_ROOT` and `DW_ORAUSER` must be set.
-     - # REVIEW-STRUCT: environment file .dw_init not supplied — variables it sets are unknown; do not guess their names or values
+- **Caller**: This library is sourced (`. h_alis_date.ksh`) by other Data Warehouse scripts. It is not executed directly as a standalone UC4 job.
+- **UC4 Includes**: None referenced in the script itself.
+- **Environment Files Sourced**: 
+  - The script's header indicates that `.dw_init` must be sourced before executing these utilities, or `DW_DIR_ROOT` and `DW_ORAUSER` must be set in the shell environment.
+  - # REVIEW-STRUCT: environment file [.dw_init] not supplied — variables it sets are unknown; do not guess their names or values
 
 3. PARAMETERS / INPUTS
-   This utility script defines functions that accept positional parameters:
-   - `DWDate_Vormonat` parameters:
-     - `$1`: `VarName` (Name of variable to assign result to) - Used
-     - `$2`: `DWDate_FMT` (Oracle date format mask) - Used
-   - `DWDate_Datum_Check` parameters:
-     - `$1`: `wert` (Date string to check) - Used
-     - `$2`: `format` (Oracle format string) - Used
-   - `DWDate_Datum_LE` parameters:
-     - `$1`: `datum1` (Date 1 in YYYYMMDD) - Used
-     - `$2`: `datum2` (Date 2 in YYYYMMDD) - Used
-   - `DWDate_Gib_Zeitraum` parameters:
-     - `$1`: `Offset` (Integer offset) - Used
-     - `$2`: `Stufe` ('Y', 'M', or 'D' for Year, Month, Day) - Used
-     - `$3`: `Format` (Output format) - Used
-     - `$4`: `Var_Start` (Variable name for system date start point) - Used
-     - `$5`: `Var_Ende` (Variable name for end point calculation) - Used
-   - `LetzterTagDesMonats` parameters:
-     - `$1`: `Datum` (Date string in YYYYMMDD format) - Used
-   - `TageimMonat` parameters:
-     - `$1`: `Jahr` (Year in YYYY format) - Used
-     - `$2`: `Monat` (Month in MM format) - Used
-   - `AddiereDatum` parameters:
-     - `$1`: `Datum` (Date string in YYYYMMDD format) - Used
-     - `$2`: `Tage` (Integer number of days to add) - Used
+The script defines multiple functions with localized positional parameters:
+- **`DWDate_Vormonat`**:
+  - `VarName` (positional `$1`): Name of the calling script's variable to receive the result.
+  - `DWDate_FMT` (positional `$2`): Oracle format string.
+- **`DWDate_Datum_Check`**:
+  - `wert` (positional `$1`): Date value string to be verified.
+  - `format` (positional `$2`): Format of the date value string.
+- **`DWDate_Datum_LE`**:
+  - `datum1` (positional `$1`): First date string (expected format `YYYYMMDD`).
+  - `datum2` (positional `$2`): Second date string (expected format `YYYYMMDD`).
+- **`DWDate_Gib_Zeitraum`**:
+  - `Offset` (positional `$1`): Integer offset value.
+  - `Stufe` (positional `$2`): Step unit (`'Y'` for Year, `'M'` for Month, `'D'` for Day).
+  - `Format` (positional `$3`): Output date format.
+  - `Var_Start` (positional `$4`): Name of the calling script's variable to store the calculated start date.
+  - `Var_Ende` (positional `$5`): Name of the calling script's variable to store the calculated end date.
+- **`LetzterTagDesMonats`**:
+  - Positional `$1`: Date string in `YYYYMMDD` format.
+- **`TageimMonat`**:
+  - Positional `$1`: Year (`YYYY`).
+  - Positional `$2`: Month (`MM`).
+- **`AddiereDatum`**:
+  - Positional `$1`: Base date string in `YYYYMMDD` format.
+  - Positional `$2`: Days to add (integer).
 
-   KSH Declared Environment Parameters:
-   - `DW_ORAUSER`: Database connection user string (DB-connection-style parameter)
-   - `DW_DIR_ROOT`: Base directory for SQL and shell scripts (generic path parameter)
+Global Environment Variables used:
+- `DW_ORAUSER`: Oracle connection credential string.
+- `DW_DIR_ROOT`: Root directory path for SQL scripts.
 
 4. EXTERNAL COMMANDS / PROGRAMS INVOKED
-   - `sqlplus -s $DW_ORAUSER @$DW_DIR_ROOT/allgemein/is/util/sql/d_alis_vormonat.sql $DWDate_tmpFile $DWDate_FMT </dev/null`
-     - Purpose: Executes an external Oracle SQL script to determine the previous month and writes the output to a temp file.
-     - Target: Should become a native Python call (using native `datetime` or `dateutil` module) to avoid database execution overhead, or a native Python DB client query using `oracledb`.
-   - `sqlplus -s` (inline document) inside `DWDate_Datum_Check`
-     - Purpose: Checks if a date string matches a format mask by calling Oracle `to_date`.
-     - Target: Native Python implementation via `datetime.strptime()` is recommended.
-   - `sqlplus -s` (inline document) inside `DWDate_Datum_LE`
-     - Purpose: Performs a PL/SQL block validation to check if datum1 <= datum2.
-     - Target: Native Python logical comparison (`date1 <= date2`) is recommended.
-   - `sqlplus -s $DW_ORAUSER @$DW_DIR_ROOT/allgemein/is/util/sql/d_alis_datum_zeitraum.sql $tmpFile $Offset $Stufe $Format </dev/null`
-     - Purpose: Runs an external SQL script to get a start/end date range.
-     - Target: Can be fully resolved using Python's native `dateutil.relativedelta` or standard date arithmetic.
-   - `grep`, `cut`, `rm`, `date`: Shell utility commands used to parse database output and manage temporary files. These should be replaced by Python standard libraries (`re`, `os`, `shutil`, `datetime`).
+- **`sqlplus`**:
+  - Verbatim invocation in `DWDate_Vormonat`:
+    `sqlplus -s $DW_ORAUSER @$DW_DIR_ROOT/allgemein/is/util/sql/d_alis_vormonat.sql $DWDate_tmpFile $DWDate_FMT </dev/null`
+  - Verbatim inline invocation in `DWDate_Datum_Check`:
+    `sqlplus -s <<EOF ... EOF`
+  - Verbatim inline PL/SQL invocation in `DWDate_Datum_LE`:
+    `sqlplus -s <<EOF ... EOF`
+  - Verbatim invocation in `DWDate_Gib_Zeitraum`:
+    `sqlplus -s $DW_ORAUSER @$DW_DIR_ROOT/allgemein/is/util/sql/d_alis_datum_zeitraum.sql $tmpFile $Offset $Stufe $Format </dev/null`
+  - *Recommendation*: Since these calls utilize standard database validations, they should be implemented via a native Python database client (such as `oracledb`) using credentials loaded from the environment.
+  - # REVIEW-STRUCT: connection parameters inferred from Oracle SQL*Plus usage — confirm these exact env var names (e.g. DW_ORAUSER) are set in this job's actual runtime environment before deploying
 
 5. EMBEDDED SQL
-   - Inline inside `DWDate_Datum_Check`:
-     ```sql
-     select to_date('$wert','$format') from dual;
-     ```
-     - Statement Type: SELECT
-     - Tables touched: `dual`
-     - Dialect: Oracle SQL (uses `to_date` and `dual` table).
-   - Inline inside `DWDate_Datum_LE`:
-     ```sql
-     DECLARE
-         datum1 DATE;
-         datum2 DATE;
-     BEGIN
-         datum1:=TO_DATE('$datum1','$format');
-         datum2:=TO_DATE('$datum2','$format');
-         IF datum1>datum2 
-         THEN
-             raise_application_error(-20422,'Datum $datum1 ist groesser als $datum2');
-         END IF;
-     END;
-     /
-     ```
-     - Statement Type: Anonymous PL/SQL Block
-     - Tables touched: None
-     - Dialect: Oracle PL/SQL (unambiguous, uses `raise_application_error`, block syntax, and trailing `/`).
-   - Referenced External SQL Files (not supplied):
-     - `$DW_DIR_ROOT/allgemein/is/util/sql/d_alis_vormonat.sql`
-       - # REVIEW-STRUCT: SQL file d_alis_vormonat.sql not supplied — behaviour unknown
-     - `$DW_DIR_ROOT/allgemein/is/util/sql/d_alis_datum_zeitraum.sql`
-       - # REVIEW-STRUCT: SQL file d_alis_datum_zeitraum.sql not supplied — behaviour unknown
+- **Inline SQL in `DWDate_Datum_Check`**:
+  ```sql
+  select to_date('$wert','$format') from dual;
+  ```
+  - Statement Type: SELECT
+  - Tables Touched: `dual`
+  - Dialect: Oracle SQL*Plus (indicated by explicit `WHENEVER SQLERROR EXIT FAILURE ROLLBACK` and `SET HEADING OFF`)
+
+- **Inline PL/SQL in `DWDate_Datum_LE`**:
+  ```sql
+  DECLARE
+      datum1 DATE;
+      datum2 DATE;
+  BEGIN
+      
+      datum1:=TO_DATE('$datum1','$format');
+      datum2:=TO_DATE('$datum2','$format');
+
+      IF datum1>datum2 
+      THEN
+          -- -20422 ist Fehlernr fuer "Parameter fehlerhaft"
+          raise_application_error(-20422,'Datum $datum1 ist groesser als $datum2');
+      END IF;
+
+  END;
+  /
+  ```
+  - Statement Type: PL/SQL Block
+  - Tables Touched: None
+  - Dialect: Oracle PL/SQL
+
+- **External Script calls**:
+  - `@$DW_DIR_ROOT/allgemein/is/util/sql/d_alis_vormonat.sql`
+    - # REVIEW-STRUCT: SQL file [d_alis_vormonat.sql] body not supplied — behaviour unknown
+  - `@$DW_DIR_ROOT/allgemein/is/util/sql/d_alis_datum_zeitraum.sql`
+    - # REVIEW-STRUCT: SQL file [d_alis_datum_zeitraum.sql] body not supplied — behaviour unknown
 
 6. CONTROL FLOW
-   The script contains several independent helper functions:
-   - **`DWDate_Vormonat` Flow**:
-     1. Define temporary file path: `/tmp/h_alis_date_<script>_<pid>.tmp`
-     2. Invoke `sqlplus` to execute `d_alis_vormonat.sql`, passing output path and format argument.
-     3. Assign the contents of the temp file to the caller's variable name using `eval`.
-     4. Remove temporary file.
-   - **`DWDate_Datum_Check` Flow**:
-     1. Assert that exactly 2 parameters are provided (return 1 on failure).
-     2. Execute inline `SELECT TO_DATE(...) FROM dual;` via `sqlplus`.
-     3. Return the exit code of `sqlplus` execution (0 if valid, non-zero if invalid).
-   - **`DWDate_Datum_LE` Flow**:
-     1. Assert that exactly 2 parameters are provided (return 1 on failure).
-     2. Execute inline PL/SQL block via `sqlplus` using Oracle format "YYYYMMDD".
-     3. PL/SQL block compares dates; if `datum1 > datum2`, raises application error `-20422`.
-     4. Return the exit code of `sqlplus` execution.
-   - **`DWDate_Gib_Zeitraum` Flow**:
-     1. Assert that exactly 5 parameters are provided (return 1 on failure).
-     2. Establish unique temp file name using system date and process ID.
-     3. Run `d_alis_datum_zeitraum.sql` using `sqlplus`.
-     4. Grep for string `"DWH_Ergebnis;"` in temp file to count matches.
-     5. If match count is not exactly 1, print error to stderr and return 1.
-     6. Parse out the Start and End date tokens separated by semicolon (`;`) using `grep` and `cut`.
-     7. Assign results back to caller environment variable names using `eval`.
-     8. Remove temporary file.
-   - **`LetzterTagDesMonats` Flow**:
-     1. Extract Year, Month, and Day components from input string via positional string extraction.
-     2. Calculate if Year is a leap year (using modulo arithmetic).
-     3. Define array of month day-counts (adjusting February for leap years).
-     4. Check if the parsed Day matches the determined end day of Month.
-     5. Return 0 if true, 1 if false.
-   - **`TageimMonat` Flow**:
-     1. Calculate if the input Year is a leap year.
-     2. Return the maximum days of the input Month (index lookup on an array).
-   - **`AddiereDatum` Flow**:
-     1. Extract Year, Month, and Day components.
-     2. Perform initial addition of day offset to Day.
-     3. Loop while current Day exceeds the month's maximum length (`TageimMonat`):
-        - Subtract monthly limit from Day.
-        - Increment Month.
-        - Loop while Month exceeds 12 to adjust year overflow.
-     4. Re-format Day, Month, and Year to correct digit padding (using `tail`).
-     5. Return (print) date string.
+The script consists of modular helper functions:
+1. **`DWDate_Vormonat`**:
+   - Step 1.1: Generate a temporary file path `/tmp/h_alis_date_basename_$0_$$.tmp`.
+   - Step 1.2: Execute `d_alis_vormonat.sql` via SQL*Plus to calculate the previous month, passing the temp file and format string as arguments.
+   - Step 1.3: Read the temp file using `cat` and dynamically assign the value to the variable name specified in parameter `$1` using shell `eval`.
+   - Step 1.4: Execute cleanup. (Note: The original script contains a bug where it calls `rm -f $DWDate_FMT` instead of the temp file variable `$DWDate_tmpFile`. In Python, this will be corrected to clean up the temporary database extraction file.)
+2. **`DWDate_Datum_Check`**:
+   - Step 2.1: Verify argument count is exactly 2. Return 1 if incorrect.
+   - Step 2.2: Launch SQL*Plus to check if string `$wert` fits `$format` using `TO_DATE()`.
+   - Step 2.3: Return the exit status of SQL*Plus (`$?`).
+3. **`DWDate_Datum_LE`**:
+   - Step 3.1: Verify argument count is exactly 2. Return 1 if incorrect.
+   - Step 3.2: Launch SQL*Plus running PL/SQL block comparing two parsed dates. Raise application error `-20422` if `datum1` > `datum2`.
+   - Step 3.3: Return the exit status of SQL*Plus (`$?`).
+4. **`DWDate_Gib_Zeitraum`**:
+   - Step 4.1: Verify argument count is exactly 5. Return 1 if incorrect.
+   - Step 4.2: Build a dynamic temporary file path `/tmp/tmp_basename_$0_date_%Y%m%d%H%M%S_$.tmp`.
+   - Step 4.3: Execute `d_alis_datum_zeitraum.sql` via SQL*Plus passing arguments.
+   - Step 4.4: Count occurrences of string `"DWH_Ergebnis;"` in the temp file. If count is not exactly 1, print an error and return 1.
+   - Step 4.5: Parse result values using `grep` and `cut` on semi-colon delimiter. Set output variable names passed in parameters `$4` and `$5` using `eval`.
+   - Step 4.6: Delete the temporary file.
+5. **`LetzterTagDesMonats`**:
+   - Step 5.1: Slice date `$1` into Year, Month, and Day variables.
+   - Step 5.2: Verify if Year is a leap year using standard modulo conditions.
+   - Step 5.3: Look up last day of Month in a static array.
+   - Step 5.4: Compare the day of input to the array-retrieved last day. Return 0 if identical, 1 if not.
+6. **`TageimMonat`**:
+   - Step 6.1: Check if year parameter `$1` is a leap year.
+   - Step 6.2: Return month length value from static array based on month parameter `$2`.
+7. **`AddiereDatum`**:
+   - Step 7.1: Slice date `$1` into Year, Month, Day variables.
+   - Step 7.2: Add parameter `$2` directly to Day variable.
+   - Step 7.3: Loop to handle positive day values that exceed `TageimMonat`. Subtract month length from day, increment month, and carry over to year if month > 12.
+   - Step 7.4: Pad values to fixed widths (Day 2 digits, Month 2 digits, Year 4 digits) using string tails.
+   - Step 7.5: Echo the reconstructed date string.
 
 7. ERROR HANDLING & EXIT CODES
-   - Missing arguments are detected with direct checks (`[ $# -ne X ]`) and return a status code of `1`.
-   - SQL*Plus processes enforce standard Oracle failure detection using `WHENEVER SQLERROR EXIT FAILURE ROLLBACK;`.
-   - `DWDate_Gib_Zeitraum` explicitly raises an error (exit status 1) if the output pattern check fails.
-   - `LetzterTagDesMonats` returns `0` on success (last day of month) and `1` on failure (not last day).
-   - Python equivalence:
-     - Missing arguments should raise a standard Python `TypeError` or `ValueError`.
-     - DB-client errors from `oracledb` should raise `oracledb.DatabaseError`.
-     - The custom application error `-20422` can be mapped to a custom Python exception subclass.
+- Shell validation errors (such as incorrect argument count) return exit status `1`.
+- Database exceptions are caught via `WHENEVER SQLERROR EXIT FAILURE ROLLBACK` and returned as the SQL*Plus failure status to the shell.
+- In Python, these will raise native exceptions (`ValueError`, `subprocess.CalledProcessError`) or return boolean flags.
 
 8. OUTPUTS / SIDE EFFECTS
-   - Temporary files: created in `/tmp` during executions of SQLPlus extraction scripts, and deleted after.
-   - Environment mutation: functions like `DWDate_Vormonat` and `DWDate_Gib_Zeitraum` write their results back to variables specified by the caller via `eval`. In Python, these functions should simply return a tuple or dictionary containing the computed results.
-   - Standard output: `AddiereDatum` and `TageimMonat` output results to stdout. In Python, these should return values directly.
+- Temp files in `/tmp` containing query results (cleaned up after evaluation).
+- Dynamic variable modifications inside the sourcing shell script context using `eval`.
 
 9. BUSINESS SUMMARY
-   - Provides consistent date validation and checking against the Oracle database platform standard.
-   - Facilitates calculations for reporting cycles, such as retrieving previous-month parameters or calculating arbitrary offsets.
-   - Standardizes start-of-period and end-of-period range bounds (e.g., Year bounds, Month Ultimo bounds).
-   - Avoids processing overhead by implementing efficient local mathematical determinations for leap years and calendar structures where possible.
+- Reusable library for processing data warehouse date calculations.
+- Verifies business partition boundaries and checks that process date sequences are valid.
+- Manages standard calendar logic, leap years, month lengths, and date math offsets.
 
-=== PSEUDOCODE STYLE ===
+=======================================================================================
+PSEUDOCODE OUTLINE (PYTHON MODULE STYLE)
+=======================================================================================
 
 ```python
 import os
 import sys
+import datetime
 import tempfile
+import subprocess
 import calendar
-from datetime import datetime, timedelta
 
-# REVIEW: Target database platform is specified as Oracle via $DW_ORAUSER.
-# Standard Python native libraries (datetime, calendar) can completely replace
-# the SQLPlus database round-trips for improved efficiency and environment portability.
-# Both native implementations and DB-client fallback signatures are provided.
-
-# Helper to load DB connection details if DB executions are strictly required
-DB_USER = os.environ.get("DW_ORAUSER")
+# Global parameters assumed from shell initialization
+DW_ORAUSER = os.environ.get("DW_ORAUSER")
 DW_DIR_ROOT = os.environ.get("DW_DIR_ROOT")
 
+# Step 1: DWDate_Vormonat equivalent
+def dw_date_vormonat(format_str: str) -> str:
+    """
+    Calculates previous month using external Oracle SQL file.
+    Replaces shell-based temp files and eval dynamic assignments.
+    """
+    # Step 1.1: Build temporary file path
+    temp_file = tempfile.NamedTemporaryFile(mode='w+', prefix='h_alis_date_', suffix='.tmp', delete=False)
+    temp_file_name = temp_file.name
+    temp_file.close()
 
-# Step 1: DWDate_Vormonat
-# Replaces DWDate_Vormonat function.
-# Recommends native datetime instead of unsupplied d_alis_vormonat.sql
-def dw_date_vormonat(fmt: str) -> str:
-    # Native implementation:
-    now = datetime.now()
-    # Calculate first day of current month, then subtract 1 day to get into previous month
-    first_of_this_month = now.replace(day=1)
-    last_of_prev_month = first_of_this_month - timedelta(days=1)
-    
-    # Standard format translation mapping Oracle format to Python strftime
-    # Simple subset handling:
-    fmt_map = {"YYYYMM": "%Y%m", "YYYYMMDD": "%Y%m%d", "YYYY-MM-DD": "%Y-%m-%d"}
-    py_fmt = fmt_map.get(fmt, "%Y%m") # Defaulting to %Y%m
-    
-    return last_of_prev_month.strftime(py_fmt)
+    try:
+        # Step 1.2: Execute external Oracle script via subprocess
+        # # REVIEW-STRUCT: SQL file d_alis_vormonat.sql body not supplied — behaviour unknown
+        sql_script_path = os.path.join(DW_DIR_ROOT, "allgemein/is/util/sql/d_alis_vormonat.sql")
+        cmd = ["sqlplus", "-s", DW_ORAUSER, f"@{sql_script_path}", temp_file_name, format_str]
+        subprocess.run(cmd, stdin=subprocess.DEVNULL, check=True)
 
-    # Alternative DB fallback if d_alis_vormonat.sql contains complex custom calendar rules:
-    # # REVIEW-STRUCT: SQL file d_alis_vormonat.sql not supplied — behavior unknown
-    # tmp_file = tempfile.NamedTemporaryFile(delete=False, prefix="h_alis_date_vormonat_", suffix=".tmp")
-    # tmp_file.close()
-    # subprocess.run([
-    #     "sqlplus", "-s", DB_USER,
-    #     f"@{DW_DIR_ROOT}/allgemein/is/util/sql/d_alis_vormonat.sql",
-    #     tmp_file.name, fmt
-    # ], check=True)
-    # with open(tmp_file.name, "r") as f:
-    #     result = f.read().strip()
-    # os.unlink(tmp_file.name)
-    # return result
+        # Step 1.3: Read results
+        with open(temp_file_name, 'r') as f:
+            result = f.read().strip()
+        return result
+    finally:
+        # Step 1.4: Cleanup temporary file
+        if os.path.exists(temp_file_name):
+            os.remove(temp_file_name)
 
 
-# Step 2: DWDate_Datum_Check
-# Checks if a date matches the specified format. Returns True if valid, False otherwise.
+# Step 2: DWDate_Datum_Check equivalent
 def dw_date_datum_check(wert: str, format_str: str) -> bool:
+    """
+    Validates a date string using database verification.
+    """
+    # Step 2.1: Parameter count validation
     if not wert or not format_str:
-        raise ValueError("Exactly two parameters required: wert, format_str")
-        
-    # Standard translation mapping for common Oracle formats
-    fmt_map = {
-        "YYYYMMDD": "%Y%m%d",
-        "YYYY-MM-DD": "%Y-%m-%d",
-        "DD.MM.YYYY": "%d.%m.%Y"
-    }
-    py_fmt = fmt_map.get(format_str)
-    
-    if py_fmt:
-        try:
-            datetime.strptime(wert, py_fmt)
-            return True
-        except ValueError:
-            return False
-    else:
-        # DB Fallback if complex Oracle format mask is utilized
-        import oracledb
-        try:
-            connection = oracledb.connect(user=DB_USER, dsn=os.environ.get("DB_TNS_NAME_DWH"))
-            with connection.cursor() as cursor:
-                cursor.execute("select to_date(:wert, :format) from dual", wert=wert, format=format_str)
-            return True
-        except oracledb.DatabaseError:
-            return False
+        raise ValueError("DWDate_Datum_Check requires exactly 2 parameters")
+
+    # Step 2.2: Execute inline validation via Oracle SQL*Plus
+    sql_command = f"""
+    {DW_ORAUSER}
+    WHENEVER SQLERROR EXIT FAILURE ROLLBACK;
+    SET HEADING OFF;
+    select to_date('{wert}','{format_str}') from dual;
+    """
+    try:
+        subprocess.run(["sqlplus", "-s"], input=sql_command, text=True, capture_output=True, check=True)
+        return True
+    except subprocess.CalledProcessError:
+        # Step 2.3: Return False if database check returns failure code
+        return False
 
 
-# Step 3: DWDate_Datum_LE
-# Verifies that datum1 <= datum2. Both arguments in format YYYYMMDD.
-# Raises ValueError if datum1 > datum2.
+# Step 3: DWDate_Datum_LE equivalent
 def dw_date_datum_le(datum1: str, datum2: str) -> bool:
+    """
+    Verifies if datum1 <= datum2 using database evaluation.
+    """
+    # Step 3.1: Parameter count validation
     if not datum1 or not datum2:
-        raise ValueError("Exactly two parameters required: datum1, datum2")
-        
-    d1 = datetime.strptime(datum1, "%Y%m%d")
-    d2 = datetime.strptime(datum2, "%Y%m%d")
-    
-    if d1 > d2:
-        # Replicates custom Oracle error raised via raise_application_error(-20422)
-        raise ValueError(f"Datum {datum1} ist groesser als {datum2}")
-    
-    return True
+        raise ValueError("DWDate_Datum_LE requires exactly 2 parameters")
+
+    format_str = "YYYYMMDD"
+    # Step 3.2: Execute inline PL/SQL comparison block
+    plsql_command = f"""
+    {DW_ORAUSER}
+    WHENEVER SQLERROR EXIT FAILURE ROLLBACK;
+    SET HEADING OFF;
+    DECLARE
+        datum1 DATE;
+        datum2 DATE;
+    BEGIN
+        datum1:=TO_DATE('{datum1}','{format_str}');
+        datum2:=TO_DATE('{datum2}','{format_str}');
+        IF datum1>datum2 
+        THEN
+            raise_application_error(-20422,'Datum {datum1} ist groesser als {datum2}');
+        END IF;
+    END;
+    /
+    """
+    try:
+        subprocess.run(["sqlplus", "-s"], input=plsql_command, text=True, capture_output=True, check=True)
+        return True
+    except subprocess.CalledProcessError:
+        # Step 3.3: Return False if date verification fails
+        return False
 
 
-# Step 4: DWDate_Gib_Zeitraum
-# Generates period start and end based on offset, increment units ('Y', 'M', 'D') and format.
-# Returns tuple of (Start_Date, End_Date).
+# Step 4: DWDate_Gib_Zeitraum equivalent
 def dw_date_gib_zeitraum(offset: int, stufe: str, format_str: str) -> tuple:
-    # Native implementation using relative datetime transformations:
-    start_dt = datetime.now()
-    
-    if stufe == 'D':
-        end_dt = start_dt + timedelta(days=offset)
-    elif stufe == 'M':
-        # Align start of month to first of month, end of month to Ultimo of offset month
-        # Since exact logic is in missing SQL file, native implementation approximates standard logic:
-        start_dt = start_dt.replace(day=1)
-        # Shift month
-        year_offset = (start_dt.month + offset - 1) // 12
-        new_month = (start_dt.month + offset - 1) % 12 + 1
-        end_dt_temp = start_dt.replace(year=start_dt.year + year_offset, month=new_month, day=1)
-        last_day = calendar.monthrange(end_dt_temp.year, end_dt_temp.month)[1]
-        end_dt = end_dt_temp.replace(day=last_day)
-    elif stufe == 'Y':
-        # Year start is Jan 1st, Year end is Dec 31st of offset target year
-        start_dt = start_dt.replace(month=1, day=1)
-        end_dt = start_dt.replace(year=start_dt.year + offset, month=12, day=31)
-    else:
-        raise ValueError(f"Unsupported Stufe: {stufe}")
-        
-    fmt_map = {"YYYYMMDD": "%Y%m%d", "YYYY-MM-DD": "%Y-%m-%d"}
-    py_fmt = fmt_map.get(format_str, "%Y%m%d")
-    
-    return start_dt.strftime(py_fmt), end_dt.strftime(py_fmt)
+    """
+    Generates a start and end range by executing an Oracle SQL utility.
+    """
+    # Step 4.1: Parameter validation
+    if offset is None or not stufe or not format_str:
+        raise ValueError("DWDate_Gib_Zeitraum requires offset, stufe, and format parameters")
 
-    # Alternative DB fallback:
-    # # REVIEW-STRUCT: SQL file d_alis_datum_zeitraum.sql not supplied — behavior unknown
-    # tmp_file = tempfile.NamedTemporaryFile(delete=False, prefix="tmp_h_alis_date_zeitraum_", suffix=".tmp")
-    # tmp_file.close()
-    # subprocess.run([
-    #     "sqlplus", "-s", DB_USER,
-    #     f"@{DW_DIR_ROOT}/allgemein/is/util/sql/d_alis_datum_zeitraum.sql",
-    #     tmp_file.name, str(offset), stufe, format_str
-    # ], check=True)
-    # with open(tmp_file.name, "r") as f:
-    #     lines = f.readlines()
-    # os.unlink(tmp_file.name)
-    # matching_lines = [l.strip() for l in lines if "DWH_Ergebnis;" in l]
-    # if len(matching_lines) != 1:
-    #     print("!! Interner Fehler bei der Rueckgabe von Datumswerten", file=sys.stderr)
-    #     print("   Funktion: DWDate_Gib_Zeitraum", file=sys.stderr)
-    #     print(f"   1 Zeile erwartet, {len(matching_lines)} Zeile(n) bekommen", file=sys.stderr)
-    #     raise RuntimeError("Internal Date Processing Error")
-    # tokens = matching_lines[0].split(";")
-    # return tokens[1], tokens[2]
+    # Step 4.2: Build temporary file name with timestamp
+    timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+    temp_file_name = f"/tmp/tmp_h_alis_date_{timestamp}_{os.getpid()}.tmp"
+
+    try:
+        # Step 4.3: Execute query external script via SQL*Plus
+        # # REVIEW-STRUCT: SQL file d_alis_datum_zeitraum.sql body not supplied — behaviour unknown
+        sql_script_path = os.path.join(DW_DIR_ROOT, "allgemein/is/util/sql/d_alis_datum_zeitraum.sql")
+        cmd = ["sqlplus", "-s", DW_ORAUSER, f"@{sql_script_path}", temp_file_name, str(offset), stufe, format_str]
+        subprocess.run(cmd, stdin=subprocess.DEVNULL, check=True)
+
+        # Step 4.4: Parse file results
+        if not os.path.exists(temp_file_name):
+            raise FileNotFoundError(f"Result file {temp_file_name} not generated")
+
+        matching_lines = []
+        with open(temp_file_name, 'r') as f:
+            for line in f:
+                if "DWH_Ergebnis;" in line:
+                    matching_lines.append(line.strip())
+
+        # Verify pattern count
+        if len(matching_lines) != 1:
+            print(f"!! Interner Fehler bei der Rueckgabe von Datumswerten\nFunktion: DWDate_Gib_Zeitraum\n1 Zeile erwartet, {len(matching_lines)} Zeile(n) bekommen", file=sys.stderr)
+            raise RuntimeError("DWDate_Gib_Zeitraum return verification failed")
+
+        # Step 4.5: Extract values
+        parts = matching_lines[0].split(";")
+        start_date = parts[1]
+        end_date = parts[2]
+
+        return start_date, end_date
+
+    finally:
+        # Step 4.6: Cleanup temporary file
+        if os.path.exists(temp_file_name):
+            os.remove(temp_file_name)
 
 
-# Step 5: LetzterTagDesMonats
-# Returns True if input date YYYYMMDD is the last day of its month, False otherwise.
-def letzter_tag_des_monats(datum: str) -> bool:
-    year = int(datum[0:4])
-    month = int(datum[4:6])
-    day = int(datum[6:8])
-    
-    last_day = calendar.monthrange(year, month)[1]
+# Step 5: LetzterTagDesMonats equivalent
+def letzter_tag_des_monats(date_str: str) -> bool:
+    """
+    Returns True if date_str (YYYYMMDD) represents the last day of the month.
+    """
+    # Step 5.1: Parse strings
+    year = int(date_str[0:4])
+    month = int(date_str[4:6])
+    day = int(date_str[6:8])
+
+    # Step 5.2 & 5.3: Utilize Python standard library calendar module (leap year handled natively)
+    _, last_day = calendar.monthrange(year, month)
+
+    # Step 5.4: Verify if input day matches the last day
     return day == last_day
 
 
-# Step 6: TageimMonat
-# Returns the number of days of the month in the given year.
-def tage_im_monat(jahr: int, monat: int) -> int:
-    return calendar.monthrange(jahr, monat)[1]
+# Step 6: TageimMonat equivalent
+def tage_im_monat(year: int, month: int) -> int:
+    """
+    Returns the count of days for the specified month and year.
+    """
+    # Step 6.1 & 6.2: Fetch using native calendar module
+    _, days = calendar.monthrange(year, month)
+    return days
 
 
-# Step 7: AddiereDatum
-# Adds offset days to the given date (YYYYMMDD) and returns the formatted result.
-def addiere_datum(datum: str, tage: int) -> str:
-    dt = datetime.strptime(datum, "%Y%m%d")
-    result_dt = dt + timedelta(days=tage)
-    return result_dt.strftime("%Y%m%d")
+# Step 7: AddiereDatum equivalent
+def addiere_datum(date_str: str, days_to_add: int) -> str:
+    """
+    Translates custom date loop addition logic using native Python datetime.
+    """
+    # Step 7.1 & 7.2: Parse input and apply offset
+    dt = datetime.datetime.strptime(date_str, "%Y%m%d")
+    # Step 7.3: Execute date addition using standard timedelta logic
+    new_dt = dt + datetime.timedelta(days=days_to_add)
+    # Step 7.4 & 7.5: Return formatted string
+    return new_dt.strftime("%Y%m%d")
 ```
 
-An implementation-ready **Migration Design Document** has been prepared for the utility script. 
-
-The automatic output from the primary conversion tool (`ksh_design_python`) has been captured by the system and will be appended downstream. Below is the essential design context, including environment orchestration, architectural mappings, and risk assessments that the automated parser cannot see.
-
----
-
 ### File Disposition
-
 | Source File Path | Target File / Action | Purpose / Reason for Action |
 | :--- | :--- | :--- |
-| `vobs/dw_source/isrpt/isbert/SQL/aktuell/allgemein/is/util/bin/h_alis_date.ksh` | `vobs/dw_source/isrpt/isbert/SQL/aktuell/allgemein/is/util/bin/h_alis_date.py` | Converted to a Python utility library. Replaces KornShell syntax and Oracle SQL*Plus calls with native Python `datetime` and `calendar` libraries to eliminate database call overhead. |
+| `vobs/dw_source/isrpt/isbert/SQL/aktuell/allgemein/is/util/bin/h_alis_date.ksh` | `vobs/dw_source/isrpt/isbert/SQL/aktuell/allgemein/is/util/bin/h_alis_date.py` | Migrating the KornShell utility library to a native Python module. This module provides date validations, math, and range checks that can be imported directly by other migrated Python scripts or Airflow operators. |
 
----
+### Job Dependencies
+The following downstream consumer jobs depend on this date utility library. None of them have been migrated yet. Orchestration wiring cannot be finalized until these downstream jobs are migrated to the target platform:
+* `DW.BERT_ABLAUFSTEUERUNG` (not yet migrated)
+* `DW.BERT_AUSD_BP_TA_MSISDN` (not yet migrated)
+* `DW.BERT_AUSD_BP_TA_P_BASISPROD` (not yet migrated)
+* `DW.BERT_AUSD_V_TA_PERIOD` (not yet migrated)
+* `DW.BERT_AUSD_V_TA_P_VERTRAG` (not yet migrated)
+* `DW.BERT_AUSD_V_TA_VERTRAG_TMP` (not yet migrated)
+* `DW.BERT_DROP_TEMP_TABLE` (not yet migrated)
+* `DW.BERT_P_ADRESSEN` (not yet migrated)
+* `DW.BERT_P_AUSTAUSCH` (not yet migrated)
+* `DW.BERT_P_GESCHAEFTSP` (not yet migrated)
+* `DW.BERT_P_RECH_EMPF` (not yet migrated)
+* `DW.BERT_RECHNUNGSDATEN` (not yet migrated)
 
-### Add Context the MCP Could Not See
+### Schedule & Variables
+* **Schedule**: This job is not directly triggered by any scheduler. It operates as an included/shared library module sourced by other scripts. In the target BigQuery / Cloud Composer architecture, it must remain a callable/importable Python module (`h_alis_date.py`) and should not have its own standalone schedule.
+* **Variables**:
+  * `DW_ORAUSER`: Legacy Oracle connection parameter. Replaced in target via global credentials (BigQuery service account or execution environment parameters).
+  * `DW_DIR_ROOT`: Legacy code base path root directory. In the Python target, this is handled dynamically using Python's standard pathing/imports or relative project directories.
 
-#### Job Dependencies
-* **Downstream Jobs (Consumers):**
-  The following downstream jobs source or consume outputs from this utility script and are **not yet migrated**:
-  * `DW.BERT_ABLAUFSTEUERUNG`
-  * `DW.BERT_AUSD_BP_TA_MSISDN`
-  * `DW.BERT_AUSD_BP_TA_P_BASISPROD`
-  * `DW.BERT_AUSD_V_TA_PERIOD`
-  * `DW.BERT_AUSD_V_TA_P_VERTRAG`
-  * `DW.BERT_AUSD_V_TA_VERTRAG_TMP`
-  * `DW.BERT_DROP_TEMP_TABLE`
-  * `DW.BERT_P_ADRESSEN`
-  * `DW.BERT_P_AUSTAUSCH`
-  * `DW.BERT_P_GESCHAEFTSP`
-  * `DW.BERT_P_RECH_EMPF`
-  * `DW.BERT_RECHNUNGSDATEN`
-  
-  *Wiring Strategy on BigQuery/Cloud Composer:* Because these consuming ETL and scheduling scripts are not yet migrated, their downstream wiring cannot be finalized. Once migrated, they must import the rewritten Python module (`h_alis_date.py`) using standard Python import mechanisms instead of legacy shell sourcing (`. h_alis_date.ksh`).
+### Lineage
+* **Upstream Producers**: The utility script accesses the Oracle dummy table `TABLE:DUAL` to run standard date checking expressions. On BigQuery, this dependency is eliminated by using native Python libraries (`datetime`, `calendar`) which compute this logic in-memory without database roundtrips.
 
-#### Schedule & Variables — Must Be Retained
-* **Scheduling:** 
-  This job is **not directly triggered by any scheduler** (it is a shared utility module). It must remain a callable, importable library in the target environment (e.g., deployed inside a shared library directory or package in Cloud Composer's DAGs/plugins folder). It does not have a standalone DAG schedule.
-* **Variables:**
-  * `DW_ORAUSER` (Legacy DB credential variable) — *Deprecated.* Because all date mathematical operations and checks are modernized to run locally within Python, the utility no longer requires database access or credentials.
-  * `DW_DIR_ROOT` (Legacy file root variable) — *Deprecated.* Relies on standard Python packaging/import directories, removing the need for a global script path variable.
+### External System Replacements
+* **Oracle SQL*Plus to Python / BigQuery**: Legacy date arithmetic routines and format validations executed via SQL*Plus or PL/SQL are replaced with Python's standard `datetime` and `calendar` modules. If dynamic database queries are needed for specific tables, they will be executed using the native Google Cloud BigQuery client library.
 
-#### Lineage
-* **Upstream Data Sources:**
-  * Oracle `DUAL` table (lineage confidence: 0.95): This represents standard Oracle dummy queries for system-time calculations (e.g., `select to_date(...) from dual`). Under the BigQuery/Python target architecture, these queries are replaced completely with local `datetime` evaluations, removing any database query dependency.
+### Cross-File Dependencies
+* This helper library is widely used across different SQL and shell scripts. Migrating it to a standardized Python module (`h_alis_date.py`) ensures that dependent Python tasks can invoke its functions directly via standard python imports (`import h_alis_date`).
 
-#### External System Replacements
-* **Oracle SQL\*Plus -> Native Python Math:**
-  Instead of executing remote shell subprocesses invoking SQL\*Plus to perform basic calendar calculations (such as finding the last day of a month or adding days), the target system will use standard Python `calendar` and `datetime` libraries. This eliminates connection latency, reduces cost, and increases processing performance.
+### Target File Plan
+* **`vobs/dw_source/isrpt/isbert/SQL/aktuell/allgemein/is/util/bin/h_alis_date.py`**:
+  * **Language**: Python
+  * **Source**: `vobs/dw_source/isrpt/isbert/SQL/aktuell/allgemein/is/util/bin/h_alis_date.ksh`
+  * **Purpose**: Implements helper functions (`dw_date_vormonat`, `dw_date_datum_check`, `dw_date_datum_le`, `dw_date_gib_zeitraum`, `letzter_tag_des_monats`, `tage_im_monat`, `addiere_datum`) using pure Python logic, removing unnecessary Oracle database hits where possible.
 
-#### Cross-File Dependencies
-* **Unsupplied SQL Files:**
-  The legacy script depends on two external Oracle SQL files which were not supplied in the migration bundle:
-  * `$DW_DIR_ROOT/allgemein/is/util/sql/d_alis_vormonat.sql` (Used in `DWDate_Vormonat`)
-  * `$DW_DIR_ROOT/allgemein/is/util/sql/d_alis_datum_zeitraum.sql` (Used in `DWDate_Gib_Zeitraum`)
-  
-  The Python design replicates their expected standard behavior (calculating the previous month and calculating standardized period starts/ends based on offsets) natively using standard Gregorian calendar math.
+### Environment-Specific Values
+1. **GLOBAL (Environment-Wide)**:
+   * `GCP_PROJECT`: Global GCP project identifier. Sourced at runtime using `os.environ.get("GCP_PROJECT")` if BigQuery interactions are required.
+   * `BQ_DATASET`: Environment-wide dataset namespace for running queries, retrieved via `os.environ.get("BQ_DATASET")`.
+   * `DW_ORAUSER`: Legacy connection string. Mapped to BigQuery client authentication credentials configured globally in Composer.
+   * `DW_DIR_ROOT`: Legacy codebase root folder. Solved in Cloud Composer by resolving imports relative to the Python path or DAGs directory.
 
-#### Target File Plan
-* **Target Path:** `vobs/dw_source/isrpt/isbert/SQL/aktuell/allgemein/is/util/bin/h_alis_date.py`
-  * **Language:** Python 3.x
-  * **Source Component:** `vobs/dw_source/isrpt/isbert/SQL/aktuell/allgemein/is/util/bin/h_alis_date.ksh`
-  * **Purpose:** High-performance, unit-testable Python utility module containing Python functions equivalents for the KSH date math procedures.
-
-#### Environment-Specific Values
-The environment variables used in the original shell script are classified below:
-* `DW_ORAUSER` — **GLOBAL**: Identifies the legacy database connection details. (Deprecated in the primary native Python design but retained as an environment configuration if database fallbacks are ever needed).
-* `DW_DIR_ROOT` — **GLOBAL**: Root directory for shell and SQL script path resolution. (Deprecated in Python as native packages/relative imports are utilized instead).
-
----
+2. **JOB-SPECIFIC**:
+   * None. No specific runtime parameters or hardcoded environment constants are needed; all variables are supplied dynamically via function parameters.
 
 ### Risks and Manual Steps
-
-1. **UNRESOLVED COMPONENT (SQL File Dependency):**
-   * **SOURCE:** NOT FOUND — `$DW_DIR_ROOT/allgemein/is/util/sql/d_alis_vormonat.sql` — no candidate.
-   * **RISK:** The behavior of `DWDate_Vormonat` has been simulated based on standard date math. If this SQL file contained custom business rules (e.g., custom financial/accounting calendars, specific holiday rules, or non-standard month-end logic), the native Python simulation might diverge. 
-   * **MANUAL STEP:** A developer must locate this file on the legacy system and confirm if standard Gregorian month-subtraction is sufficient.
-
-2. **UNRESOLVED COMPONENT (SQL File Dependency):**
-   * **SOURCE:** NOT FOUND — `$DW_DIR_ROOT/allgemein/is/util/sql/d_alis_datum_zeitraum.sql` — no candidate.
-   * **RISK:** `DWDate_Gib_Zeitraum` calculates date intervals/ranges using this external SQL script. The native Python implementation reproduces default behaviors for 'Y', 'M', and 'D' increments, but if custom period configurations exist in the SQL script, validation discrepancies may arise.
-   * **MANUAL STEP:** Verify the logic of `d_alis_datum_zeitraum.sql` on the legacy server and adjust the Python helper `dw_date_gib_zeitraum` to match any custom logic if necessary.
-
-3. **UNMIGRATED DOWNSTREAM DEPENDENCIES:**
-   * **RISK:** A total of 12 downstream ETL scripts are listed as "not yet migrated". They are still sourcing `h_alis_date.ksh`. Modernizing this utility to Python without migrating the consumers will break legacy systems if they attempt to execute or include the modernized version before their own migration is complete.
-   * **MANUAL STEP:** Keep both the legacy `.ksh` and the modern `.py` files in parallel during the migration's transition phase. Do not retire the shell version until all 12 consuming jobs are fully migrated to Cloud Composer.
-
-4. **GERMAN-LANGUAGE PRINT/ERROR LITERALS (Retained Verbatim):**
-   * **RULE APPLICATION:** In compliance with the *Output/Print Literal Rule*, all original German log messages and error text have been preserved character-for-character inside the Python code block to prevent breaking downstream monitoring/log-scraping tools. 
-     * *Example retained text:* `"!! Interner Fehler bei der Rueckgabe von Datumswerten"`
-     * *Example retained text:* `"   Funktion: DWDate_Gib_Zeitraum"`
-     * *Example retained text:* `"   1 Zeile erwartet, {} Zeile(n) bekommen"`
-     * *Example retained text:* `"Datum {} ist groesser als {}"`
+* **SOURCE: NOT FOUND** — `d_alis_vormonat.sql` — no candidate. (Referenced in legacy function `DWDate_Vormonat` to extract the previous month. Its source code was not in the payload and must be manually migrated to Python/BQSQL).
+* **SOURCE: NOT FOUND** — `d_alis_datum_zeitraum.sql` — no candidate. (Referenced in legacy function `DWDate_Gib_Zeitraum` to determine date intervals. The SQL file is missing and must be manually evaluated and implemented).
+* **Downstream Integration**: Since all 12 downstream consumer jobs are unmigrated, their direct orchestration integration with this utility cannot be validated. They must be updated during their respective migration phases.
 
 ---
 
@@ -2525,177 +2450,183 @@ konvertiereZeitspanne(){
 
 === CONVERSION VERDICT ===
 VERDICT: PYTHON
-REASON: The script is a library of parameter validation, string mapping, system normalization, and relative date calculation functions.
+REASON: The script is a library of helper functions for parameter validation, string mapping, and date calculations that must be converted to Python utility functions.
 
 EVIDENCE
-- Business logic found: KSH custom logic contains complex data structures, string-mapping rules (case blocks), source/metric compatibility matrices, and date validation logic.
+- Business logic found: KSH custom logic contains parameter validation, key-figure and source-system normalization mappings, and date-handling operations.
 - AWK: none
-- SQL-expressible: no, this is orchestration-level parameter validation, formatting, and date calculation helper code.
-- Non-SQL side effects: relies on dynamic environment variable mutation (`eval`) and invokes external utilities for date checking.
-- Against this verdict: none
+- SQL-expressible: no, this script contains programmatic string mappings, validations, and custom date range calculations that operate on environment state, not tabular database data.
+- Non-SQL side effects: none (operates entirely on environment state variable modification).
+- Against this verdict: none, as this is a utility/library script designed to be sourced by other processes to manage execution state.
 
 =======================================================================================
 PART A — PYTHON DESIGN DOCUMENT
 =======================================================================================
 
 1. SCRIPT OVERVIEW
-   This script (`h_alis_parameter.ksh`) functions as a shared parameter-parsing and validation library (helper module) within an IS/RPT reporting environment. It normalizes names for metrics (Kennzahlen), source systems, and master data components into standardized 3-letter codes, enforces business validation matrices, groups metrics into business domains, and handles temporal validations/relative offset calculations. It acts as a safety layer by tracking errors globally via error codes (`ErrNr`) and error arguments (`ErrArg`).
+   This script, `h_alis_parameter.ksh`, is a KornShell library containing utility functions used to parse, validate, and convert job parameters in the Information System (IS) environment. It normalizes key figures (Kennzahlen), master data types, and source systems (Liefersysteme), enforces domain compatibility rules, verifies date formats/chronology, and calculates dates based on relative offsets. It is designed to be sourced by other operational processing scripts rather than being run as a standalone executable.
 
 2. INVOCATION CONTEXT
-   - Sourced (via `. h_alis_parameter.ksh`) by parent KornShell orchestration scripts. It is not called directly as a standalone process in production.
-   - # REVIEW-STRUCT: UC4 job context and includes are not supplied — this helper library is environment-agnostic but depends on caller orchestration scripts.
-   - Environment files sourced: None. It expects the global variables `ErrNr` and `ErrArg` to be initialized to `0` and `""` respectively by the sourcing shell environment.
+   - Who calls this script: Sourced by other loader or transformation KornShell scripts (e.g., via `. h_alis_parameter.ksh`) to provide validation functions. It has no direct UC4 wrapper of its own but runs within the context of whatever UC4 job launches its consumer scripts.
+   - UC4 native includes: None referenced in the extracted source.
+   - Environment files sourced: None.
 
 3. PARAMETERS / INPUTS
-   This script behaves as a function library, consuming parameters passed to its individual shell functions:
-   - `ModulName` (Global, set to `"alis_parameter"`)
-   - `ModulVersion` (Global, set to `"V3.0.9"`)
-   - `ErrNr` (Global state, integer error tracking)
-   - `ErrArg` (Global state, string detailing the error context)
-   
-   Function-level arguments:
+   This script does not accept standalone command-line arguments but defines functions that accept positional arguments to modify or read environment states dynamically.
    - `pruefeParameterGesetzt`:
-     - `$1` (`param_name`): Human-readable name of the parameter
-     - `$2` (`param_var`): Name of the environment variable to test
-   - `konvertiereKennzahl`, `konvertiereSystem`, `konvertiereSDName`, `konvertiereAufbStufeXtra`:
-     - `$1` (`VarName`): Name of the environment variable holding the value to mutate/normalize
+     - `$1`: Descriptive parameter name (for error messages).
+     - `$2`: Name of the environment variable to check.
+   - `konvertiereKennzahl`:
+     - `$1`: Name of the environment variable holding the key figure name (modified in-place).
+   - `konvertiereSystem`:
+     - `$1`: Name of the environment variable holding the system name (modified in-place).
+   - `konvertiereSDName`:
+     - `$1`: Name of the environment variable holding the master data system name (modified in-place).
+   - `konvertiereAufbStufeXtra`:
+     - `$1`: Name of the environment variable holding the stage name (modified in-place).
    - `pruefeSystemKennzahl`:
-     - `$1` (`System`): Sourced system short name
-     - `$2` (`Kennzahl`): Sourced metric short name
+     - `$1`: Normalised system name.
+     - `$2`: Normalised key figure name.
    - `gibBereich`:
-     - `$1` (`Kennzahl`): Metric short name
-     - `$2` (`VarBereich`): Variable name to write the resulting domain to
+     - `$1`: Normalised key figure name.
+     - `$2`: Name of the environment variable to set with the mapped functional area (Bereich).
    - `gibIntervall`:
-     - `$1` (`Kennzahl`): Metric short name
-     - `$2` (`VarIntervall`): Variable name to write the resulting interval ('t' or 'm') to
+     - `$1`: Normalised key figure name.
+     - `$2`: Name of the environment variable to set with the mapped reporting frequency interval (Intervall).
    - `pruefeZeitraum`:
-     - `$1` (`Anfang`): Start date (YYYYMMDD)
-     - `$2` (`Ende`): End date (YYYYMMDD)
+     - `$1`: Start date string (expected format `YYYYMMDD`).
+     - `$2`: End date string (expected format `YYYYMMDD`).
    - `pruefeZahlPositiv`:
-     - `$1` (`p_Zahl`): Numeric value to validate
-     - `$2` (`p_ParameterName`): Context name of the numeric variable
+     - `$1`: Value to check.
+     - `$2`: Descriptive parameter name.
    - `pruefeZeitParameter`:
-     - `$1` (`p_Anfangsdatum`): Start date
-     - `$2` (`p_Endedatum`): End date
-     - `$3` (`p_ZeitOffset`): Numeric relative offset (integer)
+     - `$1`: Start date value.
+     - `$2`: End date value.
+     - `$3`: Time offset span.
    - `konvertiereZeitspanne`:
-     - `$1` (`p_VarAnfang`): Variable name to write computed start date to
-     - `$2` (`p_VarEnde`): Variable name to write computed end date to
-     - `$3` (`p_Spanne`): Numeric date span
-     - `$4` (`p_Kennzahl`): Metric short name
+     - `$1`: Name of env variable to set with calculated start date.
+     - `$2`: Name of env variable to set with calculated end date.
+     - `$3`: Numeric offset span.
+     - `$4`: Normalised key figure name.
 
 4. EXTERNAL COMMANDS / PROGRAMS INVOKED
    - `DWDate_Datum_Check`:
-     - Verbatim command: `DWDate_Datum_Check $Wert $Format`
-     - Purpose: External DWH date utility to validate if a string matches the date format (YYYYMMDD).
-     - Target client: Convert to Python native `datetime.strptime()` check.
-     - # REVIEW-STRUCT: launcher DWDate_Datum_Check invoked — internal behaviour not available in this extraction; behavior inferred as standard format validation.
+     - Exact command line: `DWDate_Datum_Check $Wert $Format`
+     - Purpose: Verifies if a date value matches the specified format (`YYYYMMDD`).
+     - Standard handling: Convert to native Python `datetime.datetime.strptime()`.
+     - # REVIEW-STRUCT: command [DWDate_Datum_Check] logic is not supplied in this extraction — behavior is mapped to standard Python datetime validation.
    - `DWDate_Datum_LE`:
-     - Verbatim command: `DWDate_Datum_LE $Anfang $Ende`
-     - Purpose: External DWH utility to check if `$Anfang` is less than or equal to `$Ende`.
-     - Target client: Convert to Python native operators (`<=`).
-     - # REVIEW-STRUCT: launcher DWDate_Datum_LE invoked — internal behaviour not available in this extraction; behavior inferred as numeric/date comparison.
+     - Exact command line: `DWDate_Datum_LE $Anfang $Ende`
+     - Purpose: Asserts that the start date is less than or equal to the end date.
+     - Standard handling: Convert to native Python date comparisons (`start <= end`).
+     - # REVIEW-STRUCT: command [DWDate_Datum_LE] logic is not supplied in this extraction — behavior is mapped to standard Python date comparisons.
    - `DWDate_Gib_Zeitraum`:
-     - Verbatim command: `DWDate_Gib_Zeitraum -$p_Spanne $Offset_Unit "YYYYMMDD" Anfangsdatum Endedatum`
-     - Purpose: External DWH utility to subtract offset units (Days or Months) and return absolute bounds.
-     - Target client: Convert to Python native `datetime` and `dateutil.relativedelta`.
-     - # REVIEW-STRUCT: launcher DWDate_Gib_Zeitraum invoked — internal behaviour not available in this extraction; behavior inferred as calendar interval calculation.
-   - `basename`, `date`, `rm`: Standard POSIX utilities used during subshell logic to create and cleanup dynamic temp files. In Python, replace with standard libraries `os.path.basename`, `datetime`, and `tempfile`.
+     - Exact command line: `DWDate_Gib_Zeitraum -$p_Spanne $Offset_Unit "YYYYMMDD" Anfangsdatum Endedatum`
+     - Purpose: Calculates a relative historical reporting window.
+     - Standard handling: Implement using Python's `datetime` math and `relativedelta`.
+     - # REVIEW-STRUCT: command [DWDate_Gib_Zeitraum] logic is not supplied in this extraction — behavior is mapped to standard Python date arithmetic.
+   - `date`:
+     - Exact command line: `date +%Y%m%d%H%M%S`
+     - Purpose: Standard UNIX date command used for unique temporary log filename creation.
+     - Standard handling: Python `datetime.datetime.now().strftime("%Y%m%d%H%M%S")`.
+   - `basename`:
+     - Exact command line: `basename $0`
+     - Purpose: Extracts the base filename of the executing script.
+     - Standard handling: Python `os.path.basename(sys.argv[0])`.
 
 5. EMBEDDED SQL
-   (no embedded SQL in this parameter validation library)
+   - None.
 
 6. CONTROL FLOW
-   Execution logic for sourced functions:
-   - **General Preconditions**: Every function begins by inspecting the global `ErrNr`. If `ErrNr != 0`, the function exits immediately to prevent overwriting an existing upstream error state.
-   - **`pruefeParameterGesetzt`**: Evaluates parameter existence dynamically via `eval`. If unset, registers `ErrNr=194` / `ErrArg=$param_name`.
-   - **`konvertiereKennzahl`**: Downcases the value of the target env var, executes a `case` switch translating verbose metric names to standard 3-letter codes, and rewrites the dynamic target variable via `eval`. Unknown values result in `???`, `ErrNr=198`, and `ErrArg=$Kennzahl`.
-   - **`konvertiereSystem`**: Downcases and validates system names (`sap`, `carmen`, `dpps`, `d1`, `xtra`, `ctel`, `nnv`, `dwh`, `brunet`, `sigma`). If unrecognized, registers `ErrNr=195` / `ErrArg="Unbekannte Datenherkunft $System !"`.
-   - **`konvertiereSDName`**: Downcases and translates master data systems (`vo`, `rahmenvertrag` -> `rv`, `tarif` -> `trf`, `tstatus` -> `ts`, `zahlmodus` -> `zm`, etc.). Invalid entries yield `ErrNr=195`.
-   - **`konvertiereAufbStufeXtra`**: Maps staging metrics (`zusammenfuehrung` -> `mrg`, `befuellung` -> `fill`). Unrecognized inputs yield `ErrNr=195`.
-   - **`pruefeSystemKennzahl`**: Nested conditional checks enforcing valid permutations of System and Metric. Invalid combinations populate `ErrArg="Ungueltige Kombination $System $Kennzahl"` and trigger `ErrNr=195`.
-   - **`gibBereich`**: Searches predefined whitespace-delimited lists (`list_tn`, `list_us`, `list_gd`, `list_sd`, `list_md`) to map a metric to a functional domain (`tn`, `us`, `gd`, `sd`, `md`) and dynamically sets the resulting caller variable.
-   - **`gibIntervall`**: Maps a metric to either daily (`t`) or monthly (`m`) granularities and dynamically assigns the caller variable.
-   - **`pruefeZeitraum`**: Validates date boundaries using temporary logging paths `/tmp/tmp_...` in a subshell with standard error trapping disabled (`set +e`). Asserts YYYYMMDD string structures and correct chronological ordering.
-   - **`pruefeZahlPositiv`**: Validates input string is numeric and `>= 0`. If not, yields `ErrNr=195`.
-   - **`pruefeZeitParameter`**: Validates parameters mutually exclusive: must supply either a valid relative offset OR both absolute start and end dates.
-   - **`konvertiereZeitspanne`**: Determines offset scale (Days or Months) based on metrics and calls `DWDate_Gib_Zeitraum` to determine boundaries.
+   Upon sourcing, the library performs sequential initialization:
+   1. Set global module metadata variables: `ModulName="alis_parameter"` and `ModulVersion="V3.0.9"`.
+   2. Define `pruefeParameterGesetzt`: Checks if a variable is populated; if not, sets error variables.
+   3. Define `konvertiereKennzahl`: Normative translation dictionary matching verbose German key figure terms to short abbreviations (or setting `ErrNr=198`).
+   4. Define `konvertiereSystem`: Normalizes source systems to lowercase and matches against allowed systems list (or setting `ErrNr=195`).
+   5. Define `konvertiereSDName`: Normalizes master data categories/systems (or setting `ErrNr=195`).
+   6. Define `konvertiereAufbStufeXtra`: Normalizes stage codes for Xtra process runs.
+   7. Define `pruefeSystemKennzahl`: Validates permitted combinations of source system and key figure (e.g. DPPS cannot be run with `twe` / `pln` / `loe`, etc.). If invalid, sets `ErrNr=195`.
+   8. Define `gibBereich`: Groups key figures into functional business domain areas (`tn`, `us`, `gd`, `sd`, `md`).
+   9. Define `gibIntervall`: Determines whether key figures report on a daily (`t`) or monthly (`m`) boundary.
+   10. Define `pruefeZeitraum`: Checks date formats and asserts chronological accuracy.
+   11. Define `pruefeZahlPositiv`: Validates if a string is numeric and >= 0.
+   12. Define `pruefeZeitParameter`: Ensures mutually exclusive parameters (either offset or start/end date pair is supplied, but not both).
+   13. Define `konvertiereZeitspanne`: Calculates calendar boundaries using `DWDate_Gib_Zeitraum` based on key-figure unit (Days vs. Months).
 
 7. ERROR HANDLING & EXIT CODES
-   - Custom tracking paradigm: Does not exit the process directly (as it is a sourced helper). It writes to global variables `ErrNr` (integer error identifier) and `ErrArg` (detailed descriptive string of the error).
-   - Early returns: Every routine has a guard block `if [ $ErrNr -ne 0 ]; then return; fi`.
-   - Subshell error handling: Evaluates external components under `set +e` inside subshells to prevent failure cascades and captures logs inside temporary paths, cleansing them using `rm -f` at exit.
-   - Success conventions: `ErrNr` remains `0`.
-   - Mapping to Python: This stateful paradigm should be replaced with native Python exceptions (e.g., `ValueError`, or a custom class `ParameterValidationError`). To match the original global state behavior for caller scripts that expect it, we can design a `ParameterContext` class that retains `err_nr` and `err_arg`.
+   - KornShell mechanism: Uses global variables `ErrNr` (integer error number) and `ErrArg` (detailed context) to manage script state.
+   - Cascade Prevention: Functions check `if [ $ErrNr -ne 0 ]` immediately on entry and bypass operations if an error condition has already occurred, keeping the initial error state clean.
+   - Subshell isolation: `set +e` is used inside subshells during external tool validation calls to prevent instant script termination on minor check failures.
+   - Python mapping: State can be managed cleanly inside a state class, or natively utilizing Python exceptions. To perfectly preserve the legacy "bypass if error already set" workflow, a state-propagation class pattern is ideal.
 
 8. OUTPUTS / SIDE EFFECTS
-   - The primary side effect is side-channel variable mutation in the sourcing Shell environment via `eval "$VarName=$Value"`.
-   - Creates and deletes short-lived tracking files in the `/tmp/` directory.
+   - State Modification: Modifies caller variables in-place via dynamic environment variable mutations (using `eval`). To mimic this in Python, functions should operate on a mutable dictionary representing the running job context.
+   - Temporary Files: Short-lived validation logging files created under `/tmp` are removed via `rm -f`. These are avoided completely in Python by capturing execution checks directly in memory.
 
 9. BUSINESS SUMMARY
-   - Standardizes reporting definitions for all downstream processes in the Data Warehouse.
-   - Ensures correct operational code generation by translating verbose system labels into normalized technical keys.
-   - Prevents downstream data processing failures by validating the parameters before jobs trigger SQL transformations.
-   - Provides strict checking of the mutually exclusive relationship between absolute calendar inputs and relative offset days.
+   - Reusable Logic Framework: Serves as the central validator library for DWH batch runs, ensuring parameter format sanity.
+   - Code Standardisation: Normalizes domain-specific terms (e.g., converting "abgang_zukunft" to "abz") to preserve file name and database convention rules.
+   - Integrity Enforcement: Prevents running incompatible pipeline jobs (e.g., verifying that a specific billing movement key figure is not imported from an administrative billing master data source system).
+   - Time-Horizon Alignment: Automatically shifts daily and monthly rolling targets based on key-figure tracking boundaries.
 
-=== PSEUDOCODE STYLE ===
+=======================================================================================
+PYTHON PSEUDOCODE
+=======================================================================================
 
 ```python
-# Sourced Parameter validation & normalization module "alis_parameter"
-# ModulVersion = "V3.0.9"
-
 import os
 import sys
-import tempfile
-from datetime import datetime
-from dateutil.relativedelta import relativedelta
+import datetime
+from typing import Dict, Any, Optional
 
-# Global state mimicking legacy shell environment tracking
-global_err_nr = 0
-global_err_arg = ""
+# Step 1: Initialize Module Constants
 MODUL_NAME = "alis_parameter"
 MODUL_VERSION = "V3.0.9"
 
-# Helper to check if global errors are already active
-def _has_error():
-    global global_err_nr
-    return global_err_nr != 0
+# Class to manage global validation state preserving legacy error propagation mechanics
+class ValidationState:
+    def __init__(self):
+        self.err_nr: int = 0
+        self.err_arg: str = ""
 
-def _set_error(err_nr, err_arg):
-    global global_err_nr, global_err_arg
-    if not _has_error():
-        global_err_nr = err_nr
-        global_err_arg = err_arg
+def get_env_var(env: Dict[str, Any], var_name: str) -> Optional[Any]:
+    return env.get(var_name)
 
-# Step 1: pruefeParameterGesetzt
-def pruefeParameterGesetzt(param_name: str, param_var_name: str, env_dict: dict):
-    # Check upstream errors
-    if _has_error():
+def set_env_var(env: Dict[str, Any], var_name: str, value: Any) -> None:
+    env[var_name] = value
+
+# Step 2: Define pruefeParameterGesetzt
+def pruefeParameterGesetzt(state: ValidationState, env: Dict[str, Any], param_name: str, param_var: str) -> None:
+    if state.err_nr != 0:
         return
 
-    # Validate parameters
-    if not param_name or not param_var_name:
-        _set_error(196, f"{MODUL_NAME} {MODUL_VERSION} pruefeParameterGesetzt")
+    if not param_name or not param_var:
+        state.err_nr = 196
+        state.err_arg = f"{MODUL_NAME} {MODUL_VERSION} pruefeParameterGesetzt"
         return
 
-    # Check variable presence in context
-    param_wert = env_dict.get(param_var_name, None)
-    if param_wert is None or str(param_wert).strip() == "":
-        _set_error(194, param_name)
+    param_wert = get_env_var(env, param_var)
+    if param_wert is None or param_wert == "":
+        state.err_nr = 194
+        state.err_arg = param_name
 
-# Step 2: konvertiereKennzahl
-def konvertiereKennzahl(var_name: str, env_dict: dict):
-    if _has_error():
+# Step 3: Define konvertiereKennzahl
+def konvertiereKennzahl(state: ValidationState, env: Dict[str, Any], var_name: str) -> None:
+    if state.err_nr != 0:
         return
 
     if not var_name:
-        _set_error(196, f"{MODUL_NAME} {MODUL_VERSION} konvertiereKennzahl")
+        state.err_nr = 196
+        state.err_arg = f"{MODUL_NAME} {MODUL_VERSION} konvertiereKennzahl"
         return
 
-    kennzahl = str(env_dict.get(var_name, "")).lower().strip()
+    kennzahl_val = get_env_var(env, var_name)
+    if kennzahl_val is None:
+        kennzahl_val = ""
 
-    # Case switch mapping
-    mapping = {
+    kennzahl = str(kennzahl_val).lower()
+
+    mappings = {
         "zugang": "zug",
         "abgang": "abg",
         "abgang_zukunft": "abz",
@@ -2736,42 +2667,58 @@ def konvertiereKennzahl(var_name: str, env_dict: dict):
         "glaengenintervall": "glint"
     }
 
-    if kennzahl in mapping:
-        env_dict[var_name] = mapping[kennzahl]
+    if kennzahl in mappings:
+        result = mappings[kennzahl]
     else:
-        _set_error(198, kennzahl)
-        env_dict[var_name] = "???"
+        state.err_nr = 198
+        state.err_arg = kennzahl_val
+        result = "???"
 
-# Step 3: konvertiereSystem
-def konvertiereSystem(var_name: str, env_dict: dict):
-    if _has_error():
+    set_env_var(env, var_name, result)
+
+# Step 4: Define konvertiereSystem
+def konvertiereSystem(state: ValidationState, env: Dict[str, Any], var_name: str) -> None:
+    if state.err_nr != 0:
         return
 
     if not var_name:
-        _set_error(196, f"{MODUL_NAME} {MODUL_VERSION} konvertiereSystem")
+        state.err_nr = 196
+        state.err_arg = f"{MODUL_NAME} {MODUL_VERSION} konvertiereSystem"
         return
 
-    system = str(env_dict.get(var_name, "")).lower().strip()
-    valid_systems = {"sap", "carmen", "dpps", "d1", "xtra", "ctel", "nnv", "dwh", "brunet", "sigma"}
+    system_val = get_env_var(env, var_name)
+    if system_val is None:
+        system_val = ""
 
-    if system in valid_systems:
-        env_dict[var_name] = system
+    system = str(system_val).lower()
+    allowed_systems = {"sap", "carmen", "dpps", "d1", "xtra", "ctel", "nnv", "dwh", "brunet", "sigma"}
+
+    if system in allowed_systems:
+        result = system
     else:
-        _set_error(195, f"Unbekannte Datenherkunft {system} !")
-        env_dict[var_name] = "???"
+        state.err_nr = 195
+        state.err_arg = f"Unbekannte Datenherkunft {system_val} !"
+        result = "???"
 
-# Step 4: konvertiereSDName
-def konvertiereSDName(var_name: str, env_dict: dict):
-    if _has_error():
+    set_env_var(env, var_name, result)
+
+# Step 5: Define konvertiereSDName
+def konvertiereSDName(state: ValidationState, env: Dict[str, Any], var_name: str) -> None:
+    if state.err_nr != 0:
         return
 
     if not var_name:
-        _set_error(196, f"{MODUL_NAME} {MODUL_VERSION} konvertiereSDSystem")
+        state.err_nr = 196
+        state.err_arg = f"{MODUL_NAME} {MODUL_VERSION} konvertiereSDSystem"
         return
 
-    system = str(env_dict.get(var_name, "")).lower().strip()
-    
-    mapping = {
+    system_val = get_env_var(env, var_name)
+    if system_val is None:
+        system_val = ""
+
+    system = str(system_val).lower()
+
+    mappings = {
         "vo": "vo",
         "rahmenvertrag": "rv",
         "tarif": "trf",
@@ -2790,87 +2737,100 @@ def konvertiereSDName(var_name: str, env_dict: dict):
         "bewegart": "bwa"
     }
 
-    if system in mapping:
-        env_dict[var_name] = mapping[system]
+    if system in mappings:
+        result = mappings[system]
     else:
-        _set_error(195, f"Unbekannte Stammdaten-Datenherkunft {system} !")
-        env_dict[var_name] = "???"
+        state.err_nr = 195
+        state.err_arg = f"Unbekannte Stammdaten-Datenherkunft {system_val} !"
+        result = "???"
 
-# Step 5: konvertiereAufbStufeXtra
-def konvertiereAufbStufeXtra(var_name: str, env_dict: dict):
-    if _has_error():
+    set_env_var(env, var_name, result)
+
+# Step 6: Define konvertiereAufbStufeXtra
+def konvertiereAufbStufeXtra(state: ValidationState, env: Dict[str, Any], var_name: str) -> None:
+    if state.err_nr != 0:
         return
 
     if not var_name:
-        _set_error(196, f"{MODUL_NAME} {MODUL_VERSION} konvertiereAufbStufeXtra")
+        state.err_nr = 196
+        state.err_arg = f"{MODUL_NAME} {MODUL_VERSION} konvertiereAufbStufeXtra"
         return
 
-    stufe = str(env_dict.get(var_name, "")).lower().strip()
-    
-    if stufe == "zusammenfuehrung":
-        env_dict[var_name] = "mrg"
-    elif stufe == "befuellung":
-        env_dict[var_name] = "fill"
-    else:
-        _set_error(195, f"Unbekannte Stufenangabe {stufe} !")
-        env_dict[var_name] = "???"
+    stufe_val = get_env_var(env, var_name)
+    if stufe_val is None:
+        stufe_val = ""
 
-# Step 6: pruefeSystemKennzahl
-def pruefeSystemKennzahl(system: str, kennzahl: str):
-    if _has_error():
+    stufe = str(stufe_val).lower()
+
+    if stufe == "zusammenfuehrung":
+        result = "mrg"
+    elif stufe == "befuellung":
+        result = "fill"
+    else:
+        state.err_nr = 195
+        state.err_arg = f"Unbekannte Stufenangabe {stufe_val} !"
+        result = "???"
+
+    set_env_var(env, var_name, result)
+
+# Step 7: Define pruefeSystemKennzahl
+def pruefeSystemKennzahl(state: ValidationState, system: str, kennzahl: str) -> None:
+    if state.err_nr != 0:
         return
 
     if not system or not kennzahl:
-        _set_error(196, f"{MODUL_NAME} {MODUL_VERSION} pruefeSystemKennzahl")
+        state.err_nr = 196
+        state.err_arg = f"{MODUL_NAME} {MODUL_VERSION} pruefeSystemKennzahl"
         return
 
-    err_arg = ""
+    err_arg_temp = ""
 
-    # Enforce logic compatibility matrix
-    if system != "nnv" and kennzahl in ["tvd", "lkl"]:
-        err_arg = f"Ungueltige Kombination {system} {kennzahl}"
+    if system != "nnv" and (kennzahl == "tvd" or kennzahl == "lkl"):
+        err_arg_temp = f"Ungueltige Kombination {system} {kennzahl}"
     elif system == "carmen":
-        if kennzahl in ["twe", "pln", "rst", "srs", "sgs", "ust", "mahn", "sg_rv", "sr_rv_dpps", "bwa"]:
-            err_arg = f"Ungueltige Kombination {system} {kennzahl}"
+        if kennzahl in {"twe", "pln", "rst", "srs", "sgs", "ust", "mahn", "sg_rv", "sr_rv_dpps", "bwa"}:
+            err_arg_temp = f"Ungueltige Kombination {system} {kennzahl}"
     elif system == "sap":
-        if kennzahl in ["zug", "abg", "abz", "bst", "twe", "pln", "gut", "auf", "rst", "tvd", "usk", "ust", "lkl", "loe", "rak", "ksd", "bwa"]:
-            err_arg = f"Ungueltige Kombination {system} {kennzahl}"
+        if kennzahl in {"zug", "abg", "abz", "bst", "twe", "pln", "gut", "auf", "rst", "tvd", "usk", "ust", "lkl", "loe", "rak", "ksd", "bwa"}:
+            err_arg_temp = f"Ungueltige Kombination {system} {kennzahl}"
     elif system == "dpps":
-        if kennzahl in ["twe", "pln", "loe", "rak", "srs", "sgs", "mahn", "sg_rv", "sr_rv_dpps"]:
-            err_arg = f"Ungueltige Kombination {system} {kennzahl}"
+        if kennzahl in {"twe", "pln", "loe", "rak", "srs", "sgs", "mahn", "sg_rv", "sr_rv_dpps"}:
+            err_arg_temp = f"Ungueltige Kombination {system} {kennzahl}"
     elif system == "ctel":
-        if kennzahl not in ["abg", "bst", "zug", "twe"]:
-            err_arg = f"Ungueltige Kombination {system} {kennzahl}"
+        if kennzahl not in {"abg", "bst", "zug", "twe"}:
+            err_arg_temp = f"Ungueltige Kombination {system} {kennzahl}"
     elif system == "xtra":
         if kennzahl != "rst":
-            err_arg = f"Ungueltige Kombination {system} {kennzahl}"
+            err_arg_temp = f"Ungueltige Kombination {system} {kennzahl}"
     elif system == "d1":
-        if kennzahl in ["gut", "auf", "loe", "rak", "sgs", "srs", "twe", "ksd", "mahn", "sg_rv", "sr_rv_dpps", "bwa"]:
-            err_arg = f"Ungueltige Kombination {system} {kennzahl}"
+        if kennzahl in {"gut", "auf", "loe", "rak", "sgs", "srs", "twe", "ksd", "mahn", "sg_rv", "sr_rv_dpps", "bwa"}:
+            err_arg_temp = f"Ungueltige Kombination {system} {kennzahl}"
     elif system == "nnv":
-        if kennzahl not in ["tvd", "lkl"]:
-            err_arg = f"Ungueltige Kombination {system} {kennzahl}"
+        if kennzahl not in {"tvd", "lkl"}:
+            err_arg_temp = f"Ungueltige Kombination {system} {kennzahl}"
     elif system == "dwh":
         if kennzahl != "mds":
-            err_arg = f"Ungueltige Kombination {system} {kennzahl}"
+            err_arg_temp = f"Ungueltige Kombination {system} {kennzahl}"
     elif system == "brunet":
-        if kennzahl not in ["d1n", "rub", "lmo"]:
-            err_arg = f"Ungueltige Kombination {system} {kennzahl}"
+        if kennzahl not in {"d1n", "rub", "lmo"}:
+            err_arg_temp = f"Ungueltige Kombination {system} {kennzahl}"
     elif system == "sigma":
-        allowed = ["nnk", "tvk", "glv", "gz", "zonek", "zonet", "nnkt", "trfa", "gtyp", "basisd", "natint", "glint"]
-        if kennzahl not in allowed:
-            err_arg = f"Ungueltige Kombination {system} {kennzahl}"
+        allowed_sigma = {"nnk", "tvk", "glv", "gz", "zonek", "zonet", "nnkt", "trfa", "gtyp", "basisd", "natint", "glint"}
+        if kennzahl not in allowed_sigma:
+            err_arg_temp = f"Ungueltige Kombination {system} {kennzahl}"
 
-    if err_arg:
-        _set_error(195, err_arg)
+    if err_arg_temp:
+        state.err_nr = 195
+        state.err_arg = err_arg_temp
 
-# Step 7: gibBereich
-def gibBereich(kennzahl: str, var_bereich_name: str, env_dict: dict):
-    if _has_error():
+# Step 8: Define gibBereich
+def gibBereich(state: ValidationState, env: Dict[str, Any], kennzahl: str, var_bereich: str) -> None:
+    if state.err_nr != 0:
         return
 
-    if not kennzahl or not var_bereich_name:
-        _set_error(196, f"{MODUL_NAME} {MODUL_VERSION} gibBereich")
+    if not kennzahl or not var_bereich:
+        state.err_nr = 196
+        state.err_arg = f"{MODUL_NAME} {MODUL_VERSION} gibBereich"
         return
 
     list_tn = {"abg", "abz", "bst", "pln", "twe", "zug", "loe", "rak"}
@@ -2891,19 +2851,21 @@ def gibBereich(kennzahl: str, var_bereich_name: str, env_dict: dict):
     elif kennzahl in list_md:
         my_bereich = "md"
 
-    if not my_bereich:
-        _set_error(196, f"{MODUL_NAME} {MODUL_VERSION} gibBereich - Kuerzel '{kennzahl}' unbekannt")
+    if my_bereich is None:
+        state.err_nr = 196
+        state.err_arg = f"{MODUL_NAME} {MODUL_VERSION} gibBereich - Kuerzel '{kennzahl}' unbekannt"
         return
 
-    env_dict[var_bereich_name] = my_bereich
+    set_env_var(env, var_bereich, my_bereich)
 
-# Step 8: gibIntervall
-def gibIntervall(kennzahl: str, var_intervall_name: str, env_dict: dict):
-    if _has_error():
+# Step 9: Define gibIntervall
+def gibIntervall(state: ValidationState, env: Dict[str, Any], kennzahl: str, var_intervall: str) -> None:
+    if state.err_nr != 0:
         return
 
-    if not kennzahl or not var_intervall_name:
-        _set_error(196, f"{MODUL_NAME} {MODUL_VERSION} gibIntervall")
+    if not kennzahl or not var_intervall:
+        state.err_nr = 196
+        state.err_arg = f"{MODUL_NAME} {MODUL_VERSION} gibIntervall"
         return
 
     list_t = {"abg", "abz", "twe", "zug", "gut", "auf", "rst", "ust", "usk", "rak", "loe", "srs", "sgs", "ksd", "mahn", "mds", "tvk", "sr_rv_dpps", "gtyp", "basisd", "bwa"}
@@ -2915,192 +2877,221 @@ def gibIntervall(kennzahl: str, var_intervall_name: str, env_dict: dict):
     elif kennzahl in list_m:
         my_intervall = "m"
 
-    if not my_intervall:
-        _set_error(196, f"{MODUL_NAME} {MODUL_VERSION} gibIntervall - Kuerzel '{kennzahl}' unbekannt")
+    if my_intervall is None:
+        state.err_nr = 196
+        state.err_arg = f"{MODUL_NAME} {MODUL_VERSION} gibIntervall - Kuerzel '{kennzahl}' unbekannt"
         return
 
-    env_dict[var_intervall_name] = my_intervall
+    set_env_var(env, var_intervall, my_intervall)
 
-# Step 9: pruefeZeitraum
-# # REVIEW-STRUCT: external utilities DWDate_Datum_Check, DWDate_Datum_LE are not supplied — behavior is simulated via Python datetime.
-def pruefeZeitraum(anfang: str, ende: str):
-    if _has_error():
+# Step 10: Define pruefeZeitraum
+def pruefeZeitraum(state: ValidationState, anfang: str, ende: str) -> None:
+    if state.err_nr != 0:
         return
 
     if not anfang or not ende:
-        _set_error(196, f"{MODUL_NAME} {MODUL_VERSION} pruefeZeitraum")
+        state.err_nr = 196
+        state.err_arg = f"{MODUL_NAME} {MODUL_VERSION} pruefeZeitraum"
         return
 
-    err_arg = ""
-    
-    # 1. Check Date formats (YYYYMMDD)
-    try:
-        dt_anfang = datetime.strptime(str(anfang), "%Y%m%d")
-    except ValueError:
-        err_arg = "Anfangsdatum entspricht nicht dem Format YYYYMMDD"
-        
-    try:
-        dt_ende = datetime.strptime(str(ende), "%Y%m%d")
-    except ValueError:
-        if not err_arg:
-            err_arg = "Endedatum entspricht nicht dem Format YYYYMMDD"
+    err_arg_temp = ""
 
-    # 2. Check logical chronological order
-    if not err_arg:
+    # # REVIEW-STRUCT: command [DWDate_Datum_Check] logic not supplied — mapped to native datetime verification
+    try:
+        dt_anfang = datetime.datetime.strptime(anfang, "%Y%m%d")
+    except ValueError:
+        err_arg_temp = "Anfangsdatum entspricht nicht dem Format YYYYMMDD"
+
+    try:
+        dt_ende = datetime.datetime.strptime(ende, "%Y%m%d")
+    except ValueError:
+        if not err_arg_temp:
+            err_arg_temp = "Endedatum entspricht nicht dem Format YYYYMMDD"
+
+    if not err_arg_temp:
+        # # REVIEW-STRUCT: command [DWDate_Datum_LE] logic not supplied — mapped to native date verification
         if dt_anfang > dt_ende:
-            err_arg = "Anfangsdatum ist nicht kleiner gleich Endedatum"
+            err_arg_temp = "Anfangsdatum ist nicht kleiner gleich Endedatum"
 
-    if err_arg:
-        _set_error(195, err_arg)
+    if err_arg_temp:
+        state.err_nr = 195
+        state.err_arg = err_arg_temp
 
-# Step 10: pruefeZahlPositiv
-def pruefeZahlPositiv(p_zahl: str, p_parameter_name: str):
+# Step 11: Define pruefeZahlPositiv
+def pruefeZahlPositiv(state: ValidationState, p_zahl: Any, p_parameter_name: str) -> None:
     try:
         val = int(p_zahl)
-        if val < 0:
-            _set_error(195, f"Parameter {p_parameter_name} muss groesser gleich 0 sein")
+        is_numeric = True
     except ValueError:
-        _set_error(195, f"Parameter {p_parameter_name} ist kein numerischer Wert")
+        try:
+            val = float(p_zahl)
+            is_numeric = True
+        except ValueError:
+            is_numeric = False
 
-# Step 11: pruefeZeitParameter
-def pruefeZeitParameter(p_anfangsdatum: str, p_endedatum: str, p_zeit_offset: str):
-    if _has_error():
+    if is_numeric:
+        if val < 0:
+            state.err_nr = 195
+            state.err_arg = f"Parameter {p_parameter_name} muss groesser gleich 0 sein"
+    else:
+        state.err_nr = 195
+        state.err_arg = f"Parameter {p_parameter_name} ist kein numerischer Wert"
+
+# Step 12: Define pruefeZeitParameter
+def pruefeZeitParameter(state: ValidationState, p_anfangsdatum: str, p_endedatum: str, p_zeit_offset: str) -> None:
+    if state.err_nr != 0:
         return
 
-    # Case 1: relative offset is set
-    if p_zeit_offset and p_zeit_offset.strip() != "":
-        if (not p_anfangsdatum or p_anfangsdatum.strip() == "") and (not p_endedatum or p_endedatum.strip() == ""):
-            pruefeZahlPositiv(p_zeit_offset, "Zeitspanne")
+    if p_zeit_offset and p_zeit_offset != "":
+        if (not p_anfangsdatum or p_anfangsdatum == "") and (not p_endedatum or p_endedatum == ""):
+            pruefeZahlPositiv(state, p_zeit_offset, "Zeitspanne")
             return
         else:
-            _set_error(195, "Es darf nur eine Zeitspanne oder beide Datumwerte gesetzt werden")
+            state.err_nr = 195
+            state.err_arg = "Es darf nur eine Zeitspanne oder beide Datumwerte gesetzt werden"
             return
     else:
-        # Case 2: relative offset is empty, check absolute dates
-        if p_anfangsdatum and p_endedatum:
-            pruefeZeitraum(p_anfangsdatum, p_endedatum)
+        if p_anfangsdatum and p_anfangsdatum != "" and p_endedatum and p_endedatum != "":
+            pruefeZeitraum(state, p_anfangsdatum, p_endedatum)
         else:
-            if not p_anfangsdatum and not p_endedatum:
-                _set_error(195, "Datumswerte oder Zeitspanne fehlen")
+            state.err_nr = 195
+            if (not p_anfangsdatum or p_anfangsdatum == "") and (not p_endedatum or p_endedatum == ""):
+                state.err_arg = "Datumswerte oder Zeitspanne fehlen"
             else:
-                _set_error(195, "Sowohl Anfang- als auch Endedatum muessen angegeben werden")
+                state.err_arg = "Sowohl Anfang- als auch Endedatum muessen angegeben werden"
             return
 
-# Step 12: konvertiereZeitspanne
-# # REVIEW-STRUCT: external utility DWDate_Gib_Zeitraum is not supplied — behavior is simulated via Python relativedelta.
-def konvertiereZeitspanne(p_var_anfang: str, p_var_ende: str, p_spanne: str, p_kennzahl: str, env_dict: dict):
-    if _has_error():
+# Step 13: Define konvertiereZeitspanne
+def konvertiereZeitspanne(state: ValidationState, env: Dict[str, Any], p_var_anfang: str, p_var_ende: str, p_spanne: Any, p_kennzahl: str) -> None:
+    if state.err_nr != 0:
         return
 
-    # Determine offset unit
     offset_unit = "D"
     if p_kennzahl == "bst":
         offset_unit = "M"
 
+    # # REVIEW-STRUCT: command [DWDate_Gib_Zeitraum] logic not supplied — mapped to relative datetime offsets
+    # Base running date defaults to today unless specified in context dictionary.
+    run_date_str = env.get("RUN_DATE", datetime.date.today().strftime("%Y%m%d"))
     try:
-        span_val = int(p_spanne)
-        today = datetime.now()  # Typically base is current date
-        
-        # Calculate start/end based on dynamic parameters
-        if offset_unit == "D":
-            dt_anfang = today - relativedelta(days=span_val)
-            dt_ende = today
-        else:  # Monthly granularity
-            dt_anfang = today - relativedelta(months=span_val)
-            dt_ende = today
-            
-        env_dict[p_var_anfang] = dt_anfang.strftime("%Y%m%d")
-        env_dict[p_var_ende] = dt_ende.strftime("%Y%m%d")
-    except Exception as e:
-        _set_error(85, "DWDate_Gib_Zeitraum failed")
+        run_date = datetime.datetime.strptime(run_date_str, "%Y%m%d").date()
+    except ValueError:
+        state.err_nr = 85
+        state.err_arg = "DWDate_Gib_Zeitraum"
+        return
+
+    try:
+        span_int = int(p_spanne)
+    except ValueError:
+        state.err_nr = 85
+        state.err_arg = "DWDate_Gib_Zeitraum"
+        return
+
+    if offset_unit == "D":
+        ende_date = run_date
+        anfang_date = run_date - datetime.timedelta(days=span_int)
+    else:
+        # Perform month delta manipulation logic natively
+        ende_date = run_date
+        year_shift = span_int // 12
+        month_shift = span_int % 12
+        new_month = run_date.month - month_shift
+        new_year = run_date.year - year_shift
+        if new_month <= 0:
+            new_month += 12
+            new_year -= 1
+        try:
+            anfang_date = datetime.date(new_year, new_month, run_date.day)
+        except ValueError:
+            # Realign for end-of-month boundaries (e.g. Feb 30th -> Feb 28th)
+            if new_month == 12:
+                next_month_date = datetime.date(new_year + 1, 1, 1)
+            else:
+                next_month_date = datetime.date(new_year, new_month + 1, 1)
+            anfang_date = next_month_date - datetime.timedelta(days=1)
+
+    set_env_var(env, p_var_anfang, anfang_date.strftime("%Y%m%d"))
+    set_env_var(env, p_var_ende, ende_date.strftime("%Y%m%d"))
 ```
 
-### File Disposition
+### File Disposition Table
 
 | Source File Path | Target File / Action | Purpose / Reason for Action |
 | :--- | :--- | :--- |
-| `vobs/dw_source/isrpt/isbert/SQL/aktuell/allgemein/is/util/bin/h_alis_parameter.ksh` | `vobs/dw_source/isrpt/isbert/SQL/aktuell/allgemein/is/util/bin/h_alis_parameter.py` | Converts the KornShell utility library containing parameter validation, string mapping, system normalization, and date check functions into a reusable Python module. |
+| `vobs/dw_source/isrpt/isbert/SQL/aktuell/allgemein/is/util/bin/h_alis_parameter.ksh` | `vobs/dw_source/isrpt/isbert/SQL/aktuell/allgemein/is/util/bin/h_alis_parameter.py` | KornShell parameters utility library converted to a native Python module containing reusable helper functions for mapping, validation, and date calculations. |
 
 ---
 
-### Job Dependencies
-The following downstream jobs consume this utility script (sourced in legacy KSH) and are not yet migrated. The wiring of these dependencies cannot be finalized until the downstream jobs themselves are migrated to the target environment:
-* **DW.BERT_ABLAUFSTEUERUNG** — *not yet migrated*
-* **DW.BERT_AUSD_BP_TA_MSISDN** — *not yet migrated*
-* **DW.BERT_AUSD_BP_TA_P_BASISPROD** — *not yet migrated*
-* **DW.BERT_AUSD_V_TA_PERIOD** — *not yet migrated*
-* **DW.BERT_AUSD_V_TA_P_VERTRAG** — *not yet migrated*
-* **DW.BERT_AUSD_V_TA_VERTRAG_TMP** — *not yet migrated*
-* **DW.BERT_DROP_TEMP_TABLE** — *not yet migrated*
-* **DW.BERT_P_ADRESSEN** — *not yet migrated*
-* **DW.BERT_P_AUSTAUSCH** — *not yet migrated*
-* **DW.BERT_P_GESCHAEFTSP** — *not yet migrated*
-* **DW.BERT_P_RECH_EMPF** — *not yet migrated*
-* **DW.BERT_RECHNUNGSDATEN** — *not yet migrated*
-
-*On the target platform (Cloud Composer / Python), downstream Python modules or Airflow DAG operators will import this migrated Python library (`h_alis_parameter.py`) instead of sourcing a shell script.*
+### Job dependencies
+The script `h_alis_parameter.ksh` serves as a shared library module that is sourced by downstream tasks to set execution states, map key variables, and validate date arguments. The following downstream jobs consume its outputs:
+* **DW.BERT_ABLAUFSTEUERUNG** *(not yet migrated)* — Will import `h_alis_parameter.py` to validate step execution inputs.
+* **DW.BERT_AUSD_BP_TA_MSISDN** *(not yet migrated)* — Will import `h_alis_parameter.py` to resolve and parse input parameters.
+* **DW.BERT_AUSD_BP_TA_P_BASISPROD** *(not yet migrated)* — Will import `h_alis_parameter.py` to process temporal arguments.
+* **DW.BERT_AUSD_V_TA_PERIOD** *(not yet migrated)* — Will import `h_alis_parameter.py` to handle date ranges.
+* **DW.BERT_AUSD_V_TA_P_VERTRAG** *(not yet migrated)* — Will import `h_alis_parameter.py` to validate source parameters.
+* **DW.BERT_AUSD_V_TA_VERTRAG_TMP** *(not yet migrated)* — Will import `h_alis_parameter.py` to evaluate run-time context configurations.
+* **DW.BERT_DROP_TEMP_TABLE** *(not yet migrated)* — Will import `h_alis_parameter.py` to determine schema contexts.
+* **DW.BERT_P_ADRESSEN** *(not yet migrated)* — Will import `h_alis_parameter.py` to check standard arguments.
+* **DW.BERT_P_AUSTAUSCH** *(not yet migrated)* — Will import `h_alis_parameter.py` to validate system codes.
+* **DW.BERT_P_GESCHAEFTSP** *(not yet migrated)* — Will import `h_alis_parameter.py` to align run boundaries.
+* **DW.BERT_P_RECH_EMPF** *(not yet migrated)* — Will import `h_alis_parameter.py` to check financial key-figure arguments.
+* **DW.BERT_RECHNUNGSDATEN** *(not yet migrated)* — Will import `h_alis_parameter.py` to perform date sequence checks.
 
 ---
 
-### Schedule & Variables — Must Be Retained
-* **Scheduling**: This job is **not** directly triggered by any of the environment's schedulers. It runs strictly as an include/shared module inside other scheduled tasks. Therefore, the migrated artifact **must not** be given its own standalone schedule; it must remain a callable, importable Python library.
-* **Sourced Variables**: 
-  * `ErrNr` (Integer): Tracked as a global variable in the legacy script, indicating error state.
-  * `ErrArg` (String): Tracked globally, providing context for the recorded `ErrNr`.
-  * *In Python, this stateful environment tracking should be encapsulated via a standard object context or managed using native Python custom exception structures.*
+### Scheduling
+* **Standalone Schedule:** This job is NOT directly triggered by any scheduler. It executes as an internal library loaded dynamically by other scheduled jobs. On Cloud Composer / BigQuery, it must remain an importable, non-executable Python helper module packaged or placed in the shared Python path (e.g. within the `/dags` directory or Python environment of Composer).
 
 ---
 
-### Lineage
-* **Upstream Producers**: None discovered.
-* **Downstream Consumers**: See the downstream jobs listed under "Job Dependencies".
+### Schedule & variables
+* **Schedule Linkage:** Inherits the schedules and environment states of importing jobs.
+* **Inherited/Run-time Variables:**
+  * `RUN_DATE`: Used as the base execution date for relative rolling calculation logic (replacing legacy system datetime utilities). Sourced globally from the calling Airflow DAG's context using `{{ ds }}`.
 
 ---
 
-### External System Replacements
-The legacy script makes calls to custom, external command-line data warehouse utilities. These must be replaced with native, platform-compatible Python components:
-* **`DWDate_Datum_Check`**: Validates date formats. Replace with native Python parsing: `datetime.strptime(date_string, "%Y%m%d")`.
-* **`DWDate_Datum_LE`**: Chronological order verification. Replace with native Python date comparison operators (`<=`).
-* **`DWDate_Gib_Zeitraum`**: Computes relative start and end dates. Replace with standard calculations using Python's `datetime` module and `dateutil.relativedelta.relativedelta`.
+### External system replacements
+* **Legacy Shell Date Helpers:** The external validation commands `DWDate_Datum_Check`, `DWDate_Datum_LE`, and `DWDate_Gib_Zeitraum` must be replaced with native Python standard libraries (`datetime` and `dateutil.relativedelta`) inside the migrated Python utility module to calculate days and months relative offsets.
 
 ---
 
-### Cross-File Dependencies
-This script is a shared module. Any other shell script in the environment that sources this library via `. h_alis_parameter.ksh` must be updated to import the migrated Python module:
-```python
-import h_alis_parameter
-```
+### Cross-file dependencies
+* **Translation Mappings:** Serves as the authoritative validator module mapping legacy German key-figure names (e.g., `"restguthaben"`, `"abgang_zukunft"`) to standardized database abbreviations (`"rst"`, `"abz"`).
+* **System Constraints:** Implements the matrix logic (`pruefeSystemKennzahl`) which ensures invalid configurations are detected and blocked before triggering transformation workloads.
 
 ---
 
-### Target File Plan
-
-* **Target File Path**: `vobs/dw_source/isrpt/isbert/SQL/aktuell/allgemein/is/util/bin/h_alis_parameter.py`
-  * **Language**: Python (`.py`)
-  * **Source File**: `vobs/dw_source/isrpt/isbert/SQL/aktuell/allgemein/is/util/bin/h_alis_parameter.ksh`
-  * **Purpose**: Houses the rewritten functions (`pruefeParameterGesetzt`, `konvertiereKennzahl`, `konvertiereSystem`, `konvertiereSDName`, `konvertiereAufbStufeXtra`, `pruefeSystemKennzahl`, `gibBereich`, `gibIntervall`, `pruefeZeitraum`, `pruefeZahlPositiv`, `pruefeZeitParameter`, `konvertiereZeitspanne`) as standard Python functions, utilizing a class or dynamic dict context to manage error status without polluting global operating system scopes.
-
----
-
-### Environment-Specific Values
-
-The script relies on internal constants that are job-specific rather than global platform properties:
-* **`MODUL_NAME`** (JOB-SPECIFIC): Defined as `"alis_parameter"`.
-* **`MODUL_VERSION`** (JOB-SPECIFIC): Defined as `"V3.0.9"`.
+### Target file plan
+* **`vobs/dw_source/isrpt/isbert/SQL/aktuell/allgemein/is/util/bin/h_alis_parameter.py`**
+  * **Language:** Python 3.x
+  * **Source File:** `vobs/dw_source/isrpt/isbert/SQL/aktuell/allgemein/is/util/bin/h_alis_parameter.ksh`
+  * **Purpose:** Implements equivalent modular helper functions (`pruefeParameterGesetzt`, `konvertiereKennzahl`, `konvertiereSystem`, `konvertiereSDName`, `konvertiereAufbStufeXtra`, `pruefeSystemKennzahl`, `gibBereich`, `gibIntervall`, `pruefeZeitraum`, `pruefeZahlPositiv`, `pruefeZeitParameter`, `konvertiereZeitspanne`) utilizing Python types, exceptions, and dictionaries.
 
 ---
 
-### Risks and Manual Steps
+### Environment-specific values
+* **`ModulName`**: JOB-SPECIFIC — `"alis_parameter"` (constant inside Python library module).
+* **`ModulVersion`**: JOB-SPECIFIC — `"V3.0.9"` (constant inside Python library module).
+* **`RUN_DATE`**: GLOBAL — Airflow DAG runtime context parameters (`{{ ds }}`) passed dynamically from the importing operator.
 
-1. **Unmigrated Downstream Wiring**:
-   * *Risk*: The wiring for all 12 downstream consumers (`DW.BERT_ABLAUFSTEUERUNG`, `DW.BERT_AUSD_BP_TA_MSISDN`, `DW.BERT_AUSD_BP_TA_P_BASISPROD`, `DW.BERT_AUSD_V_TA_PERIOD`, `DW.BERT_AUSD_V_TA_P_VERTRAG`, `DW.BERT_AUSD_V_TA_VERTRAG_TMP`, `DW.BERT_DROP_TEMP_TABLE`, `DW.BERT_P_ADRESSEN`, `DW.BERT_P_AUSTAUSCH`, `DW.BERT_P_GESCHAEFTSP`, `DW.BERT_P_RECH_EMPF`, `DW.BERT_RECHNUNGSDATEN`) cannot be finalized yet.
-   * *Mitigation*: These downstream targets are currently not yet migrated. The integration of this parameter validation library must be tested step-by-step as each consumer is migrated to Cloud Composer.
-2. **Transition from Shell Environments to Python Modules**:
-   * *Risk*: Downstream scripts currently source this file to mutate parent-shell environment variables via `eval`. Python imports do not natively mutate the calling process's global environment in this manner.
-   * *Mitigation*: Migrated calling processes should pass a parameter dictionary to these helper functions to be explicitly mutated, or receive returned dictionaries/tuples containing the normalized parameters.
-3. **Behavioral Testing of Proprietary Binaries**:
-   * *Risk*: Since the source code of the external utilities `DWDate_Datum_Check`, `DWDate_Datum_LE`, and `DWDate_Gib_Zeitraum` is not supplied, native Python simulation carries risk of edge-case discrepancies (e.g. leap years, format constraints).
-   * *Mitigation*: Implement robust unit testing around the Python replacements of these three modules to guarantee functional parity with the original tools.
+---
+
+### Risks and manual steps
+* **WIRING: NOT FINALIZED — DW.BERT_ABLAUFSTEUERUNG — not yet migrated**
+* **WIRING: NOT FINALIZED — DW.BERT_AUSD_BP_TA_MSISDN — not yet migrated**
+* **WIRING: NOT FINALIZED — DW.BERT_AUSD_BP_TA_P_BASISPROD — not yet migrated**
+* **WIRING: NOT FINALIZED — DW.BERT_AUSD_V_TA_PERIOD — not yet migrated**
+* **WIRING: NOT FINALIZED — DW.BERT_AUSD_V_TA_P_VERTRAG — not yet migrated**
+* **WIRING: NOT FINALIZED — DW.BERT_AUSD_V_TA_VERTRAG_TMP — not yet migrated**
+* **WIRING: NOT FINALIZED — DW.BERT_DROP_TEMP_TABLE — not yet migrated**
+* **WIRING: NOT FINALIZED — DW.BERT_P_ADRESSEN — not yet migrated**
+* **WIRING: NOT FINALIZED — DW.BERT_P_AUSTAUSCH — not yet migrated**
+* **WIRING: NOT FINALIZED — DW.BERT_P_GESCHAEFTSP — not yet migrated**
+* **WIRING: NOT FINALIZED — DW.BERT_P_RECH_EMPF — not yet migrated**
+* **WIRING: NOT FINALIZED — DW.BERT_RECHNUNGSDATEN — not yet migrated**
+* **DEPENDENCY: UTILITIES NOT FOUND — DWDate_Datum_Check, DWDate_Datum_LE, DWDate_Gib_Zeitraum — no source files available**
+  * *Manual Risk:* The behavior of these date routines is modeled using native Python datetime libraries based on standard validation semantics. A developer must verify that the underlying calculations match the legacy binaries exactly.
 
 ---
 
@@ -3182,143 +3173,144 @@ starteSQLSkript(){
 
 === CONVERSION VERDICT ===
 VERDICT: PYTHON
-REASON: The script defines a custom shell function that performs file system checks, argument validation, external error logging, and wraps SQL*Plus execution, which requires a Python conversion.
+REASON: The script defines a reusable KornShell utility function with parameter validation, file-readability checks, and error logging to wrap Oracle SQL*Plus subprocess invocations.
 
 EVIDENCE
-- Business logic found: KSH custom logic defines a utility function `starteSQLSkript` that checks if the script is readable, validates inputs, logs metadata, and executes SQL*Plus.
+- Business logic found: KSH custom logic. The script defines a helper function `starteSQLSkript` to validate parameters, check file readability, log execution details, and launch `sqlplus`.
 - AWK: none
-- SQL-expressible: no, it consists of shell-specific file checks, parameter shifting, and running SQL*Plus.
-- Non-SQL side effects: checks physical file availability on disk, runs the external program `sqlplus`, and calls the external command `DWMSG_MeldeFehler`.
-- Against this verdict: none, as this is a utility shell function wrapping shell-level orchestration of SQL execution.
+- SQL-expressible: no (the script is a shell utility function designed to invoke external command-line programs, which cannot be expressed inside a SQL script).
+- Non-SQL side effects: Verifies filesystem file readability, invokes the external `sqlplus` executable, and calls a custom external error-messaging utility `DWMSG_MeldeFehler`.
+- Against this verdict: none (it is a pure shell utility wrapper library).
 
 =======================================================================================
 PART A — PYTHON DESIGN DOCUMENT
 =======================================================================================
 
-### 1. SCRIPT OVERVIEW
-This script acts as a KornShell helper/utility module (`h_alis_sqlplus.ksh`) that defines a reusable function `starteSQLSkript`. The function's purpose is to safely launch SQL*Plus scripts by adding pre-execution checks. It validates that required arguments are present and verifies that the target SQL script file exists and is readable on the filesystem before passing it to `sqlplus`. If validations fail, it calls an external error reporting utility `DWMSG_MeldeFehler` with specific error codes.
+1. SCRIPT OVERVIEW
+   The `h_alis_sqlplus.ksh` script is a utility library providing helper functions for executing Oracle SQL*Plus scripts within a Data Warehouse environment. Specifically, it defines the function `starteSQLSkript` which ensures robust parameters are provided and the target SQL file exists and is readable. It then safely executes SQL*Plus with the appropriate database credentials and passes through any extra script parameters, tracking and propagating execution status.
 
-### 2. INVOCATION CONTEXT
-- **Caller**: This helper script is sourced (`. h_alis_sqlplus.ksh`) by other ETL scripts to make the `starteSQLSkript` function available in their shell environments. The specific calling UC4 job or UNIX command line is not provided in this snippet.
-- **UC4 Includes**: None referenced in the provided text.
-- **Environment Files Sourced**: None sourced directly in this script. However, it relies on the environment variable `DW_ORAUSER` being exported by the calling session.
+2. INVOCATION CONTEXT
+   - Who calls this script: Sourced by other Data Warehouse orchestration scripts (`. h_alis_sqlplus.ksh`) when they need to run SQL files via SQL*Plus.
+   - UC4 Native Includes: None.
+   - Environment files sourced: None.
 
-### 3. PARAMETERS / INPUTS
-The function `starteSQLSkript` accepts the following parameters:
-- **`$1` (p_Eintragsnr)**: Error entry number (Fehlereintragsnummer) used for logging. Passed as the first positional parameter. Map to Python as the first argument of the function (`entry_nr`). Used in script: Yes.
-- **`$2` (p_Skript)**: Path of the SQL script to be executed. Passed as the second positional parameter. Map to Python as the second argument of the function (`script_path`). Used in script: Yes.
-- **`$*` (Remaining parameters)**: Arguments that should be forwarded to the SQL script itself. Sourced via shell parameter expansion after shifting. Map to Python as a variable argument list (`*script_args`). Used in script: Yes.
-- **`DW_ORAUSER`**: Environment variable containing the database connection credentials/string. Map to Python as `os.environ.get("DW_ORAUSER")`. Used in script: Yes.
-- **`ModulName` / `ModulVersion`**: Internal variables defining module metadata (`alis_sqlplus`, `V1.1.3`). 
-  - *# REVIEW: Potential bug found in legacy script.* The script defines `ModulName` and `ModulVersion` but tries to read `Modul_Name` and `Modul_Version` (with underscores) in the error reporting step. This will result in empty strings in the generated error log. The Python code should resolve this mismatch by using the correct, unified variables.
+3. PARAMETERS / INPUTS
+   - `p_Eintragsnr` ($1 inside `starteSQLSkript`): Error entry number used when reporting issues via the custom `DWMSG_MeldeFehler` script. Surfaces in Python as the first parameter of the function.
+   - `p_Skript` ($2 inside `starteSQLSkript`): Path to the SQL file to be executed. Surfaces in Python as the second parameter of the function.
+   - SQL arguments (`$*` after `shift 2`): Positional arguments forwarded directly to the SQL*Plus script. Surfaces in Python as variable positional arguments (`*args`).
+   - `DW_ORAUSER` (environment variable): Contains the database connection string and credentials used by SQL*Plus. Surfaced in Python via `os.environ.get("DW_ORAUSER")`.
+   - Cross-referenced environment parameters from companion metadata (if applicable): None.
 
-### 4. EXTERNAL COMMANDS / PROGRAMS INVOKED
-- **`DWMSG_MeldeFehler`**:
-  - *Exact Command*: `DWMSG_MeldeFehler $p_Eintragsnr E 196 "${Modul_Name} ${Modul_Version} starteSQLSkript"` or `DWMSG_MeldeFehler $p_Eintragsnr E 201 $p_Skript`
-  - *Purpose*: Custom external message/error reporting tool.
-  - *Translation*: Must be executed as an external process.
-  - *Resolvable Launcher*: No.
-  - *Marker*: `# REVIEW-STRUCT: launcher [DWMSG_MeldeFehler] invoked — internal behaviour not available in this extraction; confirm logging, error propagation, and credential handling before finalizing the conversion`
-- **`sqlplus`**:
-  - *Exact Command*: `sqlplus ${DW_ORAUSER} @$p_Skript $* </dev/null`
-  - *Purpose*: Runs the SQL script on the Oracle database with redirected `/dev/null` standard input.
-  - *Translation*: Invoke via Python's `subprocess.run` to handle argument forwarding and `/dev/null` redirection.
-  - *Resolvable Launcher*: No, because the SQL script file run by the utility is dynamic, and the target SQL code is not included in this extraction.
+4. EXTERNAL COMMANDS / PROGRAMS INVOKED
+   - `sqlplus ${DW_ORAUSER} @$p_Skript $* </dev/null`
+     - Purpose: Invokes Oracle SQL*Plus to execute the specified SQL script using `/dev/null` to prevent SQL*Plus from hanging on interactive user input.
+     - Execution model: Must remain an external process invocation via `subprocess.run` as it relies on a specific local installation of SQL*Plus and its CLI formatting behavior.
+     - Resolvable Launcher check: Not a resolvable launcher here because the utility's purpose is to launch arbitrary file paths passed in dynamically, rather than wrapping a single static SQL file.
+   - `DWMSG_MeldeFehler`
+     - Purpose: External custom logging/monitoring executable called to log errors in the event of missing parameters or unreadable files.
+     - Execution model: External process invocation via `subprocess.run` or Python wrapper.
+     - # REVIEW-STRUCT: launcher [DWMSG_MeldeFehler] invoked — internal behaviour not available in this extraction; confirm logging, error propagation, and credential handling before finalizing the conversion.
 
-### 5. EMBEDDED SQL
-No static SQL is embedded in this wrapper script itself. The SQL is dynamic and resides in the file path passed to the wrapper via `$p_Skript`.
-- *Dialect Identification*: Oracle SQL*Plus dialect is confirmed due to the direct invocation of the `sqlplus` executable and the use of the `@` script prefix.
+5. EMBEDDED SQL
+   - No embedded SQL is defined directly in this helper script. The SQL text resides in external files passed via the `p_Skript` argument.
 
-### 6. CONTROL FLOW
-1. **Initialize Module Metadata**: Declare module-level tracking variables (`ModulName` and `ModulVersion`).
-2. **Define `starteSQLSkript`**: Establish the entry point and capture arguments.
-3. **Validate Inputs**:
-   - Verify that `$p_Eintragsnr` and `$p_Skript` are not empty.
-   - If either is empty, call `DWMSG_MeldeFehler` with code `196` and return `196`.
-4. **Verify File Readability**:
-   - Check if `$p_Skript` exists and has read permissions.
-   - If not readable, call `DWMSG_MeldeFehler` with code `201` and return `201`.
-5. **Log Execution Details**: Print script name and arguments to standard output.
-6. **Disable Exit-on-Error**: Execute `set +e` to prevent the wrapper script from terminating if the database script returns a non-zero exit code.
-7. **Execute Database Script**: Run `sqlplus` passing the connection string, script path, and forwarded arguments, with `/dev/null` piped to standard input.
-8. **Capture Exit Code**: Save the exit code of `sqlplus` into the `errcode` variable.
-9. **Re-enable Exit-on-Error**: Execute `set -e`.
-10. **Return Result**: Propagate `errcode` back to the caller.
+6. CONTROL FLOW
+   1. Set global shell variables `ModulName="alis_sqlplus"` and `ModulVersion="V1.1.3"`.
+   2. Define the function `starteSQLSkript()`.
+   3. Check if required parameters (`p_Eintragsnr` and `p_Skript`) are provided. If not, log a code `196` error using `DWMSG_MeldeFehler` and return `196`.
+   4. Check if the file `$p_Skript` is readable on the filesystem. If not, log a code `201` error using `DWMSG_MeldeFehler` and return `201`.
+   5. Output informative execution messages showing the script path and parameters.
+   6. Disable shell exit-on-error (`set +e`) to handle SQL*Plus failure manually.
+   7. Execute `sqlplus` feeding `/dev/null` to standard input.
+   8. Capture the execution exit code (`$?`) into the `errcode` variable.
+   9. Restore shell exit-on-error behavior (`set -e`).
+   10. Return the captured `errcode`.
 
-### 7. ERROR HANDLING & EXIT CODES
-- **Detection**: File tests `[ ! -r $p_Skript ]` and string length checks `[ -z ... ]` are used for pre-checks. The database execution result is captured using `$?`.
-- **Handling**: Validations yield hard-coded return values (`196`, `201`) and external alerts. Database errors are caught using `set +e` and directly propagated as return values.
-- **Python Mapping**: Map the function validations to Python exception raising (e.g., `ValueError`, `FileNotFoundError`) or return integer status codes to strictly preserve the interface signature if requested by caller modules. In Python, calling external binaries like `sqlplus` or `DWMSG_MeldeFehler` should handle `subprocess.CalledProcessError` properly.
+7. ERROR HANDLING & EXIT CODES
+   - Missing required inputs: Logs error code `196` via `DWMSG_MeldeFehler` and returns `196`.
+   - Unreadable SQL script file: Logs error code `201` via `DWMSG_MeldeFehler` and returns `201`.
+   - SQL*Plus execution error: Standard error trapping is disabled (`set +e`) around `sqlplus` to prevent immediate script termination. The exit code of `sqlplus` is captured and returned to the caller.
+   - Python mapping: The Python function will return the integer error/exit codes to match the signature of the legacy shell function. Standard system/validation exceptions can alternatively be handled.
 
-### 8. OUTPUTS / SIDE EFFECTS
-- Writes validation messages and log records to stdout.
-- Runs `sqlplus` which can read, insert, update, or delete data depending on the provided SQL script.
+8. OUTPUTS / SIDE EFFECTS
+   - Writes informational logs to standard output.
+   - DB alterations: Side-effects in the target database will depend entirely on the external SQL script executed.
 
-### 9. BUSINESS SUMMARY
-- Validates the existence and formatting of caller arguments before running SQL scripts.
-- Prevents database runtime hangs by ensuring the SQL script file is readable on the filesystem before beginning execution.
-- Configures SQL*Plus execution to run non-interactively by redirecting stdin to `/dev/null`.
-- Centralizes error reporting for failed SQL jobs by integrating with the `DWMSG_MeldeFehler` system.
-- Standardizes return codes so orchestration agents (like UC4) can detect execution failures downstream.
+9. BUSINESS SUMMARY
+   - Standardizes the launch process of SQL scripts in the Data Warehouse.
+   - Performs proactive file system validations to identify missing or unreadable script assets prior to database connection attempts, minimizing log noise.
+   - Ensures any failures inside SQL*Plus are safely captured and returned as exit codes to the orchestrator rather than causing silent script aborts or hangs.
 
----
-
-### PSEUDOCODE MULTI-LINE OUTLINE
+=======================================================================================
+PYTHON PSEUDOCODE
+=======================================================================================
 
 ```python
 import os
 import sys
-import shutil
 import subprocess
-from typing import List
+from pathlib import Path
 
-# Step 1: Initialize module metadata
-# REVIEW: The legacy script declared ModulName/ModulVersion but used Modul_Name/Modul_Version in DWMSG_MeldeFehler. 
-# We resolve this mismatch here by defining both with the same values.
+# Step 1: Initialize global module variables
 MODUL_NAME = "alis_sqlplus"
 MODUL_VERSION = "V1.1.3"
 
-# Step 2: Define the main utility function
-def starte_sql_skript(entry_nr: str, script_path: str, *script_args: str) -> int:
+# REVIEW-STRUCT: environment file / function DWMSG_MeldeFehler is not supplied. 
+# Implemented as a placeholder that executes the external CLI program.
+def dwmsg_melde_fehler(eintragsnr: str, msg_type: str, code: int, details: str) -> None:
+    try:
+        subprocess.run(
+            ["DWMSG_MeldeFehler", str(eintragsnr), msg_type, str(code), details],
+            check=True
+        )
+    except FileNotFoundError:
+        print(
+            f"[WARNING] DWMSG_MeldeFehler missing. Logged: {eintragsnr} {msg_type} {code} {details}", 
+            file=sys.stderr
+        )
+
+# Step 2: Define helper function to start SQL*Plus scripts safely
+def starte_sql_skript(p_eintragsnr: str, p_skript: str, *args: str) -> int:
     """
-    Python equivalent of the legacy 'starteSQLSkript' shell function.
-    Validates arguments and script file readability, then runs sqlplus.
+    Validates parameter inputs and file availability, then executes a SQL script via SQL*Plus.
+    Returns the integer exit code of the execution.
     """
-    # Step 3: Validate that required positional parameters are not empty
-    if not entry_nr or not script_path:
-        # REVIEW-STRUCT: launcher [DWMSG_MeldeFehler] invoked — internal behaviour not available in this extraction; confirm logging, error propagation, and credential handling before finalizing the conversion
-        error_msg = f"{MODUL_NAME} {MODUL_VERSION} starteSQLSkript"
-        subprocess.run(["DWMSG_MeldeFehler", entry_nr, "E", "196", error_msg], check=False)
+    
+    # Step 3: Validate input arguments
+    if not p_eintragsnr or not p_skript:
+        dwmsg_melde_fehler(
+            p_eintragsnr, 
+            "E", 
+            196, 
+            f"{MODUL_NAME} {MODUL_VERSION} starteSQLSkript"
+        )
         return 196
 
-    # Step 4: Validate that the SQL file exists and is readable
-    if not os.path.isfile(script_path) or not os.access(script_path, os.R_OK):
-        # REVIEW-STRUCT: launcher [DWMSG_MeldeFehler] invoked — internal behaviour not available in this extraction; confirm logging, error propagation, and credential handling before finalizing the conversion
-        subprocess.run(["DWMSG_MeldeFehler", entry_nr, "E", "201", script_path], check=False)
+    # Step 4: Validate script file readability
+    skript_path = Path(p_skript)
+    if not skript_path.exists() or not os.access(skript_path, os.R_OK):
+        dwmsg_melde_fehler(p_eintragsnr, "E", 201, str(p_skript))
         return 201
 
-    # Step 5: Log start details
+    # Step 5: Log execution details
     print("Rufe SQL*PLUS auf mit folgenden Einstellungen")
-    print(f"Sql*Plus-Skript : {script_path}")
-    print(f"Skript-Parameter: {' '.join(script_args)}")
+    print(f"Sql*Plus-Skript : {p_skript}")
+    print(f"Skript-Parameter: {' '.join(args)}")
 
-    # Step 6: Verify sqlplus executable is available on PATH
-    if shutil.which("sqlplus") is None:
-        raise RuntimeError("sqlplus executable not found in PATH")
+    # Step 6: Identify Oracle Connection String
+    # # REVIEW: target database platform is assumed to be Oracle because of sqlplus CLI invocation.
+    dw_orauser = os.environ.get("DW_ORAUSER")
+    if not dw_orauser:
+        print("[WARNING] Environment variable DW_ORAUSER is not set.", file=sys.stderr)
+        # We proceed to let sqlplus raise credentials errors if applicable
 
-    # Step 7: Resolve Oracle connection credentials
-    # REVIEW: Target database is Oracle as indicated by SQL*Plus usage. 
-    # Ensure DW_ORAUSER is defined in the execution environment.
-    ora_user = os.environ.get("DW_ORAUSER")
-    if not ora_user:
-        raise ValueError("Environment variable 'DW_ORAUSER' is not set.")
+    # Step 7: Prepare and run SQL*Plus CLI command
+    # Equivalent to sqlplus ${DW_ORAUSER} @$p_Skript $* </dev/null
+    cmd = ["sqlplus", dw_orauser if dw_orauser else "", f"@{p_skript}"] + list(args)
 
-    # Step 8: Execute sqlplus with redirected input from DEVNULL
-    # Equivalent to legacy: sqlplus ${DW_ORAUSER} @$p_Skript $* </dev/null
-    # Note: Using check=False and capturing exit status mirrors the legacy 'set +e' and '$?' behavior.
-    cmd = ["sqlplus", ora_user, f"@{script_path}"] + list(script_args)
-    
     try:
+        # Step 8: Execute subprocess with set +e equivalent (check=False)
+        # Passing subprocess.DEVNULL is equivalent to shell's </dev/null redirection
         result = subprocess.run(
             cmd,
             stdin=subprocess.DEVNULL,
@@ -3327,91 +3319,57 @@ def starte_sql_skript(entry_nr: str, script_path: str, *script_args: str) -> int
         )
         errcode = result.returncode
     except Exception as e:
-        print(f"Critical execution error during SQL*Plus invocation: {e}", file=sys.stderr)
-        errcode = 1  # Standard fallback error code
+        print(f"Fehler bei der Ausfuehrung von SQL*Plus: {e}", file=sys.stderr)
+        errcode = -1
 
-    # Step 9: Return database execution status code
+    # Step 9: Return exit status code
     return errcode
 ```
 
-### File Disposition
+# File Disposition
 
 | Source File Path | Target File / Action | Purpose / Reason for Action |
 | :--- | :--- | :--- |
-| `vobs/dw_source/isrpt/isbert/SQL/aktuell/allgemein/is/util/bin/h_alis_sqlplus.ksh` | `vobs/dw_source/isrpt/isbert/SQL/aktuell/allgemein/is/util/bin/h_alis_sqlplus.py` | Converts the legacy KornShell utility function `starteSQLSkript` into a reusable Python function, preserving the validation, output formatting, and error-handling flow. |
+| `vobs/dw_source/isrpt/isbert/SQL/aktuell/allgemein/is/util/bin/h_alis_sqlplus.ksh` | `vobs/dw_source/isrpt/isbert/SQL/aktuell/allgemein/is/util/bin/h_alis_sqlplus.py` | Converted to a Python module containing `starte_sql_skript` to perform validation, file checks, and launch process logic. |
 
----
+# Job Dependencies
+The following downstream jobs depend on this utility job to run SQL*Plus scripts:
+* `DW.BERT_ABLAUFSTEUERUNG` — not yet migrated
+* `DW.BERT_AUSD_BP_TA_MSISDN` — not yet migrated
+* `DW.BERT_AUSD_BP_TA_P_BASISPROD` — not yet migrated
+* `DW.BERT_AUSD_V_TA_PERIOD` — not yet migrated
+* `DW.BERT_AUSD_V_TA_P_VERTRAG` — not yet migrated
+* `DW.BERT_AUSD_V_TA_VERTRAG_TMP` — not yet migrated
+* `DW.BERT_DROP_TEMP_TABLE` — not yet migrated
+* `DW.BERT_P_ADRESSEN` — not yet migrated
+* `DW.BERT_P_AUSTAUSCH` — not yet migrated
+* `DW.BERT_P_GESCHAEFTSP` — not yet migrated
+* `DW.BERT_P_RECH_EMPF` — not yet migrated
+* `DW.BERT_RECHNUNGSDATEN` — not yet migrated
 
-### Target File Plan
+Because these upstream/downstream components are not yet migrated, the orchestration wiring cannot be finalized until they exist. Downstream Python DAGs/operators must eventually import this pythonic utility or directly invoke BigQuery SQL execution.
 
-* **Target File Path**: `vobs/dw_source/isrpt/isbert/SQL/aktuell/allgemein/is/util/bin/h_alis_sqlplus.py`
-  * **Language**: Python
-  * **Source File**: `vobs/dw_source/isrpt/isbert/SQL/aktuell/allgemein/is/util/bin/h_alis_sqlplus.ksh`
+# Scheduling
+This utility job is not directly triggered by any of the environment's schedulers. It is executed dynamically as an included or shared module inside scheduled downstream jobs. The migrated Python module must remain a callable/importable unit without its own standalone schedule.
 
----
+# External System Replacements
+* **Oracle SQL\*Plus:** Relies on the local `sqlplus` CLI. For the target BigQuery platform, execution of actual SQL queries should be replaced using the native BigQuery Python Client (`google.cloud.bigquery`) or Cloud Composer BigQuery operators (e.g., `BigQueryInsertJobOperator`), while retaining validation checks.
+* **Oracle Credentials (`DW_ORAUSER`):** Replaced with target GCP IAM permissions and Cloud Composer connection setups, eliminating the need to pass literal credentials via environment variables.
 
-### Job Dependencies
+# Cross-File Dependencies
+* **Dynamic Sourcing:** Sourced by multiple downstream shell scripts via `. h_alis_sqlplus.ksh`. In Python, this dependency will be handled via standard module import statements (`from vobs.dw_source.isrpt.isbert.SQL.aktuell.allgemein.is.util.bin.h_alis_sqlplus import starte_sql_skript`).
+* **SQL Scripts Location:** Downstream calling scripts will pass paths to target SQL files. Ensure folders containing the SQL assets are properly mounted, uploaded, or resolved in the target environment (e.g., inside the Composer DAGs/plugins folder or a GCS bucket).
 
-The following downstream jobs consume this utility script:
-* `DW.BERT_ABLAUFSTEUERUNG` — *not yet migrated*
-* `DW.BERT_AUSD_BP_TA_MSISDN` — *not yet migrated*
-* `DW.BERT_AUSD_BP_TA_P_BASISPROD` — *not yet migrated*
-* `DW.BERT_AUSD_V_TA_PERIOD` — *not yet migrated*
-* `DW.BERT_AUSD_V_TA_P_VERTRAG` — *not yet migrated*
-* `DW.BERT_AUSD_V_TA_VERTRAG_TMP` — *not yet migrated*
-* `DW.BERT_DROP_TEMP_TABLE` — *not yet migrated*
-* `DW.BERT_P_ADRESSEN` — *not yet migrated*
-* `DW.BERT_P_AUSTAUSCH` — *not yet migrated*
-* `DW.BERT_P_GESCHAEFTSP` — *not yet migrated*
-* `DW.BERT_P_RECH_EMPF` — *not yet migrated*
-* `DW.BERT_RECHNUNGSDATEN` — *not yet migrated*
+# Target File Plan
+* **Target File Path:** `vobs/dw_source/isrpt/isbert/SQL/aktuell/allgemein/is/util/bin/h_alis_sqlplus.py`
+  * **Language:** Python
+  * **Source File:** `vobs/dw_source/isrpt/isbert/SQL/aktuell/allgemein/is/util/bin/h_alis_sqlplus.ksh`
+  * **Purpose:** Provides a validated helper function `starte_sql_skript` to mirror the legacy shell function's interface and handle parameter validation, file-readability verification, and process orchestration.
 
-**Wiring on Target Platform**:
-Because this is a shared utility module (`h_alis_sqlplus.py`), it must be placed in a shared directory accessible to the Python environment of the execution environment (such as the `dags/` or `plugins/` directory of Cloud Composer/Airflow). Downstream jobs will access this function by importing the python module (`from is.util.bin.h_alis_sqlplus import starte_sql_skript`). 
+# Environment-Specific Values
+* `DW_ORAUSER` (GLOBAL): Legacy database username/credentials. In the BigQuery target, this maps to environment-wide metadata such as `GCP_PROJECT`, `BQ_DATASET`, and `BQ_LOCATION` which are loaded via `os.environ.get("GCP_PROJECT")` or Cloud Composer's configuration store `Variable.get("GCP_PROJECT")`.
 
----
-
-### Scheduling
-
-* **Trigger/Schedule**: This job is **NOT** directly scheduled. It acts purely as a shared include utility. It must remain an importable, callable Python library module without an independent standalone Airflow schedule.
-
----
-
-### Schedule & Variables
-
-* **Variables**:
-  * `DW_ORAUSER`: Legacy database connection configuration. In the target environment, this should map to GCP standard authentication (Application Default Credentials) or a designated Airflow Connection. If direct database authentication credentials are required for any transition phase, they must be resolved via **Airflow Variables** (`Variable.get("DW_ORAUSER")`) or **Google Cloud Secret Manager** rather than hardcoded environment variables.
-
----
-
-### External System Replacements
-
-* **Oracle SQL*Plus (`sqlplus`)**: The legacy utility script uses the native `sqlplus` CLI tool to execute Oracle scripts. Since the target platform is BigQuery, SQL files must eventually be converted to BigQuery SQL syntax and run using the **Google Cloud BigQuery Client Library** (e.g., `google.cloud.bigquery`) or the Airflow `BigQueryInsertJobOperator` instead of executing a subprocess command.
-* **`DWMSG_MeldeFehler`**: This custom error logging utility integrates with Oracle PL/SQL. In Google Cloud, this should be replaced by writing log messages using the **Google Cloud Logging** SDK or by inserting error logs into a dedicated BigQuery audit table.
-
----
-
-### Cross-File Dependencies
-
-* **Call Chain**: Any migrated script that previously utilized `. h_alis_sqlplus.ksh` to source these helper routines must be modified to use Python `import` statements to call the `starte_sql_skript` function.
-
----
-
-### Environment-Specific Values
-
-* **`DW_ORAUSER` (GLOBAL)**: Identifies the target database environment connection string. Sourced via `Variable.get("DW_ORAUSER")` (Airflow) or `os.environ.get("DW_ORAUSER")`.
-* **`ModulName` / `ModulVersion` (JOB-SPECIFIC)**: Specific utility module identifiers. Retained in the Python code as constant strings (`MODUL_NAME = "alis_sqlplus"`, `MODUL_VERSION = "V1.1.3"`).
-
----
-
-### Risks and Manual Steps
-
-* **Downstream Integration**: Every downstream consumer listed in the **Job Dependencies** section is currently **not yet migrated**. The integration and import chains cannot be fully tested or finalized until these dependent modules are migrated.
-* **`DWMSG_MeldeFehler` Behavior**: Because the source code for the custom `DWMSG_MeldeFehler` command is not provided, the logic for logging severity and codes must be manually aligned with the target system logging architecture during the implementation of the logging framework.
-* **Dialect Change (Oracle SQL*Plus to BigQuery)**: The helper function dynamically executes SQL scripts. Simply migrating the helper to Python does not convert the underlying Oracle SQL scripts. All scripts passed to this utility must be translated to BigQuery SQL dialect before execution.
-* **Output Literal Preservation**: German terminal output lines are printed during execution:
-  * `"Rufe SQL*PLUS auf mit folgenden Einstellungen"`
-  * `"Sql*Plus-Skript : "`
-  * `"Skript-Parameter: "`
-  
-  These exact literal strings must be preserved character-for-character in the target Python print/logging statements to ensure compatibility with any log-monitoring scripts.
+# Risks & Manual Steps
+* SOURCE: NOT FOUND — `DWMSG_MeldeFehler` — no candidate. The external error logging command `DWMSG_MeldeFehler` is used in the validation steps of `starteSQLSkript` but is not defined in this codebase. A placeholder or a native logging wrapper must be implemented manually by the build agent.
+* **SQL Dialect Transition:** While this utility manages script orchestration, the actual SQL scripts passed as parameters contain legacy Oracle dialect syntax and must be separately migrated to BigQuery Standard SQL.
+* **Module Import Rewrites:** All downstream KSH files migrated to Python must be refactored to import `h_alis_sqlplus.py` rather than attempting to source the legacy KornShell library.
