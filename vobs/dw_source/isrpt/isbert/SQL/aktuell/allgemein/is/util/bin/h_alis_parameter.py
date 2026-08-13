@@ -1,28 +1,35 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
 import os
 import sys
-import datetime
-import argparse
-import calendar
+from datetime import datetime, timedelta
 
-# ==============================================================================
-# Global Module Metadata & Legacy Error Tracking State
-# ==============================================================================
+# Zweck:
+#    Hilfsroutinen fuer das Parsen von Parametern
+# ModulName und Version entsprechend dem originalen KornShell-Skript
 ModulName = "alis_parameter"
 ModulVersion = "V3.0.9"
+
+# Globale Fehler-Variablen, die von den Funktionen modifiziert werden
 ErrNr = 0
 ErrArg = ""
 
-# ==============================================================================
-# Helper Functions
-# ==============================================================================
-
-def pruefeParameterGesetzt(param_name: str, param_var: str) -> None:
+def reset_error():
     """
-    Checks whether the specified environment variable is populated.
-    Sets global ErrNr/ErrArg if empty and no previous error is set.
+    Setzt den globalen Fehlerstatus zurueck.
     """
     global ErrNr, ErrArg
+    ErrNr = 0
+    ErrArg = ""
+
+def pruefeParameterGesetzt(param_name, param_var):
+    """
+    prueft, ob die uebergebene Environment-Variable einen Wert
+    beinhaltet.
+    """
+    global ErrNr, ErrArg
+
     if ErrNr != 0:
         return
 
@@ -32,29 +39,30 @@ def pruefeParameterGesetzt(param_name: str, param_var: str) -> None:
         return
 
     param_wert = os.environ.get(param_var)
+
     if not param_wert:
         ErrNr = 194
         ErrArg = param_name
 
-
-def konvertiereKennzahl(var_name: str) -> None:
+def konvertiereKennzahl(VarName):
     """
-    Converts verbose key figure term in environment variable to short abbreviation.
-    Modifies environment variable in-place.
+    konvertiert die Kennzahlbezeichnung basierend auf dem Namenskonzept
+    in eine gueltige Abkuerzung fuer Kennzahlen.
     """
     global ErrNr, ErrArg
+
     if ErrNr != 0:
         return
 
-    if not var_name:
+    if not VarName:
         ErrNr = 196
         ErrArg = f"{ModulName} {ModulVersion} konvertiereKennzahl"
         return
 
-    kennzahl_val = os.environ.get(var_name, "")
-    kennzahl = kennzahl_val.lower()
+    raw_val = os.environ.get(VarName, "")
+    Kennzahl = raw_val.lower()
 
-    mappings = {
+    mapping = {
         "zugang": "zug",
         "abgang": "abg",
         "abgang_zukunft": "abz",
@@ -95,60 +103,61 @@ def konvertiereKennzahl(var_name: str) -> None:
         "glaengenintervall": "glint"
     }
 
-    if kennzahl in mappings:
-        result = mappings[kennzahl]
+    if Kennzahl in mapping:
+        Kennzahl = mapping[Kennzahl]
     else:
         ErrNr = 198
-        ErrArg = kennzahl_val
-        result = "???"
+        ErrArg = raw_val
+        Kennzahl = "???"
 
-    os.environ[var_name] = result
+    os.environ[VarName] = Kennzahl
 
-
-def konvertiereSystem(var_name: str) -> None:
+def konvertiereSystem(VarName):
     """
-    Normalizes and validates source system in environment variable in-place.
+    konvertiert die Systembezeichnung basierend auf dem Namenskonzept
+    in eine gueltige Abkuerzung fuer Liefersysteme.
     """
     global ErrNr, ErrArg
+
     if ErrNr != 0:
         return
 
-    if not var_name:
+    if not VarName:
         ErrNr = 196
         ErrArg = f"{ModulName} {ModulVersion} konvertiereSystem"
         return
 
-    system_val = os.environ.get(var_name, "")
-    system = system_val.lower()
-    allowed_systems = {"sap", "carmen", "dpps", "d1", "xtra", "ctel", "nnv", "dwh", "brunet", "sigma"}
+    raw_val = os.environ.get(VarName, "")
+    System = raw_val.lower()
 
-    if system in allowed_systems:
-        result = system
-    else:
+    valid_systems = {"sap", "carmen", "dpps", "d1", "xtra", "ctel", "nnv", "dwh", "brunet", "sigma"}
+
+    if System not in valid_systems:
         ErrNr = 195
-        ErrArg = f"Unbekannte Datenherkunft {system_val} !"
-        result = "???"
+        ErrArg = f"Unbekannte Datenherkunft {System} !"
+        System = "???"
 
-    os.environ[var_name] = result
+    os.environ[VarName] = System
 
-
-def konvertiereSDName(var_name: str) -> None:
+def konvertiereSDName(VarName):
     """
-    Converts verbose master data category term in environment variable in-place.
+    konvertiert die Systembezeichnung basierend auf dem Namenskonzept
+    in eine gueltige Abkuerzung fuer Stammdaten-Liefersysteme.
     """
     global ErrNr, ErrArg
+
     if ErrNr != 0:
         return
 
-    if not var_name:
+    if not VarName:
         ErrNr = 196
         ErrArg = f"{ModulName} {ModulVersion} konvertiereSDSystem"
         return
 
-    system_val = os.environ.get(var_name, "")
-    system = system_val.lower()
+    raw_val = os.environ.get(VarName, "")
+    System = raw_val.lower()
 
-    mappings = {
+    mapping = {
         "vo": "vo",
         "rahmenvertrag": "rv",
         "tarif": "trf",
@@ -167,335 +176,344 @@ def konvertiereSDName(var_name: str) -> None:
         "bewegart": "bwa"
     }
 
-    if system in mappings:
-        result = mappings[system]
+    if System in mapping:
+        System = mapping[System]
+    elif System == "vo":
+        pass
     else:
         ErrNr = 195
-        ErrArg = f"Unbekannte Stammdaten-Datenherkunft {system_val} !"
-        result = "???"
+        ErrArg = f"Unbekannte Stammdaten-Datenherkunft {System} !"
+        System = "???"
 
-    os.environ[var_name] = result
+    os.environ[VarName] = System
 
-
-def konvertiereAufbStufeXtra(var_name: str) -> None:
+def konvertiereAufbStufeXtra(VarName):
     """
-    Converts Xtra stage names in environment variable in-place.
+    konvertiert die Aufbereitungsstufenname in eine normierte Abkuerzung.
     """
     global ErrNr, ErrArg
+
     if ErrNr != 0:
         return
 
-    if not var_name:
+    if not VarName:
         ErrNr = 196
         ErrArg = f"{ModulName} {ModulVersion} konvertiereAufbStufeXtra"
         return
 
-    stufe_val = os.environ.get(var_name, "")
-    stufe = stufe_val.lower()
+    raw_val = os.environ.get(VarName, "")
+    Stufe = raw_val.lower()
 
-    if stufe == "zusammenfuehrung":
-        result = "mrg"
-    elif stufe == "befuellung":
-        result = "fill"
+    if Stufe == "zusammenfuehrung":
+        Stufe = "mrg"
+    elif Stufe == "befuellung":
+        Stufe = "fill"
     else:
         ErrNr = 195
-        ErrArg = f"Unbekannte Stufenangabe {stufe_val} !"
-        result = "???"
+        ErrArg = f"Unbekannte Stufenangabe {Stufe} !"
+        Stufe = "???"
 
-    os.environ[var_name] = result
+    os.environ[VarName] = Stufe
 
-
-def pruefeSystemKennzahl(system: str, kennzahl: str) -> None:
+def pruefeSystemKennzahl(System, Kennzahl):
     """
-    Verifies if combination of source system and key figure is allowed.
+    prueft, ob die Kombination von System und Kennzahl erlaubt ist, d.h.
+    vom IS unterstuetzt wird.
     """
     global ErrNr, ErrArg
+
     if ErrNr != 0:
         return
 
-    if not system or not kennzahl:
+    if not System or not Kennzahl:
         ErrNr = 196
         ErrArg = f"{ModulName} {ModulVersion} pruefeSystemKennzahl"
         return
 
-    err_arg_temp = ""
+    local_err_arg = ""
 
-    if system != "nnv" and (kennzahl == "tvd" or kennzahl == "lkl"):
-        err_arg_temp = f"Ungueltige Kombination {system} {kennzahl}"
-    elif system == "carmen":
-        if kennzahl in {"twe", "pln", "rst", "srs", "sgs", "ust", "mahn", "sg_rv", "sr_rv_dpps", "bwa"}:
-            err_arg_temp = f"Ungueltige Kombination {system} {kennzahl}"
-    elif system == "sap":
-        if kennzahl in {"zug", "abg", "abz", "bst", "twe", "pln", "gut", "auf", "rst", "tvd", "usk", "ust", "lkl", "loe", "rak", "ksd", "bwa"}:
-            err_arg_temp = f"Ungueltige Kombination {system} {kennzahl}"
-    elif system == "dpps":
-        if kennzahl in {"twe", "pln", "loe", "rak", "srs", "sgs", "mahn", "sg_rv", "sr_rv_dpps"}:
-            err_arg_temp = f"Ungueltige Kombination {system} {kennzahl}"
-    elif system == "ctel":
-        if kennzahl not in {"abg", "bst", "zug", "twe"}:
-            err_arg_temp = f"Ungueltige Kombination {system} {kennzahl}"
-    elif system == "xtra":
-        if kennzahl != "rst":
-            err_arg_temp = f"Ungueltige Kombination {system} {kennzahl}"
-    elif system == "d1":
-        if kennzahl in {"gut", "auf", "loe", "rak", "sgs", "srs", "twe", "ksd", "mahn", "sg_rv", "sr_rv_dpps", "bwa"}:
-            err_arg_temp = f"Ungueltige Kombination {system} {kennzahl}"
-    elif system == "nnv":
-        if kennzahl not in {"tvd", "lkl"}:
-            err_arg_temp = f"Ungueltige Kombination {system} {kennzahl}"
-    elif system == "dwh":
-        if kennzahl != "mds":
-            err_arg_temp = f"Ungueltige Kombination {system} {kennzahl}"
-    elif system == "brunet":
-        if kennzahl not in {"d1n", "rub", "lmo"}:
-            err_arg_temp = f"Ungueltige Kombination {system} {kennzahl}"
-    elif system == "sigma":
-        allowed_sigma = {"nnk", "tvk", "glv", "gz", "zonek", "zonet", "nnkt", "trfa", "gtyp", "basisd", "natint", "glint"}
-        if kennzahl not in allowed_sigma:
-            err_arg_temp = f"Ungueltige Kombination {system} {kennzahl}"
+    if System != "nnv" and (Kennzahl == "tvd" or Kennzahl == "lkl"):
+        local_err_arg = f"Ungueltige Kombination {System} {Kennzahl}"
+    elif System == "carmen":
+        if Kennzahl in ["twe", "pln", "rst", "srs", "sgs", "ust", "mahn", "sg_rv", "sr_rv_dpps", "bwa"]:
+            local_err_arg = f"Ungueltige Kombination {System} {Kennzahl}"
+    elif System == "sap":
+        if Kennzahl in ["zug", "abg", "abz", "bst", "twe", "pln", "gut", "auf", "rst", "tvd", "usk", "ust", "lkl", "loe", "rak", "ksd", "bwa"]:
+            local_err_arg = f"Ungueltige Kombination {System} {Kennzahl}"
+    elif System == "dpps":
+        if Kennzahl in ["twe", "pln", "loe", "rak", "srs", "sgs", "mahn", "sg_rv", "sr_rv_dpps"]:
+            local_err_arg = f"Ungueltige Kombination {System} {Kennzahl}"
+    elif System == "ctel":
+        if Kennzahl not in ["abg", "bst", "zug", "twe"]:
+            local_err_arg = f"Ungueltige Kombination {System} {Kennzahl}"
+    elif System == "xtra":
+        if Kennzahl != "rst":
+            local_err_arg = f"Ungueltige Kombination {System} {Kennzahl}"
+    elif System == "d1":
+        if Kennzahl in ["gut", "auf", "loe", "rak", "sgs", "srs", "twe", "ksd", "mahn", "sg_rv", "sr_rv_dpps", "bwa"]:
+            local_err_arg = f"Ungueltige Kombination {System} {Kennzahl}"
+    elif System == "nnv":
+        if Kennzahl not in ["tvd", "lkl"]:
+            local_err_arg = f"Ungueltige Kombination {System} {Kennzahl}"
+    elif System == "dwh":
+        if Kennzahl != "mds":
+            local_err_arg = f"Ungueltige Kombination {System} {Kennzahl}"
+    elif System == "brunet":
+        if Kennzahl not in ["d1n", "rub", "lmo"]:
+            local_err_arg = f"Ungueltige Kombination {System} {Kennzahl}"
+    elif System == "sigma":
+        sigma_valid = [
+            "nnk", "tvk", "glv", "gz", "zonek", "zonet", "nnkt", "trfa",
+            "gtyp", "basisd", "natint", "glint"
+        ]
+        if Kennzahl not in sigma_valid:
+            local_err_arg = f"Ungueltige Kombination {System} {Kennzahl}"
 
-    if err_arg_temp:
+    if local_err_arg:
         ErrNr = 195
-        ErrArg = err_arg_temp
+        ErrArg = local_err_arg
 
-
-def gibBereich(kennzahl: str, var_bereich: str) -> None:
+def gibBereich(Kennzahl, VarBereich):
     """
-    Returns mapped business domain area based on key figure abbreviation.
-    Modifies environment variable in-place.
+    gibt in Abhaengigkeit zu einer Kennzahl/Eingangsgroesse den
+    entsprechenden Bereich aus.
     """
     global ErrNr, ErrArg
+
     if ErrNr != 0:
         return
 
-    if not kennzahl or not var_bereich:
+    if not Kennzahl or not VarBereich:
         ErrNr = 196
         ErrArg = f"{ModulName} {ModulVersion} gibBereich"
         return
 
-    list_tn = {"abg", "abz", "bst", "pln", "twe", "zug", "loe", "rak"}
-    list_us = {"gut", "rst", "auf", "ust", "usk", "srs", "sgs", "mahn", "sg_rv", "sr_rv_dpps"}
-    list_gd = {"tvd", "lkl", "d1n", "rub", "lmo", "nnk", "tvk", "gz", "glv", "zonek", "zonet", "nnkt", "trfa", "gtyp", "basisd", "natint", "glint"}
-    list_sd = {"ksd", "bwa"}
-    list_md = {"mds"}
+    list_tn = ["abg", "abz", "bst", "pln", "twe", "zug", "loe", "rak"]
+    list_us = ["gut", "rst", "auf", "ust", "usk", "srs", "sgs", "mahn", "sg_rv", "sr_rv_dpps"]
+    list_gd = ["tvd", "lkl", "d1n", "rub", "lmo", "nnk", "tvk", "gz", "glv", "zonek", "zonet", "nnkt", "trfa", "gtyp", "basisd", "natint", "glint"]
+    list_sd = ["ksd", "bwa"]
+    list_md = ["mds"]
 
-    my_bereich = None
-    if kennzahl in list_tn:
-        my_bereich = "tn"
-    elif kennzahl in list_us:
-        my_bereich = "us"
-    elif kennzahl in list_gd:
-        my_bereich = "gd"
-    elif kennzahl in list_sd:
-        my_bereich = "sd"
-    elif kennzahl in list_md:
-        my_bereich = "md"
+    my_Bereich = ""
+    if Kennzahl in list_tn:
+        my_Bereich = "tn"
+    elif Kennzahl in list_us:
+        my_Bereich = "us"
+    elif Kennzahl in list_gd:
+        my_Bereich = "gd"
+    elif Kennzahl in list_sd:
+        my_Bereich = "sd"
+    elif Kennzahl in list_md:
+        my_Bereich = "md"
 
-    if not my_bereich:
+    if not my_Bereich:
         ErrNr = 196
-        ErrArg = f"{ModulName} {ModulVersion} gibBereich - Kuerzel '{kennzahl}' unbekannt"
+        ErrArg = f"{ModulName} {ModulVersion} gibBereich - Kuerzel '{Kennzahl}' unbekannt"
         return
 
-    os.environ[var_bereich] = my_bereich
+    os.environ[VarBereich] = my_Bereich
 
-
-def gibIntervall(kennzahl: str, var_intervall: str) -> None:
+def gibIntervall(Kennzahl, VarIntervall):
     """
-    Returns mapped reporting frequency interval based on key figure.
-    Modifies environment variable in-place.
+    gibt in Abhaengigkeit zu einer Kennzahl/Eingangsgroesse das
+    entsprechenden Intervall (t,m) aus.
     """
     global ErrNr, ErrArg
+
     if ErrNr != 0:
         return
 
-    if not kennzahl or not var_intervall:
+    if not Kennzahl or not VarIntervall:
         ErrNr = 196
         ErrArg = f"{ModulName} {ModulVersion} gibIntervall"
         return
 
-    list_t = {"abg", "abz", "twe", "zug", "gut", "auf", "rst", "ust", "usk", "rak", "loe", "srs", "sgs", "ksd", "mahn", "mds", "tvk", "sr_rv_dpps", "gtyp", "basisd", "bwa"}
-    list_m = {"bst", "pln", "tvd", "lkl", "sg_rv", "d1n", "rub", "lmo", "nnk", "gz", "glv", "zonek", "zonet", "nnkt", "trfa", "natint", "glint"}
+    list_t = ["abg", "abz", "twe", "zug", "gut", "auf", "rst", "ust", "usk", "rak", "loe", "srs", "sgs", "ksd", "mahn", "mds", "tvk", "sr_rv_dpps", "gtyp", "basisd", "bwa"]
+    list_m = ["bst", "pln", "tvd", "lkl", "sg_rv", "d1n", "rub", "lmo", "nnk", "gz", "glv", "zonek", "zonet", "nnkt", "trfa", "natint", "glint"]
 
-    my_intervall = None
-    if kennzahl in list_t:
-        my_intervall = "t"
-    elif kennzahl in list_m:
-        my_intervall = "m"
+    my_Intervall = ""
+    if Kennzahl in list_t:
+        my_Intervall = "t"
+    elif Kennzahl in list_m:
+        my_Intervall = "m"
 
-    if not my_intervall:
+    if not my_Intervall:
         ErrNr = 196
-        ErrArg = f"{ModulName} {ModulVersion} gibIntervall - Kuerzel '{kennzahl}' unbekannt"
+        ErrArg = f"{ModulName} {ModulVersion} gibIntervall - Kuerzel '{Kennzahl}' unbekannt"
         return
 
-    os.environ[var_intervall] = my_intervall
+    os.environ[VarIntervall] = my_Intervall
 
-
-def pruefeZeitraum(anfang: str, ende: str) -> None:
+def pruefeZeitraum(Anfang, Ende):
     """
-    Natively validates date parameters format and chronological sanity.
-    Replaces DWDate_Datum_Check & DWDate_Datum_LE.
+    Die Funktion prueft, ob die beiden Parameter einen gueltigen
+    Zeitraum beschreiben.
     """
-    # REVIEW-STRUCT: DWDate_Datum_Check and DWDate_Datum_LE logic not supplied — mapped to native datetime logic
     global ErrNr, ErrArg
+
     if ErrNr != 0:
         return
 
-    if not anfang or not ende:
+    if not Anfang or not Ende:
         ErrNr = 196
         ErrArg = f"{ModulName} {ModulVersion} pruefeZeitraum"
         return
 
-    err_arg_temp = ""
+    local_err_arg = ""
+
+    # Datumsformat-Pruefungen
     try:
-        dt_anfang = datetime.datetime.strptime(anfang, "%Y%m%d")
+        dt_anfang = datetime.strptime(Anfang, "%Y%m%d")
     except ValueError:
-        err_arg_temp = "Anfangsdatum entspricht nicht dem Format YYYYMMDD"
+        local_err_arg = "Anfangdatum entspricht nicht dem Format YYYYMMDD"
 
-    if not err_arg_temp:
+    if not local_err_arg:
         try:
-            dt_ende = datetime.datetime.strptime(ende, "%Y%m%d")
+            dt_ende = datetime.strptime(Ende, "%Y%m%d")
         except ValueError:
-            err_arg_temp = "Endedatum entspricht nicht dem Format YYYYMMDD"
+            local_err_arg = "Endedatum entspricht nicht dem Format YYYYMMDD"
 
-    if not err_arg_temp:
+    # Chronologische Pruefung
+    if not local_err_arg:
         if dt_anfang > dt_ende:
-            err_arg_temp = "Anfangsdatum ist nicht kleiner gleich Endedatum"
+            local_err_arg = "Anfangsdatum ist nicht kleiner gleich Endedatum"
 
-    if err_arg_temp:
+    if local_err_arg:
         ErrNr = 195
-        ErrArg = err_arg_temp
+        ErrArg = local_err_arg
 
-
-def pruefeZahlPositiv(p_zahl: str, p_parameter_name: str) -> None:
+def pruefeZahlPositiv(p_Zahl, p_ParameterName):
     """
-    Ensures input string is numeric and greater than or equal to 0.
+    prueft ob der uebergebene Parameter numerisch und >= 0 ist.
     """
     global ErrNr, ErrArg
-    try:
-        val = int(p_zahl)
-        is_numeric = True
-    except ValueError:
-        try:
-            val = float(p_zahl)
-            is_numeric = True
-        except ValueError:
-            is_numeric = False
 
-    if is_numeric:
+    try:
+        # Original checks both -ne 0 and -eq 0
+        val = int(p_Zahl)
         if val < 0:
             ErrNr = 195
-            ErrArg = f"Parameter {p_parameter_name} muss groesser gleich 0 sein"
-    else:
+            ErrArg = f"Parameter {p_ParameterName} muss groesser gleich 0 sein"
+    except (ValueError, TypeError):
         ErrNr = 195
-        ErrArg = f"Parameter {p_parameter_name} ist kein numerischer Wert"
+        ErrArg = f"Parameter {p_ParameterName} ist kein numerischer Wert"
 
-
-def pruefeZeitParameter(p_anfangsdatum: str, p_endedatum: str, p_zeit_offset: str) -> None:
+def pruefeZeitParameter(p_Anfangsdatum, p_Endedatum, p_ZeitOffset):
     """
-    Ensures that either a time span is specified, or a valid start/end range, but not both.
+    prueft ob genau Anfangs und Endedatum oder Zeitraum gesetzt und
+    gueltig sind.
     """
     global ErrNr, ErrArg
+
     if ErrNr != 0:
         return
 
-    if p_zeit_offset and p_zeit_offset != "":
-        if (not p_anfangsdatum or p_anfangsdatum == "") and (not p_endedatum or p_endedatum == ""):
-            pruefeZahlPositiv(p_zeit_offset, "Zeitspanne")
+    if p_ZeitOffset:
+        if not p_Anfangsdatum and not p_Endedatum:
+            pruefeZahlPositiv(p_ZeitOffset, "Zeitspanne")
             return
         else:
             ErrNr = 195
             ErrArg = "Es darf nur eine Zeitspanne oder beide Datumwerte gesetzt werden"
             return
     else:
-        if p_anfangsdatum and p_anfangsdatum != "" and p_endedatum and p_endedatum != "":
-            pruefeZeitraum(p_anfangsdatum, p_endedatum)
+        if p_Anfangsdatum and p_Endedatum:
+            pruefeZeitraum(p_Anfangsdatum, p_Endedatum)
         else:
             ErrNr = 195
-            if (not p_anfangsdatum or p_anfangsdatum == "") and (not p_endedatum or p_endedatum == ""):
+            if not p_Anfangsdatum and not p_Endedatum:
                 ErrArg = "Datumswerte oder Zeitspanne fehlen"
             else:
                 ErrArg = "Sowohl Anfang- als auch Endedatum muessen angegeben werden"
             return
 
-
-def konvertiereZeitspanne(p_var_anfang: str, p_var_ende: str, p_spanne: str, p_kennzahl: str) -> None:
+def konvertiereZeitspanne(p_VarAnfang, p_VarEnde, p_Spanne, p_Kennzahl):
     """
-    Natively calculates temporal periods relative to a context run date.
-    Replaces DWDate_Gib_Zeitraum logic.
+    Berechnet aus der Zeitspanne und der Kennzahl Anfangs und Endedatum.
     """
-    # REVIEW-STRUCT: DWDate_Gib_Zeitraum logic not supplied — mapped to native date calculations
     global ErrNr, ErrArg
+
     if ErrNr != 0:
         return
 
-    offset_unit = "D"
-    if p_kennzahl == "bst":
-        offset_unit = "M"
-
-    run_date_str = os.environ.get("RUN_DATE", datetime.date.today().strftime("%Y%m%d"))
-    try:
-        run_date = datetime.datetime.strptime(run_date_str, "%Y%m%d").date()
-    except ValueError:
-        ErrNr = 85
-        ErrArg = "DWDate_Gib_Zeitraum"
-        return
+    Offset_Unit = "D"
+    if p_Kennzahl == "bst":
+        Offset_Unit = "M"
 
     try:
-        span_int = int(p_spanne)
-    except ValueError:
+        spanne_val = int(p_Spanne)
+        dt_ende = datetime.today()
+
+        if Offset_Unit == "D":
+            dt_anfang = dt_ende - timedelta(days=spanne_val)
+        else:
+            # Monate abziehen
+            source_date = dt_ende
+            month = source_date.month - 1 - spanne_val
+            year = source_date.year + month // 12
+            month = month % 12 + 1
+            day = min(source_date.day, [
+                31,
+                29 if year % 4 == 0 and (year % 100 != 0 or year % 400 == 0) else 28,
+                31, 30, 31, 30, 31, 31, 30, 31, 30, 31
+            ][month - 1])
+            dt_anfang = datetime(year, month, day)
+
+        os.environ[p_VarAnfang] = dt_anfang.strftime("%Y%m%d")
+        os.environ[p_VarEnde] = dt_ende.strftime("%Y%m%d")
+
+    except Exception as e:
         ErrNr = 85
         ErrArg = "DWDate_Gib_Zeitraum"
-        return
 
-    if offset_unit == "D":
-        ende_date = run_date
-        anfang_date = run_date - datetime.timedelta(days=span_int)
-    else: 
-        ende_date = run_date
-        year_shift = span_int // 12
-        month_shift = span_int % 12
-        new_month = run_date.month - month_shift
-        new_year = run_date.year - year_shift
-        if new_month <= 0:
-            new_month += 12
-            new_year -= 1
-        try:
-            anfang_date = datetime.date(new_year, new_month, run_date.day)
-        except ValueError:
-            # End of month realignment
-            _, last_day = calendar.monthrange(new_year, new_month)
-            anfang_date = datetime.date(new_year, new_month, last_day)
+def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="Python utility module to replace h_alis_parameter.ksh")
+    parser.add_argument("--action", choices=[
+        "pruefeParameterGesetzt", "konvertiereKennzahl", "konvertiereSystem",
+        "konvertiereSDName", "konvertiereAufbStufeXtra", "pruefeSystemKennzahl",
+        "gibBereich", "gibIntervall", "pruefeZeitraum", "pruefeZahlPositiv",
+        "pruefeZeitParameter", "konvertiereZeitspanne"
+    ], required=True, help="Module routine to execute.")
+    parser.add_argument("--arg1", help="Argument 1")
+    parser.add_argument("--arg2", help="Argument 2")
+    parser.add_argument("--arg3", help="Argument 3")
+    parser.add_argument("--arg4", help="Argument 4")
 
-    os.environ[p_var_anfang] = anfang_date.strftime("%Y%m%d")
-    os.environ[p_var_ende] = ende_date.strftime("%Y%m%d")
-
-# ==============================================================================
-# Executable Entry Point (Command Line Mode / Self-Tests)
-# ==============================================================================
-
-def main() -> int:
-    parser = argparse.ArgumentParser(description="Helper routines for parameter parsing and validation.")
-    parser.add_argument("--test", action="store_true", help="Execute verification self-tests.")
     args = parser.parse_args()
 
-    if args.test:
-        global ErrNr, ErrArg
-        print("Executing Library Validation Tests...")
-        
-        # Test 1: Key-figure normalization
-        os.environ["TEST_K"] = "bestand"
-        konvertiereKennzahl("TEST_K")
-        print(f"Test 1 (Kennzahl Mapping): 'bestand' -> '{os.environ.get('TEST_K')}' (Expected: 'bst')")
-        
-        # Test 2: Date verification
-        pruefeZeitraum("20231015", "20231010")
-        print(f"Test 2 (Date Chronology Error Check): ErrNr={ErrNr}, ErrArg='{ErrArg}' (Expected: 195, 'Anfangsdatum ist nicht kleiner gleich Endedatum')")
-        
-        return 0 if ErrNr != 195 else 0
-    else:
-        print(f"{ModulName} {ModulVersion} loaded as standalone. Run with --test to execute verification tests.")
-        return 0
+    global ErrNr, ErrArg
 
+    if args.action == "pruefeParameterGesetzt":
+        pruefeParameterGesetzt(args.arg1, args.arg2)
+    elif args.action == "konvertiereKennzahl":
+        konvertiereKennzahl(args.arg1)
+    elif args.action == "konvertiereSystem":
+        konvertiereSystem(args.arg1)
+    elif args.action == "konvertiereSDName":
+        konvertiereSDName(args.arg1)
+    elif args.action == "konvertiereAufbStufeXtra":
+        konvertiereAufbStufeXtra(args.arg1)
+    elif args.action == "pruefeSystemKennzahl":
+        pruefeSystemKennzahl(args.arg1, args.arg2)
+    elif args.action == "gibBereich":
+        gibBereich(args.arg1, args.arg2)
+    elif args.action == "gibIntervall":
+        gibIntervall(args.arg1, args.arg2)
+    elif args.action == "pruefeZeitraum":
+        pruefeZeitraum(args.arg1, args.arg2)
+    elif args.action == "pruefeZahlPositiv":
+        pruefeZahlPositiv(args.arg1, args.arg2)
+    elif args.action == "pruefeZeitParameter":
+        pruefeZeitParameter(args.arg1, args.arg2, args.arg3)
+    elif args.action == "konvertiereZeitspanne":
+        konvertiereZeitspanne(args.arg1, args.arg2, args.arg3, args.arg4)
+
+    if ErrNr != 0:
+        print(f"ERROR: ErrNr={ErrNr}, ErrArg={ErrArg}", file=sys.stderr)
+        return ErrNr
+    else:
+        return 0
 
 if __name__ == "__main__":
     sys.exit(main())

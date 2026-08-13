@@ -2,302 +2,362 @@
 import os
 import sys
 import datetime
-import re
+import subprocess
 import argparse
-import oracledb
 
-# Validate environment variables and fail loudly if missing
-dw_orauser = os.environ.get("DW_ORAUSER")
-if not dw_orauser:
-    raise SystemExit("DW_ORAUSER must be set by the calling Airflow task")
+# Global environment variables based on environment-specific classification policy
+GCP_PROJECT = os.environ.get("GCP_PROJECT")
+BQ_DATASET = os.environ.get("BQ_DATASET")
+DW_ORAUSER = os.environ.get("DW_ORAUSER")
+DW_DIR_ROOT = os.environ.get("DW_DIR_ROOT")
+DW_DIR_PROT = os.environ.get("DW_DIR_PROT")
 
-dw_dir_root = os.environ.get("DW_DIR_ROOT")
-if not dw_dir_root:
-    raise SystemExit("DW_DIR_ROOT must be set by the calling Airflow task")
-
-dw_dir_prot = os.environ.get("DW_DIR_PROT")
-if not dw_dir_prot:
-    raise SystemExit("DW_DIR_PROT must be set by the calling Airflow task")
-
-
-def get_db_connection():
-    """
-    Establishes and returns a connection to the Oracle database using DW_ORAUSER.
-    Formats supported: user/password@dsn or user/password.
-    """
-    # REVIEW-STRUCT: connection parameters inferred from a cross-referenced .ksh file's declared environment parameters — confirm these exact env var names are set in this job's actual runtime environment before deploying
-    match = re.match(r"([^/]+)/([^@]+)(?:@(.+))?", dw_orauser)
-    if match:
-        user = match.group(1)
-        password = match.group(2)
-        dsn = match.group(3) or ""
-        return oracledb.connect(user=user, password=password, dsn=dsn)
-    else:
-        return oracledb.connect(dsn=dw_orauser)
+# Fail loudly if critical variables are missing upon function execution
+def verify_env_vars(*vars_to_check):
+    for var in vars_to_check:
+        if not os.environ.get(var):
+            raise SystemExit(f"{var} must be set by the calling environment")
 
 
-def dwmsg_fehlerbehandlung(dwmsg_eintrags_nr, last_exit_code=1):
-    """
-    Error handling routine called when an error occurs in the calling process.
-    Logs the error to the database and sets the execution status to aborted.
-    """
-    fehler_nr = last_exit_code
+def dwmsg_fehlerbehandlung(eintrags_nr, fehler_nr=1):
+    # sichern des FehlerCodes:
+    # DWMSG_Fehlerbehandlung <EintragsNr>
     unerw_fehler = 10
-
-    # Melde Fehler in der Meldungstabelle
-    dwmsg_melde_fehler(dwmsg_eintrags_nr, "F", unerw_fehler, f"ErrorCode ist: {fehler_nr}")
-
+    dwmsg_melde_fehler(eintrags_nr, "F", unerw_fehler, f"ErrorCode ist: {fehler_nr}")
     print("Fehler wurde von der Shell gemeldet, setze auf Abbruchstatus")
-    dwmsg_setze_status_abbruch(dwmsg_eintrags_nr)
+    dwmsg_setze_status_abbruch(eintrags_nr)
 
 
-def dwmsg_setze_status_ok(dwmsg_eintrags_nr):
-    """
-    Sets the status of the log entry with the given ID to successful (OK).
-    """
-    if not dwmsg_eintrags_nr:
-        print("Argh!, keine EintragsNummer bei Aufruf von SetzeOkStatus angegeben", file=sys.stderr)
+def dwmsg_setze_status_ok(eintrags_nr):
+    verify_env_vars("DW_ORAUSER", "DW_DIR_ROOT")
+    dw_orauser = os.environ.get("DW_ORAUSER")
+    dw_dir_root = os.environ.get("DW_DIR_ROOT")
+
+    if not eintrags_nr:
+        print("Argh!, keine EintragsNummer bei Aufruf von SetzeOkStatus angegeben")
         sys.exit(1)
 
+    # REVIEW-STRUCT: original launcher call preserved verbatim below — replace with the GCP-native equivalent once the launcher's internal behaviour (logging, error propagation, credential injection) is confirmed
+    sql_script = os.path.join(dw_dir_root, "allgemein/is/util/sql/d_alis_spaufruf_p1.sql")
+    cmd = [
+        "sqlplus",
+        "-s",
+        dw_orauser,
+        f"@{sql_script}",
+        "BERT_MELDUNG.SetzeStatusOk",
+        str(eintrags_nr)
+    ]
     try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                # REVIEW-STRUCT: SQL wrapper script d_alis_spaufruf_p1.sql not supplied — Converting to native PL/SQL call.
-                cur.execute("BEGIN BERT_MELDUNG.SetzeStatusOk(:1); END;", [dwmsg_eintrags_nr])
-                conn.commit()
-    except oracledb.DatabaseError as e:
-        print(f"ERROR: Failed to set status OK: {e}", file=sys.stderr)
+        subprocess.run(cmd, input=b"", check=True)
+    except subprocess.CalledProcessError as e:
+        print(f"ERROR: SetzeStatusOk failed with exit code {e.returncode}", file=sys.stderr)
+        sys.exit(e.returncode)
+
+
+def dwmsg_setze_status_abbruch(eintrags_nr):
+    verify_env_vars("DW_ORAUSER", "DW_DIR_ROOT")
+    dw_orauser = os.environ.get("DW_ORAUSER")
+    dw_dir_root = os.environ.get("DW_DIR_ROOT")
+
+    if not eintrags_nr:
+        print("Argh!, keine EintragsNummer bei Aufruf von SetzeAbbruchStatus angegeben")
         sys.exit(1)
 
-
-def dwmsg_setze_status_abbruch(dwmsg_eintrags_nr):
-    """
-    Sets the status of the log entry with the given ID to aborted (Abbruch).
-    """
-    if not dwmsg_eintrags_nr:
-        print("Argh!, keine EintragsNummer bei Aufruf von SetzeAbbruchStatus angegeben", file=sys.stderr)
-        sys.exit(1)
-
+    # REVIEW-STRUCT: original launcher call preserved verbatim below — replace with the GCP-native equivalent once the launcher's internal behaviour (logging, error propagation, credential injection) is confirmed
+    sql_script = os.path.join(dw_dir_root, "allgemein/is/util/sql/d_alis_spaufruf_p1.sql")
+    cmd = [
+        "sqlplus",
+        dw_orauser,
+        f"@{sql_script}",
+        "BERT_MELDUNG.SetzeStatusAbbruch",
+        str(eintrags_nr)
+    ]
     try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                # REVIEW-STRUCT: SQL wrapper script d_alis_spaufruf_p1.sql not supplied — Converting to native PL/SQL call.
-                cur.execute("BEGIN BERT_MELDUNG.SetzeStatusAbbruch(:1); END;", [dwmsg_eintrags_nr])
-                conn.commit()
-    except oracledb.DatabaseError as e:
-        print(f"ERROR: Failed to set status Abbruch: {e}", file=sys.stderr)
+        subprocess.run(cmd, input=b"", check=True)
+    except subprocess.CalledProcessError as e:
+        print(f"ERROR: SetzeStatusAbbruch failed with exit code {e.returncode}", file=sys.stderr)
+        sys.exit(e.returncode)
+
+
+def dwmsg_ermittle_nr(var_name=None):
+    if not var_name:
+        print("Argh!, keinen Variablennamen bei ErmittleNr angegeben")
         sys.exit(1)
 
+    verify_env_vars("DW_ORAUSER", "DW_DIR_ROOT")
+    dw_orauser = os.environ.get("DW_ORAUSER")
+    dw_dir_root = os.environ.get("DW_DIR_ROOT")
 
-def dwmsg_ermittle_nr():
-    """
-    Retrieves a unique execution/sequence ID from the database.
-    """
-    # REVIEW: d_al_is_ermittlenr.sql not supplied — assumed BERT_MELDUNG.ErmittleNr exists to return sequence number. Confirm correct schema object.
+    temp_file = f"/tmp/ErmittleNr_{os.getpid()}.lst"
+    sql_script = os.path.join(dw_dir_root, "allgemein/is/util/sql/d_al_is_ermittlenr.sql")
+
+    # REVIEW-STRUCT: original launcher call preserved verbatim below — replace with the GCP-native equivalent once the launcher's internal behaviour (logging, error propagation, credential injection) is confirmed
+    cmd = [
+        "sqlplus",
+        "-s",
+        dw_orauser,
+        f"@{sql_script}",
+        temp_file
+    ]
     try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                out_val = cur.var(oracledb.NUMBER)
-                cur.execute("""
-                    BEGIN
-                        :1 := BERT_MELDUNG.ErmittleNr;
-                    END;
-                """, [out_val])
-                return str(int(out_val.getvalue())).strip()
-    except oracledb.DatabaseError as e:
-        print(f"ERROR: Failed to retrieve entry sequence number: {e}", file=sys.stderr)
+        subprocess.run(cmd, input=b"", check=True)
+        with open(temp_file, "r") as f:
+            eintrags_nr = f.read().replace(" ", "").strip()
+        return eintrags_nr
+    except subprocess.CalledProcessError as e:
+        print(f"ERROR: ErmittleNr failed with exit code {e.returncode}", file=sys.stderr)
+        sys.exit(e.returncode)
+    finally:
+        if os.path.exists(temp_file):
+            try:
+                os.remove(temp_file)
+            except OSError:
+                pass
+
+
+def dwmsg_erzeuge_eintrag(eintrags_nr, job_kennung, programmname, log_datei):
+    verify_env_vars("DW_ORAUSER", "DW_DIR_ROOT")
+    dw_orauser = os.environ.get("DW_ORAUSER")
+    dw_dir_root = os.environ.get("DW_DIR_ROOT")
+
+    if not eintrags_nr:
+        print("Argh!, keine EintragsNummer bei Aufruf von ErzeugeEintrag angegeben")
         sys.exit(1)
 
-
-def dwmsg_erzeuge_eintrag(dwmsg_eintrags_nr, job_kennung, programmname, logdatei):
-    """
-    Creates a new entry in the execution tracking and log table.
-    """
-    if not dwmsg_eintrags_nr:
-        print("Argh!, keine EintragsNummer bei Aufruf von ErzeugeEintrag angegeben", file=sys.stderr)
-        sys.exit(1)
-
+    # REVIEW-STRUCT: original launcher call preserved verbatim below — replace with the GCP-native equivalent once the launcher's internal behaviour (logging, error propagation, credential injection) is confirmed
+    sql_script = os.path.join(dw_dir_root, "allgemein/is/util/sql/d_alis_spaufruf_p4.sql")
+    cmd = [
+        "sqlplus",
+        "-s",
+        dw_orauser,
+        f"@{sql_script}",
+        "BERT_MELDUNG.Erzeuge_Eintrag",
+        str(eintrags_nr),
+        str(job_kennung),
+        str(programmname),
+        str(log_datei)
+    ]
     try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                # REVIEW-STRUCT: SQL wrapper script d_alis_spaufruf_p4.sql not supplied — Converting to native PL/SQL call.
-                cur.execute("""
-                    BEGIN
-                        BERT_MELDUNG.Erzeuge_Eintrag(:1, :2, :3, :4);
-                    END;
-                """, [dwmsg_eintrags_nr, job_kennung, programmname, logdatei])
-                conn.commit()
-    except oracledb.DatabaseError as e:
-        print(f"ERROR: Failed to create log entry: {e}", file=sys.stderr)
+        subprocess.run(cmd, input=b"", check=True)
+    except subprocess.CalledProcessError as e:
+        print(f"ERROR: ErzeugeEintrag failed with exit code {e.returncode}", file=sys.stderr)
+        sys.exit(e.returncode)
+
+
+def dwmsg_melde_fehler(eintrags_nr, typ, fehler_nr, zusatz1="", zusatz2=""):
+    verify_env_vars("DW_ORAUSER", "DW_DIR_ROOT")
+    dw_orauser = os.environ.get("DW_ORAUSER")
+    dw_dir_root = os.environ.get("DW_DIR_ROOT")
+
+    if not eintrags_nr:
+        print("Argh!, keine EintragsNummer bei Aufruf von MeldeFehler angegeben")
         sys.exit(1)
 
+    if not zusatz1:
+        num_parm = 3
+    elif not zusatz2:
+        num_parm = 4
+    else:
+        num_parm = 5
 
-def dwmsg_melde_fehler(dwmsg_eintrags_nr, typ, fehler_nr, zusatz1="", zusatz2=""):
-    """
-    Logs an error/warning message in the execution tracking table.
-    """
-    if not dwmsg_eintrags_nr:
-        print("Argh!, keine EintragsNummer bei Aufruf von MeldeFehler angegeben", file=sys.stderr)
-        sys.exit(1)
+    sql_script = os.path.join(dw_dir_root, f"allgemein/is/util/sql/d_alis_spaufruf_p{num_parm}.sql")
 
+    # REVIEW-STRUCT: original launcher call preserved verbatim below — replace with the GCP-native equivalent once the launcher's internal behaviour (logging, error propagation, credential injection) is confirmed
+    cmd = [
+        "sqlplus",
+        "-s",
+        dw_orauser,
+        f"@{sql_script}",
+        "BERT_MELDUNG.Fehler",
+        str(typ),
+        str(eintrags_nr),
+        str(fehler_nr),
+        f"'{zusatz1}'",
+        f"'{zusatz2}'"
+    ]
     try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute("""
-                    BEGIN
-                        BERT_MELDUNG.Fehler(:1, :2, :3, :4, :5);
-                    END;
-                """, [typ, dwmsg_eintrags_nr, fehler_nr, zusatz1, zusatz2])
-                conn.commit()
-    except oracledb.DatabaseError as e:
-        print(f"ERROR: Failed to report error: {e}", file=sys.stderr)
-        sys.exit(1)
+        subprocess.run(cmd, input=b"", check=True)
+    except subprocess.CalledProcessError as e:
+        print(f"ERROR: MeldeFehler failed with exit code {e.returncode}", file=sys.stderr)
+        sys.exit(e.returncode)
 
 
-def dwmsg_logdateiname(job_kennung, dwmsg_eintrags_nr):
-    """
-    Generates a log file path based on job identifier, timestamp, and sequence number.
-    """
-    date_str = datetime.datetime.now().strftime("%Y%m%d_%H%M")
-    dateiname = f"{dw_dir_prot}/{job_kennung}_{date_str}_{dwmsg_eintrags_nr}.log"
+def dwmsg_logdateiname(var_name, job_kennung, eintrags_nr):
+    verify_env_vars("DW_DIR_PROT")
+    dw_dir_prot = os.environ.get("DW_DIR_PROT")
+
+    timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M")
+    dateiname = os.path.join(dw_dir_prot, f"{job_kennung}_{timestamp}_{eintrags_nr}.log")
     return dateiname
 
 
-def dwmsg_setze_stichtag_info(dwmsg_eintrags_nr, dwmsg_stichtag, dwmsg_stichtag_fmt):
-    """
-    Appends execution key-date information to the log entry record.
-    """
-    if not dwmsg_eintrags_nr:
-        print("Argh!, keine EintragsNr bei Aufruf von SetzeZusatzInfos angegeben", file=sys.stderr)
+def dwmsg_setze_stichtag_info(eintrags_nr, stichtag, stichtag_fmt):
+    verify_env_vars("DW_ORAUSER")
+    dw_orauser = os.environ.get("DW_ORAUSER")
+
+    if not eintrags_nr:
+        print("Argh!, keine EintragsNr bei Aufruf von SetzeZusatzInfos angegeben")
         sys.exit(1)
-    if not dwmsg_stichtag:
-        print("Argh!, keinen Stichtag angegeben!", file=sys.stderr)
+
+    if not stichtag:
+        print("Argh!, keinen Stichtag angegeben!")
         sys.exit(1)
-    if not dwmsg_stichtag_fmt:
-        print("Argh!, Stichtagsangaben ohne Formatangaben können nicht verarbeitet werden!", file=sys.stderr)
+
+    if not stichtag_fmt:
+        print("Argh!, Stichtagsangaben ohne Formatangaben können nicht verarbeitet werden!")
         sys.exit(2)
 
+    # REVIEW: target database platform not confirmed — defaulted to Oracle (python-oracledb) since it preserves the original SQL with no rewrite; confirm before deploying
+    # REVIEW-STRUCT: connection parameters inferred from a cross-referenced .ksh file's declared environment parameters — confirm these exact env var names are set in this job's actual runtime environment before deploying
+    import oracledb
     try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                # Executing exact embedded SQL statement
-                cur.execute("""
-                    BEGIN
-                        BERT_MELDUNG.SetzeZusatzInfos(:1, to_date(:2, :3));
-                    END;
-                """, [dwmsg_eintrags_nr, dwmsg_stichtag, dwmsg_stichtag_fmt])
-                conn.commit()
+        user, password, dsn = "", "", ""
+        if "@" in dw_orauser:
+            left, dsn = dw_orauser.split("@", 1)
+        else:
+            left = dw_orauser
+        
+        if "/" in left:
+            user, password = left.split("/", 1)
+        else:
+            user = left
+
+        conn = oracledb.connect(user=user, password=password, dsn=dsn)
+        with conn.cursor() as cur:
+            sql_text = """
+            BEGIN
+                BERT_MELDUNG.SetzeZusatzInfos(:eintrags_nr, to_date(:stichtag, :stichtag_fmt));
+                COMMIT;
+            END;
+            """
+            cur.execute(sql_text, {
+                "eintrags_nr": int(eintrags_nr),
+                "stichtag": stichtag,
+                "stichtag_fmt": stichtag_fmt
+            })
+            conn.commit()
     except oracledb.DatabaseError as e:
-        print(f"ERROR: Failed to set key-date info: {e}", file=sys.stderr)
+        print(f"ERROR: SetzeStichtagInfo failed: {e}", file=sys.stderr)
         sys.exit(1)
 
 
-def dwmsg_append_timing_infos(dwmsg_eintrags_nr, dwmsg_infotext, dwmsg_date_format):
-    """
-    Appends timing checkpoints or stage descriptions directly to the log entry record.
-    """
-    if not dwmsg_eintrags_nr:
-        print("Argh!, keine EintragsNr bei Aufruf von SetzeZusatzInfos angegeben", file=sys.stderr)
+def dwmsg_append_timing_infos(eintrags_nr, info_text, date_format):
+    verify_env_vars("DW_ORAUSER")
+    dw_orauser = os.environ.get("DW_ORAUSER")
+
+    if not eintrags_nr:
+        print("Argh!, keine EintragsNr bei Aufruf von SetzeZusatzInfos angegeben")
         sys.exit(1)
-    if not dwmsg_date_format:
-        print("Argh!, Formatangabe erforderlich!", file=sys.stderr)
+
+    if not date_format:
+        print("Argh!, Formatangabe erforderlich!")
         sys.exit(2)
 
+    # REVIEW: target database platform not confirmed — defaulted to Oracle (python-oracledb) since it preserves the original SQL with no rewrite; confirm before deploying
+    # REVIEW-STRUCT: connection parameters inferred from a cross-referenced .ksh file's declared environment parameters — confirm these exact env var names are set in this job's actual runtime environment before deploying
+    import oracledb
     try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                # Executing exact embedded SQL statement using local bind parameters
-                cur.execute("""
-                    BEGIN
-                        BERT_MELDUNG.SetzeZusatzInfos(:1, null, :2||' '||to_char(SYSDATE,:3)||' ');
-                    END;
-                """, [dwmsg_eintrags_nr, dwmsg_infotext, dwmsg_date_format])
-                conn.commit()
+        user, password, dsn = "", "", ""
+        if "@" in dw_orauser:
+            left, dsn = dw_orauser.split("@", 1)
+        else:
+            left = dw_orauser
+        
+        if "/" in left:
+            user, password = left.split("/", 1)
+        else:
+            user = left
+
+        conn = oracledb.connect(user=user, password=password, dsn=dsn)
+        with conn.cursor() as cur:
+            sql_text = """
+            BEGIN
+                BERT_MELDUNG.SetzeZusatzInfos(:eintrags_nr, null, :info_text || ' ' || to_char(SYSDATE, :date_format) || ' ');
+                COMMIT;
+            END;
+            """
+            cur.execute(sql_text, {
+                "eintrags_nr": int(eintrags_nr),
+                "info_text": info_text,
+                "date_format": date_format
+            })
+            conn.commit()
     except oracledb.DatabaseError as e:
-        print(f"ERROR: Failed to append timing info: {e}", file=sys.stderr)
+        print(f"ERROR: AppendTimingInfos failed: {e}", file=sys.stderr)
         sys.exit(1)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Python port of f_alis_msgerr.ksh utility library")
-    subparsers = parser.add_subparsers(dest="command", help="Command to run")
+    parser = argparse.ArgumentParser(description="Unified Error Management and Logging (f_alis_msgerr.ksh equivalent)")
+    subparsers = parser.add_subparsers(dest="command", help="The function to invoke")
 
-    # Subparser for Fehlerbehandlung
-    parser_feh = subparsers.add_parser("Fehlerbehandlung")
-    parser_feh.add_argument("eintrags_nr")
-    parser_feh.add_argument("--exit_code", type=int, default=1)
+    p_feh = subparsers.add_parser("DWMSG_Fehlerbehandlung")
+    p_feh.add_argument("eintrags_nr")
+    p_feh.add_argument("fehler_nr", type=int, nargs="?", default=1)
 
-    # Subparser for SetzeStatusOK
-    parser_ok = subparsers.add_parser("SetzeStatusOK")
-    parser_ok.add_argument("eintrags_nr")
+    p_ok = subparsers.add_parser("DWMSG_SetzeStatusOK")
+    p_ok.add_argument("eintrags_nr")
 
-    # Subparser for SetzeStatusAbbruch
-    parser_abr = subparsers.add_parser("SetzeStatusAbbruch")
-    parser_abr.add_argument("eintrags_nr")
+    p_abb = subparsers.add_parser("DWMSG_SetzeStatusAbbruch")
+    p_abb.add_argument("eintrags_nr")
 
-    # Subparser for ErmittleNr
-    subparsers.add_parser("ErmittleNr")
+    p_erm = subparsers.add_parser("DWMSG_ErmittleNr")
+    p_erm.add_argument("var_name", nargs="?", default=None)
 
-    # Subparser for ErzeugeEintrag
-    parser_erz = subparsers.add_parser("ErzeugeEintrag")
-    parser_erz.add_argument("eintrags_nr")
-    parser_erz.add_argument("job_kennung")
-    parser_erz.add_argument("programmname")
-    parser_erz.add_argument("log_datei")
+    p_erz = subparsers.add_parser("DWMSG_ErzeugeEintrag")
+    p_erz.add_argument("eintrags_nr")
+    p_erz.add_argument("job_kennung")
+    p_erz.add_argument("programmname")
+    p_erz.add_argument("log_datei")
 
-    # Subparser for MeldeFehler
-    parser_mel = subparsers.add_parser("MeldeFehler")
-    parser_mel.add_argument("eintrags_nr")
-    parser_mel.add_argument("typ")
-    parser_mel.add_argument("fehler_nr")
-    parser_mel.add_argument("zusatz1", nargs="?", default="")
-    parser_mel.add_argument("zusatz2", nargs="?", default="")
+    p_mel = subparsers.add_parser("DWMSG_MeldeFehler")
+    p_mel.add_argument("eintrags_nr")
+    p_mel.add_argument("typ")
+    p_mel.add_argument("fehler_nr")
+    p_mel.add_argument("zusatz1", nargs="?", default="")
+    p_mel.add_argument("zusatz2", nargs="?", default="")
 
-    # Subparser for Logdateiname
-    parser_log = subparsers.add_parser("Logdateiname")
-    parser_log.add_argument("job_kennung")
-    parser_log.add_argument("eintrags_nr")
+    p_log = subparsers.add_parser("DWMSG_Logdateiname")
+    p_log.add_argument("var_name")
+    p_log.add_argument("job_kennung")
+    p_log.add_argument("eintrags_nr")
 
-    # Subparser for SetzeStichtagInfo
-    parser_sti = subparsers.add_parser("SetzeStichtagInfo")
-    parser_sti.add_argument("eintrags_nr")
-    parser_sti.add_argument("stichtag")
-    parser_sti.add_argument("stichtag_fmt")
+    p_stich = subparsers.add_parser("DWMSG_SetzeStichtagInfo")
+    p_stich.add_argument("eintrags_nr")
+    p_stich.add_argument("stichtag")
+    p_stich.add_argument("stichtag_fmt")
 
-    # Subparser for AppendTimingInfos
-    parser_tim = subparsers.add_parser("AppendTimingInfos")
-    parser_tim.add_argument("eintrags_nr")
-    parser_tim.add_argument("infotext")
-    parser_tim.add_argument("date_format")
+    p_time = subparsers.add_parser("DWMSG_AppendTimingInfos")
+    p_time.add_argument("eintrags_nr")
+    p_time.add_argument("info_text")
+    p_time.add_argument("date_format")
 
     args = parser.parse_args()
 
     if not args.command:
         parser.print_help()
-        return 0
+        sys.exit(1)
 
-    if args.command == "Fehlerbehandlung":
-        dwmsg_fehlerbehandlung(args.eintrags_nr, args.exit_code)
-    elif args.command == "SetzeStatusOK":
+    if args.command == "DWMSG_Fehlerbehandlung":
+        dwmsg_fehlerbehandlung(args.eintrags_nr, args.fehler_nr)
+    elif args.command == "DWMSG_SetzeStatusOK":
         dwmsg_setze_status_ok(args.eintrags_nr)
-    elif args.command == "SetzeStatusAbbruch":
+    elif args.command == "DWMSG_SetzeStatusAbbruch":
         dwmsg_setze_status_abbruch(args.eintrags_nr)
-    elif args.command == "ErmittleNr":
-        nr = dwmsg_ermittle_nr()
-        print(nr)
-    elif args.command == "ErzeugeEintrag":
+    elif args.command == "DWMSG_ErmittleNr":
+        res = dwmsg_ermittle_nr(args.var_name)
+        print(res)
+    elif args.command == "DWMSG_ErzeugeEintrag":
         dwmsg_erzeuge_eintrag(args.eintrags_nr, args.job_kennung, args.programmname, args.log_datei)
-    elif args.command == "MeldeFehler":
+    elif args.command == "DWMSG_MeldeFehler":
         dwmsg_melde_fehler(args.eintrags_nr, args.typ, args.fehler_nr, args.zusatz1, args.zusatz2)
-    elif args.command == "Logdateiname":
-        path = dwmsg_logdateiname(args.job_kennung, args.eintrags_nr)
-        print(path)
-    elif args.command == "SetzeStichtagInfo":
+    elif args.command == "DWMSG_Logdateiname":
+        res = dwmsg_logdateiname(args.var_name, args.job_kennung, args.eintrags_nr)
+        print(res)
+    elif args.command == "DWMSG_SetzeStichtagInfo":
         dwmsg_setze_stichtag_info(args.eintrags_nr, args.stichtag, args.stichtag_fmt)
-    elif args.command == "AppendTimingInfos":
-        dwmsg_append_timing_infos(args.eintrags_nr, args.infotext, args.date_format)
-
-    return 0
+    elif args.command == "DWMSG_AppendTimingInfos":
+        dwmsg_append_timing_infos(args.eintrags_nr, args.info_text, args.date_format)
 
 
 if __name__ == "__main__":
