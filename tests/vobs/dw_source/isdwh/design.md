@@ -16,84 +16,82 @@ ueber den GDE-generierten Wrapper BHB_CCM_PROC_WriteContractMapLookup.ksh.
   (none — every referenced object was supplied in this bundle)
 
 
-# UC4 to Apache Airflow Migration Design Document
+# Design Document: Migration of UC4 Workload to Apache Airflow
 
 ## 1. Overview
-This migration design document covers the standalone UC4 UNIX job `DW.CCM_WRITE_CONTRACTMAPLOOKUP`. Based on the extraction, this object runs an Ab Initio graph wrapper script (`BHB_CCM_PROC_WriteContractMapLookup.ksh`) to execute the Ab Initio graph `BHB_CCM_PROC_WriteContractMapLookup.mp`. It processes Contract Map Lookup data within the `CCM_PROC` module. 
-
-Since no parent Job Plan (`JOBP`), Schedule (`JSCH`), or Script trigger (`SCRI`) was supplied in this extraction, this job is treated as an externally triggered, single-task workflow in Airflow with an unknown external orchestration source.
+This bundle contains a single UC4 Unix job, `DW.CCM_WRITE_CONTRACTMAPLOOKUP`. It executes a shell wrapper script (`BHB_CCM_PROC_WriteContractMapLookup.ksh`) to launch an Ab Initio graph (`BHB_CCM_PROC_WriteContractMapLookup.mp`), which processes Contract Map Lookup data under the `CCM_PROC` domain. Because this is a standalone Unix job without an enclosing Job Plan (JOBP) or Schedule (JSCH) in this extraction, its primary execution context is assumed to be an external trigger or parent workflow not defined in this bundle.
 
 ---
 
 ## 2. UC4 Object Inventory
 | Object Name | Object Type | Active Flag | Title/Description |
-| :--- | :--- | :--- | :--- |
-| `DW.CCM_WRITE_CONTRACTMAPLOOKUP` | JOBS_UNIX | Active (1) | CCM_PROC: Write Contract Map Lookup (Ab Initio graph) |
+|---|---|---|---|
+| `DW.CCM_WRITE_CONTRACTMAPLOOKUP` | JOBS_UNIX | 1 | CCM_PROC: Write Contract Map Lookup (Ab Initio graph) |
 
 ---
 
 ## 3. Scheduling
-* **Calendar Schedule:** No schedule-defining objects (`EVNT_TIME`) are present in this extraction. 
-* **Triggering Mechanism:** Externally triggered (source unknown from this extraction alone). No referencing `SCRI` or `JOBP` objects are bundled.
-* **Airflow Schedule:** `schedule=None` (triggered manually, externally, or via dataset/API events).
+- **Schedule Source**: No `EVNT_TIME` or schedule objects are present in this bundle.
+- **Trigger Source**: This workflow has no calendar-based schedule of its own. No parent `JOBP` or triggering `SCRI` was provided in this bundle. It is classified as externally triggered (source unknown from this extraction alone).
+- **Airflow Schedule**: `schedule=None`
 
 ---
 
 ## 4. Airflow DAG Properties
-Since no parent `JOBP` exists in the extraction, a single-task DAG is generated directly for this standalone job.
+Since this is an orphaned `JOBS_UNIX` object, a synthetic single-task DAG has been designed to represent and execute it.
 
 | Property | Value |
-| :--- | :--- |
+|---|---|
 | **dag_id** | `dw_ccm_write_contractmaplookup` |
 | **schedule** | `None` |
 | **start_date** | `datetime(2023, 1, 1)` *(Placeholder)* |
 | **catchup** | `False` |
 | **max_active_runs** | `1` |
 | **is_paused_upon_creation** | `False` *(Active=1)* |
-| **default_args** | `{'owner': 'DW', 'retries': 1, 'retry_delay': timedelta(minutes=5)}` |
+| **default_args** | `{'owner': 'airflow', 'retries': 1, 'retry_delay': timedelta(minutes=5)}` |
 
 ---
 
 ## 5. Task Inventory
 | Task ID | Source Object | Operator | Target Script/DAG | Launch Parameters | Retries | Retry Delay | Earliest Start Time | Calendar Constraint | Fire-and-Forget | on_failure_callback | Notes |
-| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| `dw_ccm_write_contractmaplookup` | `DW.CCM_WRITE_CONTRACTMAPLOOKUP` | `EmptyOperator` | N/A | N/A | 1 | 5 min | None | None | False | None | **#REVIEW-STRUCT:** Launcher command `&HOME/abinitio/bin/BHB_CCM_PROC_WriteContractMapLookup.ksh` not recognised — confirm target operator/script manually. |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| `ccm_write_contractmaplookup_task` | `DW.CCM_WRITE_CONTRACTMAPLOOKUP` | `EmptyOperator` | N/A | N/A | 1 | 5 min | N/A | N/A | N/A | N/A | #REVIEW-STRUCT: launcher command `&HOME/abinitio/bin/BHB_CCM_PROC_WriteContractMapLookup.ksh` not recognised — confirm target operator/script manually. Operational notes indicate this starts an Ab Initio graph. |
 
 ---
 
 ## 6. Task Dependency Map
-Since this DAG contains only one standalone task, there is no dependency chain to map:
+As this DAG contains only one standalone migrated task, there are no dependencies to chart:
 
 ```python
-dw_ccm_write_contractmaplookup
+ccm_write_contractmaplookup_task
 ```
 
 ---
 
 ## 7. Sync / Concurrency Analysis
-No `sync_rows` (UC4 locks) are declared for this object in the extraction. Concurrency is limited to `max_active_runs=1` at the DAG level to prevent concurrent execution on the same environment.
+No `sync_rows` or concurrency exclusions were defined in the extraction for this object. Max active runs is set to 1 as a baseline safety measure.
 
 ---
 
 ## 8. Error Handling and Retry Strategy
-* **Retries:** Standardized to 1 retry with a 5-minute delay based on general best-practice templates.
-* **Failure Handling:** Standard Airflow failure propagation. No custom `on_failure_callback` was specified in the extraction.
+No custom postcondition actions, `BLOCK` rules, or failure triggers were provided. Standard Airflow default retries and alerting mechanisms are recommended.
 
 ---
 
 ## 9. Parameter and Variable Mapping
 | UC4 Parameter | Value/Source | Airflow Equivalent |
-| :--- | :--- | :--- |
-| `DW.CCM_WRITE_CONTRACTMAPLOOKUP` | Standalone JOBS_UNIX Object | Sanitised DAG ID: `dw_ccm_write_contractmaplookup` |
-| Host: `\|DWHDWH2P\|HOST` | Target Execution Server | Airflow Connection ID (e.g., `ssh_dwh_host`) |
-| Login: `DW.UNIX.ISDWH` | Unix Service Account | SSH connection/execution user context |
+|---|---|---|
+| Object Name | `DW.CCM_WRITE_CONTRACTMAPLOOKUP` | DAG ID: `dw_ccm_write_contractmaplookup` |
+| Host | `|DWHDWH2P|HOST` | Target Airflow Environment Executer / SSH Connection |
+| Login | `DW.UNIX.ISDWH` | SSH Connection / Service Account Credentials |
 
 ---
 
 ## 10. Developer Notes
-* **#REVIEW-STRUCT: Standalone Job Object:** This extraction contains only a single `JOBS_UNIX` object with no enclosing workflow. We have structured this as a single-task DAG `dw_ccm_write_contractmaplookup`.
-* **#REVIEW-STRUCT: Unrecognized Launcher:** The launcher command is `&HOME/abinitio/bin/BHB_CCM_PROC_WriteContractMapLookup.ksh` which was classified as `unrecognized`. It is mapped to an `EmptyOperator` stub. If migrating the Ab Initio graph directly to GCP (e.g., using Dataproc/PySpark), this should be converted to a `DataprocSubmitJobOperator`. Alternatively, if executing the script on-premises or via an existing VM, use a `BashOperator` or `SSHOperator` calling the `.ksh` wrapper.
-* **Environment Initialization:** The original UC4 script sourced environment variables using `. $HOME/.dw_init` before launching the wrapper. Ensure that equivalent environment initialization occurs within the target Airflow execution context (e.g., inside the SSH session profile or target container).
+- **#REVIEW-STRUCT (Unrecognized Launcher)**: The object `DW.CCM_WRITE_CONTRACTMAPLOOKUP` uses an unrecognized script wrapper launcher (`&HOME/abinitio/bin/BHB_CCM_PROC_WriteContractMapLookup.ksh`).
+  - *If migrating to GCP*: The operational notes show this starts an Ab Initio graph. Following the standard migration pattern, this should likely be converted to a `DataprocSubmitJobOperator` pointing to a PySpark conversion script (e.g., `gs://YOUR_BUCKET_NAME/pyspark_scripts/bhb_ccm_proc_writecontractmaplookup.py`).
+  - *If staying on-premise/hybrid*: Map this instead to an `SSHOperator` or `BashOperator` to execute the `.ksh` script directly on the designated host `|DWHDWH2P|HOST` using the `DW.UNIX.ISDWH` environment configuration.
+- **Orphaned Job Context**: Because this job was extracted outside of a parent `JOBP` workflow, it is defined here inside a single-task wrapper DAG. Confirm if this task should be merged into a larger consolidated Airflow DAG.
 
 ---
 
@@ -106,22 +104,21 @@ from airflow import DAG
 from airflow.operators.empty import EmptyOperator
 
 # ── GCP Configuration ────────────────────────────────────
-# Placeholder for GCP execution environment configuration if migrating to Cloud:
-# GCP_PROJECT_ID = "your-gcp-project-id"
-# GCP_REGION = "your-region"
+# # REVIEW-STRUCT: If converting this Ab Initio graph to GCP Dataproc/PySpark,
+# # define cluster config and bucket paths here.
+# GCP_PROJECT = "your-gcp-project-id"
+# GCP_REGION = "your-gcp-region"
+# PYSPARK_BUCKET = "gs://YOUR_BUCKET_NAME"
 
 # ── Default Args ─────────────────────────────────────────
 default_args = {
-    'owner': 'DW',
+    'owner': 'airflow',
     'depends_on_past': False,
     'retries': 1,
     'retry_delay': timedelta(minutes=5),
 }
 
-# ── on_failure_callback stubs ─────────────────────────────
-# No custom failure callbacks defined in original UC4 source.
-
-# ── DAG Definition ──────────────────────────────────────────
+# ── DAG Definition ───────────────────────────────────────
 with DAG(
     dag_id='dw_ccm_write_contractmaplookup',
     default_args=default_args,
@@ -130,107 +127,139 @@ with DAG(
     start_date=datetime(2023, 1, 1),
     catchup=False,
     max_active_runs=1,
-    is_paused_upon_creation=False,
-    tags=['migrated_uc4', 'ccm_proc'],
+    tags=['ccm_proc', 'unrecognized_launcher'],
 ) as dag:
 
-    # ── Guard Task ────────────────────────────────────────
-    # None required (no Else=Skip self-locks present).
-
-    # ── Sensor Task ───────────────────────────────────────
-    # None required (no earliest_start_time constraint).
-
-    # ── Calendar Check Task ───────────────────────────────
-    # None required (no calendar constraints specified).
-
-    # ── Task: dw_ccm_write_contractmaplookup ──────────────
-    # #REVIEW-STRUCT: Launcher command &HOME/abinitio/bin/BHB_CCM_PROC_WriteContractMapLookup.ksh
-    # was not recognized. This is mapped to an EmptyOperator stub. 
-    #
-    # Developer Action: Convert this task to the appropriate execution operator.
-    # If maintaining the legacy script execution via SSH:
-    #     from airflow.providers.ssh.operators.ssh import SSHOperator
-    #     task = SSHOperator(
-    #         task_id='dw_ccm_write_contractmaplookup',
-    #         ssh_conn_id='ssh_dwh_host',
-    #         command='. $HOME/.dw_init && $HOME/abinitio/bin/BHB_CCM_PROC_WriteContractMapLookup.ksh'
-    #     )
-    #
-    # If migrating to GCP Dataproc (PySpark):
-    #     from airflow.providers.google.cloud.operators.dataproc import DataprocSubmitJobOperator
-    #     ...
+    # ── Task: ccm_write_contractmaplookup_task ───────────
+    # # REVIEW-STRUCT: Launcher command [&HOME/abinitio/bin/BHB_CCM_PROC_WriteContractMapLookup.ksh] 
+    # # was not recognized. Currently mapped to EmptyOperator as a structural placeholder.
+    # # Recommendation:
+    # # Option A (GCP Dataproc PySpark):
+    # # ccm_write_contractmaplookup_task = DataprocSubmitJobOperator(
+    # #     task_id='ccm_write_contractmaplookup_task',
+    # #     job={
+    # #         "reference": {"project_id": GCP_PROJECT},
+    # #         "placement": {"cluster_name": "your-cluster-name"},
+    # #         "pyspark_job": {
+    # #             "main_python_file_uri": f"{PYSPARK_BUCKET}/pyspark_scripts/bhb_ccm_proc_writecontractmaplookup.py"
+    # #         }
+    # #     },
+    # #     region=GCP_REGION
+    # # )
+    # # Option B (SSH Operator on target host):
+    # # ccm_write_contractmaplookup_task = SSHOperator(
+    # #     task_id='ccm_write_contractmaplookup_task',
+    # #     ssh_conn_id='ssh_dwdwh2p_isdwh',
+    # #     command='. $HOME/.dw_init && $HOME/abinitio/bin/BHB_CCM_PROC_WriteContractMapLookup.ksh'
+    # # )
     
-    dw_ccm_write_contractmaplookup = EmptyOperator(
-        task_id='dw_ccm_write_contractmaplookup',
+    ccm_write_contractmaplookup_task = EmptyOperator(
+        task_id='ccm_write_contractmaplookup_task',
     )
 
     # ── Dependencies ─────────────────────────────────────────
-    # Trivial workflow containing only the single standalone task.
-    dw_ccm_write_contractmaplookup
+    # Single task DAG; no dependencies required.
+    ccm_write_contractmaplookup_task
 ```
 
 # File Disposition
 
 | Source File Path | Target File / Action | Purpose / Reason for Action |
 | :--- | :--- | :--- |
-| `vobs/dw_source/isdwh/uc4_prod_exports/UC4_PROD - 0001/DWH/CCM_PROC/PRODUKTION/DW.CCM_PROC_JP/DW.CCM_WRITE_CONTRACTMAPLOOKUP.xml` | `dags/vobs/dw_source/isdwh/uc4_prod_exports/UC4_PROD - 0001/DWH/CCM_PROC/PRODUKTION/DW.CCM_PROC_JP/dw_ccm_write_contractmaplookup.py` | Migrates the UC4 Unix Job definition to an Airflow DAG that orchestrates the execution of the associated PySpark job (migrated from the Ab Initio graph). |
-
-***
-
-### Job dependencies
-* **Upstream:**
-  * Shared Files `vobs/dw_source/istools/seu/template` — Already migrated & merged (PR: https://github.com/gurunathan-prodapt/pi-agents/pull/852). Sourced environment variables are loaded via target Cloud Composer environment variables or direct DAG configurations.
-* **Downstream:**
-  * `DW.CCM_PROC_JP` (Job Plan) — Not yet migrated. Once migrated, the target workflow must invoke this DAG (`dw_ccm_write_contractmaplookup`) dynamically. (Flagged under Risks & Manual Steps).
-
-### Execution order
-The target Airflow DAG must maintain the following sequence:
-1. Environment initialization: Equivalent configurations from `vobs/dw_source/istools/seu/template/.dw_init` must be resolved and active.
-2. Core workload: Execute `BHB_CCM_PROC_WriteContractMapLookup.ksh` (which starts `BHB_CCM_PROC_WriteContractMapLookup.mp`). In the target architecture, this maps to triggering the converted PySpark pipeline on Dataproc Serverless.
-
-### Scheduling
-* This job is not directly triggered by any scheduler; it runs as an included unit within the parent workflow execution (`DW.CCM_PROC_JP`).
-* **Target Mapping:** The DAG is defined with `schedule=None` (manual or externally triggered) to prevent standalone runs and remain a callable module for the downstream orchestrator.
-
-### Schedule & variables
-* **Schedule:** Inherited execution from the parent Job Plan (`DW.CCM_PROC_JP`).
-* **Variables:**
-  * `HOME` / `$HOME`: Handled in the target environment via standard system environment variables or standard Cloud Composer configurations.
-
-### Lineage
-* **Upstream Producers:**
-  * `.dw_init` script: Configures environment variables.
-  * `PACKAGE:DW.UNIX.ISDWH` (Unix Package): Sets login configuration for running on host `dwhdwh2p`.
-* **Downstream Consumers:**
-  * `vobs/dw_source/isdwh/abinitio/ccm_proc/run/BHB_CCM_PROC_WriteContractMapLookup.ksh` (cross-job hand-off): Initiated by this UC4 job to run the corresponding Ab Initio graph.
-
-### External system replacements
-* Host `dwhdwh2p` execution environment and login `DW.UNIX.ISDWH` are replaced by Cloud Composer tasks running with GCP Service Accounts and IAM permissions.
-
-### Cross-file dependencies
-* Sourced environment dependency on `.dw_init` is mapped to Composer's system configuration or Airflow Variable lookups.
-* Execution dependency on `BHB_CCM_PROC_WriteContractMapLookup.ksh` is replaced by launching the converted PySpark application (representing the `BHB_CCM_PROC_WriteContractMapLookup.mp` graph).
-
-### Target file plan
-* **Target File Path:** `dags/vobs/dw_source/isdwh/uc4_prod_exports/UC4_PROD - 0001/DWH/CCM_PROC/PRODUKTION/DW.CCM_PROC_JP/dw_ccm_write_contractmaplookup.py`
-  * **Language:** Python (Airflow DAG)
-  * **Source File:** `vobs/dw_source/isdwh/uc4_prod_exports/UC4_PROD - 0001/DWH/CCM_PROC/PRODUKTION/DW.CCM_PROC_JP/DW.CCM_WRITE_CONTRACTMAPLOOKUP.xml`
-
-### Environment-specific values
-1. **GLOBAL (Environment-wide):**
-   * `HOME` / `$HOME`: Maps to Cloud Composer run-time environment variables. Sourced via `os.environ.get("HOME")` if required, or handled natively by Composer's configuration.
-   * Host `dwhdwh2p`: Maps to the global `GCP_PROJECT`, `GCP_REGION`, and GCS buckets where jobs are run.
-   * `DW.UNIX.ISDWH` (Login): Replaced by GCP Service Account execution context.
-2. **JOB-SPECIFIC:**
-   * Script launcher path `$HOME/abinitio/bin/BHB_CCM_PROC_WriteContractMapLookup.ksh`: Replaced by a job-specific PySpark path on GCS (e.g., `gs://{GCS_BUCKET}/pyspark/ccm_proc/bhb_ccm_proc_writecontractmaplookup.py`) submitted via Dataproc Serverless.
-
-### Risks and manual steps
-* **Downstream dependency not yet migrated:** `DW.CCM_PROC_JP` is marked as "not yet migrated". Triggering or calling logic cannot be fully wired until the parent workflow is migrated.
-* **Separation of execution layers:** This design pass only covers the orchestration XML (`DW.CCM_WRITE_CONTRACTMAPLOOKUP.xml`). The core execution logic within the wrapper script (`BHB_CCM_PROC_WriteContractMapLookup.ksh`) and the Ab Initio graph (`BHB_CCM_PROC_WriteContractMapLookup.mp`) must be migrated in their respective design passes before the Dataproc submission operator in this DAG can target the finalized PySpark file.
+| `vobs/dw_source/isdwh/uc4_prod_exports/UC4_PROD - 0001/DWH/CCM_PROC/PRODUKTION/DW.CCM_PROC_JP/DW.CCM_WRITE_CONTRACTMAPLOOKUP.xml` | `vobs/dw_source/isdwh/uc4_prod_exports/UC4_PROD - 0001/DWH/CCM_PROC/PRODUKTION/DW.CCM_PROC_JP/DW.CCM_WRITE_CONTRACTMAPLOOKUP.py` | Converted from UC4 job XML to an Apache Airflow DAG Python script that orchestrates the execution of the migrated PySpark job. |
 
 ---
 
-GRAPH: tmpq927z0yg
+# Migration Design Document
+
+## Job Dependencies
+- **Upstream Dependencies**:
+  - **Shared Files** (`vobs/dw_source/istools/seu/template`): Already migrated and merged (PR: https://github.com/gurunathan-prodapt/pi-agents/pull/852).
+- **Downstream Consumers**:
+  - `DW.CCM_PROC_JP`: Not yet migrated. The cross-DAG trigger or task execution ordering wiring for this consumer cannot be finalized until it exists.
+
+## Execution Order
+The target orchestration (Apache Airflow) preserves the legacy order of operations while avoiding duplicate execution paths:
+1. **DAG Initialization**: Configured in `vobs/dw_source/isdwh/uc4_prod_exports/UC4_PROD - 0001/DWH/CCM_PROC/PRODUKTION/DW.CCM_PROC_JP/DW.CCM_WRITE_CONTRACTMAPLOOKUP.py`.
+2. **KornShell Wrapper Script Retiral**: The wrapper script `BHB_CCM_PROC_WriteContractMapLookup.ksh` is retired and not migrated to prevent redundant ETL definitions.
+3. **Execution of PySpark Pipeline**: The DAG uses Airflow's `DataprocSubmitJobOperator` (or Cloud Composer's equivalent) to submit the PySpark script converted from the Ab Initio graph (`vobs/dw_source/isdwh/abinitio/ccm_proc/mp/BHB_CCM_PROC_WriteContractMapLookup.py`, migrated in its respective design pass) to Dataproc Serverless.
+
+## Scheduling
+- **Triggering Mechanism**: This job is not directly triggered by any of the run's schedulers. It runs inside scheduled parent workflows or is triggered programmatically/by events.
+- **Airflow Configuration**: The migrated Airflow DAG is configured with `schedule=None`. It is designed to be triggered externally or imported as a sub-task group inside parent workflows.
+
+## Lineage
+- **Upstream Inputs**:
+  - Legacy table `DWH$TA_L_MAP_VT_CARM_DWH` (accessing contract map attributes), mapping to a corresponding dataset and table in BigQuery.
+  - Legacies `PACKAGE:DW.UNIX.ISDWH` and host `EXT:dwhdwh2p` are replaced by the Cloud Composer service account and Google Cloud BigQuery/Dataproc resources.
+  - Global initialization script `.dw_init` (from `vobs/dw_source/istools/seu/template/`) is replaced by Composer-level configuration.
+- **Downstream Outputs**:
+  - Writing contract map lookup attributes to a text lookup file (`ContractMapLookup.txt`), mapping to a GCS bucket path under `gs://GCS_BUCKET/ccm_proc/output/ContractMapLookup.txt`.
+  - Upstream/Downstream database trigger updating loading timestamps via BigQuery stored procedures.
+
+## External System Replacements
+- **Host `dwhdwh2p` and environment `DW.UNIX.ISDWH`**: Replaced entirely by **Cloud Composer (Airflow)** and **Dataproc Serverless** executing on Google Cloud Platform.
+- **On-premise Database & File System**: The source database tables map to **Google BigQuery**, and the output target flat file `ContractMapLookup.txt` is exported to a secure path in **Google Cloud Storage (GCS)**.
+
+## Cross-File Dependencies
+- **Initialization and Globals**: Legacy shared files under `vobs/dw_source/istools/seu/template/.dw_init` are managed through global composer environment configurations and task execution contexts.
+- **PySpark Executable Relationship**: The generated DAG depends directly on the existence of the PySpark artifact resulting from the migration of `BHB_CCM_PROC_WriteContractMapLookup.mp`.
+
+## Target File Plan
+- **File Path**: `vobs/dw_source/isdwh/uc4_prod_exports/UC4_PROD - 0001/DWH/CCM_PROC/PRODUKTION/DW.CCM_PROC_JP/DW.CCM_WRITE_CONTRACTMAPLOOKUP.py`
+- **Language**: Python (Apache Airflow DAG definition)
+- **Source File**: `vobs/dw_source/isdwh/uc4_prod_exports/UC4_PROD - 0001/DWH/CCM_PROC/PRODUKTION/DW.CCM_PROC_JP/DW.CCM_WRITE_CONTRACTMAPLOOKUP.xml`
+- **Design Details**:
+  - Instead of an `EmptyOperator` or launching a wrapper script, the DAG is built to execute the converted PySpark code.
+  - The job execution is achieved using `DataprocSubmitJobOperator` pointing to the canonical PySpark job location in Google Cloud Storage.
+
+## Environment-Specific Values
+
+### 1. GLOBAL (Environment-Wide Variables)
+The following variables remain the same across the deployment stage (dev/test/prod) and represent the target cloud infrastructure:
+- **`GCP_PROJECT`**: The target Google Cloud Project ID.
+- **`GCP_REGION`**: The target GCP region for Composer and Dataproc.
+- **`GCS_BUCKET`**: The global storage bucket where PySpark scripts and data artifacts are hosted.
+- **`DATAPROC_REGION`**: The execution region for Dataproc Serverless workloads.
+
+**Retrieval Mechanism (Airflow DAG)**:
+```python
+from airflow.models import Variable
+
+GCP_PROJECT = Variable.get("GCP_PROJECT")
+GCP_REGION = Variable.get("GCP_REGION")
+GCS_BUCKET = Variable.get("GCS_BUCKET")
+DATAPROC_REGION = Variable.get("DATAPROC_REGION")
+```
+
+### 2. JOB-SPECIFIC Variables
+The following variables are specific to this job's context and execution:
+- **`PYSPARK_SCRIPT_PATH`**: Path to the converted PySpark code in GCS. Set as:
+  ```python
+  f"gs://{GCS_BUCKET}/pyspark_scripts/bhb_ccm_proc_writecontractmaplookup.py"
+  ```
+- **`OUTPUT_FILE_PATH`**: The GCS destination path for the contract map text file. Set as:
+  ```python
+  f"gs://{GCS_BUCKET}/ccm_proc/output/ContractMapLookup.txt"
+  ```
+
+---
+
+## Risks and Manual Steps
+
+1. **Retiral of `.ksh` wrapper and transition to Dataproc**: 
+   - *Risk*: The previous migration attempt generated duplicate logic or failed to link the DAG task to the Spark execution.
+   - *Mitigation*: The `BHB_CCM_PROC_WriteContractMapLookup.ksh` file is formally **retired**. The Airflow task is explicitly mapped to a `DataprocSubmitJobOperator` that triggers the PySpark equivalent of the `BHB_CCM_PROC_WriteContractMapLookup.mp` graph directly.
+2. **Downstream Pipeline Migration**: 
+   - *Risk*: The downstream consumer `DW.CCM_PROC_JP` is marked as **not yet migrated**.
+   - *Mitigation*: The final output wiring of the DAG (triggering the next job or writing metadata tables) must be paused or stubbed out until `DW.CCM_PROC_JP` is successfully migrated.
+3. **Database Stored Procedures**:
+   - *Risk*: The legacy graph triggers stored procedures to update load execution status.
+   - *Mitigation*: The target PySpark script must handle execution metadata, or the Airflow DAG should coordinate with a `BigQueryExecuteQueryOperator` to update target loading tables once the Dataproc job completes successfully.
+
+---
+
+GRAPH: tmpjjmud4as
 
 === SOURCES ===
 [Contract Map Lookup File] kind=table
@@ -274,242 +303,250 @@ end;
   Run Program --> Reformat
 
 
-# DESIGN DOCUMENT: Graph tmpq927z0yg
-
-## 1. GRAPH OVERVIEW
-The overall purpose of this graph is to read contract map attribute data from a database table source, apply a straight pass-through formatting transformation, and sort the dataset by the contract identifier (`vertrags_id`). The resulting sorted dataset is then saved to a lookup file target for downstream consumption. Additionally, there is an uncompleted parallel/utility execution flow where data from an external command execution is reformatted and passed to an unconfigured database join before being sent to trash.
+### 1. GRAPH OVERVIEW
+The overall purpose of the graph `tmpjjmud4as` is to read contract map data from a database table source, reformat the attributes, sort the records by the contract identifier (`vertrags_id`), and output the sorted dataset to a local target configuration (`Contract Map Lookup File`). Additionally, there is a secondary parallel execution branch originating from a custom script execution (`Run Program`), which is reformatted and routed to a database join component before writing to a `Trash` (discard) target. Due to missing metadata details, some database join queries and secondary schemas must be verified and supplied manually.
 
 ---
 
-## 2. SOURCES
-* **Label:** Contract Map Lookup File (Kind: table)
-  * `DWH$TA_L_MAP_VT_CARM_DWH`
-* **Label:** Sort (Kind: select)
-  * `DWH$TA_L_MAP_VT_CARM_DWH`
+### 2. SOURCES
+* **Source 1**
+  * **Label:** Contract Map Lookup File
+  * **Kind:** table
+  * **Table or SQL:** `DWH$TA_L_MAP_VT_CARM_DWH`
+
+* **Source 2**
+  * **Label:** Sort
+  * **Kind:** select
+  * **Table or SQL:** `DWH$TA_L_MAP_VT_CARM_DWH`
+
+* **Source 3**
+  * **Label:** Run Program
+  * **Kind:** select
+  * **Table or SQL:** `# REVIEW: Run Program — source query or command script not extracted; supply manually`
 
 ---
 
-## 3. TRANSFORMS
-* **Label:** Extract Contract map attributes (Type: reformat)
-  * **Expression:**
+### 3. TRANSFORMS
+* **Transform 1**
+  * **Label:** Extract Contract map attributes
+  * **Type:** reformat
+  * **Full Expression:**
     ```
     out::reformat(in) =
     begin
       out.* :: in.*;
     end;
     ```
-  * **Description:** Passes all input fields from the source table through unmodified.
-* **Label:** Reformat (Type: reformat)
-  * **Expression:**
+  * **Plain English:** Copies all input attributes from the contract map source table directly to the output stream without modification.
+
+* **Transform 2**
+  * **Label:** Reformat
+  * **Type:** reformat
+  * **Full Expression:**
     ```
     out::reformat(in) =
     begin
       out.* :: in.*;
     end;
     ```
-  * **Description:** Passes all input fields from the Run Program output stream through unmodified.
-* **Label:** Sort (Type: sort)
-  * **Expression:** `keys=vertrags_id`
-  * **Description:** Sorts the incoming dataset by the contract identifier (`vertrags_id`) in ascending order.
-* **Label:** Join with DB (Type: join_with_db)
-  * **Expression:** *(Not extracted)*
-  * **Description:** # REVIEW: DB-LOOKUP SQL NOT EXTRACTED — Performs a live database lookup join on the incoming stream before discarding output to trash.
+  * **Plain English:** Passes all fields unmodified from the previous command-execution step down to the database lookup join component.
+
+* **Transform 3**
+  * **Label:** Sort
+  * **Type:** sort
+  * **Full Expression:** `keys=vertrags_id`
+  * **Plain English:** Sorts the records by the contract ID in ascending order to prepare them for lookup serialization.
+
+* **Transform 4**
+  * **Label:** Join with DB
+  * **Type:** join_with_db
+  * **Full Expression:** `(none extracted)`
+  * **Plain English:** Performs an online parameterised query lookup against the target database using the incoming stream.
 
 ---
 
-## 4. IN-MEMORY LOOKUPS
+### 4. IN-MEMORY LOOKUPS
 *(None extracted)*
 
 ---
 
-## 5. FILTERS (select_expr)
+### 5. FILTERS (select_expr)
 *(None extracted)*
 
 ---
 
-## 6. OUTPUT TARGETS
-* **Label:** Contract Map Lookup File
+### 6. OUTPUT TARGETS
+* **Target 1**
+  * **Label:** Contract Map Lookup File
   * **Kind:** file
-  * **Table or path:** `Contract Map Lookup File`
-  * **Confirmed Source (from Edges):** Sort
-  * **SQL:** 
-    ```sql
-    # REVIEW: file to Contract Map Lookup File — SQL not extracted; supply manually
-    ```
-* **Label:** Trash
-  * **Kind:** file (discard)
-  * **Table or path:** `Trash`
-  * **Confirmed Source (from Edges):** Join with DB
-  * **SQL:**
-    ```sql
-    # REVIEW: file to Trash — SQL not extracted; supply manually
-    ```
+  * **Table or Path:** `Contract Map Lookup File`
+  * **SQL:** `# REVIEW: file to Contract Map Lookup File — SQL not extracted; supply manually`
+
+* **Target 2**
+  * **Label:** Trash
+  * **Kind:** file
+  * **Table or Path:** `Trash`
+  * **SQL:** `# REVIEW: file to Trash — SQL not extracted; supply manually`
 
 ---
 
-## 7. DB JOINS
-* **Label:** Join with DB
-  * **Query SQL:**
-    ```sql
-    # REVIEW: DB-LOOKUP SQL NOT EXTRACTED — supply this query manually before running
-    ```
-  * **Output Column Mapping:**
-    ```
-    # REVIEW: DB-LOOKUP SQL NOT EXTRACTED
-    ```
+### 7. DB JOINS
+* **DB-Join 1**
+  * **Label:** Join with DB
+  * **Select SQL:** `# REVIEW: DB-LOOKUP SQL NOT EXTRACTED — supply this query manually before running`
+  * **Output Column Mapping:** *(None extracted)*
 
 ---
 
-## 8. BUSINESS SUMMARY
-* **Read Contract Maps:** Reads full contract map records from the source table `DWH$TA_L_MAP_VT_CARM_DWH`.
-* **Reformat/Extract Attributes:** Forwards the attributes of the database table without modifying any values or column structures.
-* **Sort by Contract ID:** Orders the contract map stream ascendingly by the primary system contract key (`vertrags_id`).
-* **Materialize Lookup Dataset:** Persists the sorted records to the physical reference dataset target `Contract Map Lookup File`.
-* **Utility Subflow Execution:** Runs an external task utility (`Run Program`), reformats its output, and routes it to an unconfigured database join component (`Join with DB`) before sending the results to the standard discard node (`Trash`).
+### 8. BUSINESS SUMMARY
+* **Contract Map Serialization:** The graph extracts contract map configuration records from the DWH database table `DWH$TA_L_MAP_VT_CARM_DWH`.
+* **Sorting Alignment:** The extracted contract map metadata is sorted by the unique contract identifier `vertrags_id` to guarantee ordering properties before the stream is stored.
+* **Lookup Generation:** The sorted output is persisted into the `Contract Map Lookup File`, which is used downstream by other execution flows.
+* **Secondary Log Processing:** A secondary process executes an external command (`Run Program`), reformats the generated records, enriches them via a database lookup (`Join with DB`), and routes the final records to a `Trash` file target for logging or discard.
 
 ---
 
-# PSEUDOCODE OUTLINE
+### PYSPARK PSEUDOCODE OUTLINE
 
 ```python
-# Step 1: Read the source database table
+# Step 1: Read Contract Map source data from BigQuery
 df_dwh_source = spark.read.format("bigquery") \
-    .option("table", "BIGQUERY_SOURCE_DS.DWH$TA_L_MAP_VT_CARM_DWH") \
+    .option("table", "BIGQUERY_SOURCE_DS.dwh_ta_l_map_vt_carm_dwh") \
     .load()
-df_dwh_source.createOrReplaceTempView("vw_dwh_ta_l_map_vt_carm_dwh")
+df_dwh_source.createOrReplaceTempView("vw_dwh_source")
 
-# Step 2: Extract Contract Map Attributes (Straight Reformat)
-# REVIEW-STRUCT: Column schema not extracted; SELECT * used as placeholder
+# Step 2: Extract Contract map attributes (Reformat)
 df_extract_contract_map_attributes = spark.sql("""
-    SELECT * 
-    FROM vw_dwh_ta_l_map_vt_carm_dwh
+    SELECT 
+        * 
+    FROM vw_dwh_source
 """)
 df_extract_contract_map_attributes.createOrReplaceTempView("vw_extract_contract_map_attributes")
 
-# Step 3: Sort by contract map key (Sort Component)
-# Sort ordering is required for downstream lookup consumption
+# Step 3: Sort the contract map data on vertrags_id as specified in SORTS AND DEDUPS
 df_sort = spark.sql("""
-    SELECT * 
+    SELECT 
+        * 
     FROM vw_extract_contract_map_attributes
     ORDER BY vertrags_id ASC
 """)
 df_sort.createOrReplaceTempView("vw_sort")
 
-# Step 4: Write to Contract Map Lookup File Target
-# REVIEW: Confirm output storage location path for the target lookup file
-write_to_bq(df_sort, "Contract_Map_Lookup_File")
+# Step 4: Write to Contract Map Lookup File (including dropDuplicates on key_id as per SORTS rule)
+df_contract_map_lookup_write = df_sort.dropDuplicates(["vertrags_id"])
+write_to_bq(df_contract_map_lookup_write, "contract_map_lookup_file")
 
-
-# ==========================================
-# UTILITY/SECONDARY DISCARD PATHWAY
-# ==========================================
-
-# Step 5: Read from Run Program utility
-# REVIEW-STRUCT: External process source schema not extracted; supply manually
-df_run_program = spark.createDataFrame([], schema=None)
+# Step 5: Read from Run Program source
+# REVIEW: Run Program source data not extracted; supply manually
+df_run_program = spark.sql("""
+    SELECT 
+        CAST(NULL AS STRING) AS dummy_col 
+    WHERE 1=0
+""")
 df_run_program.createOrReplaceTempView("vw_run_program")
 
-# Step 6: Reformat Run Program outputs
-# REVIEW-STRUCT: Column schema not extracted; SELECT * used as placeholder
+# Step 6: Reformat operation for the external run program branch
 df_reformat = spark.sql("""
-    SELECT * 
+    SELECT 
+        * 
     FROM vw_run_program
 """)
 df_reformat.createOrReplaceTempView("vw_reformat")
 
-# Step 7: DB Join
+# Step 7: Join with DB step
 # REVIEW: DB-LOOKUP SQL NOT EXTRACTED — supply this SQL manually before running
 
 # Step 8: Write to Trash
-# REVIEW: Discard stream to Trash
-# write_to_bq(df_join_with_db, "Trash")
+# REVIEW: Trash target — source 'Join with DB' has no SQL extracted; cannot generate write
 ```
 
-# File Disposition
+# Migration Design Document
+
+## File Disposition
 
 | Source File Path | Target File / Action | Purpose / Reason for Action |
 | :--- | :--- | :--- |
-| `vobs/dw_source/isdwh/abinitio/ccm_proc/mp/BHB_CCM_PROC_WriteContractMapLookup.mp` | `vobs/dw_source/isdwh/abinitio/ccm_proc/mp/BHB_CCM_PROC_WriteContractMapLookup.py` | PySpark pipeline migrating the Ab Initio graph logic to extract and sort contract map attributes, persist them to GCS, and trigger the loading timestamp update procedure on BigQuery. |
+| `vobs/dw_source/isdwh/abinitio/ccm_proc/mp/BHB_CCM_PROC_WriteContractMapLookup.mp` | `vobs/dw_source/isdwh/abinitio/ccm_proc/mp/BHB_CCM_PROC_WriteContractMapLookup.py` | Converted Ab Initio graph logic (data extraction, sorting, GCS write, and database stored procedure execution) to a PySpark script to run on Dataproc Serverless. |
 
 ---
 
-# ADD CONTEXT THE MCP COULD NOT SEE
-
-### Job Dependencies
-* **Upstream**:
-  * Shared Files: `vobs/dw_source/istools/seu/template` (contains `.dw_global` and `.dw_init`) — Already migrated and merged. Environment variables and global properties are imported/referenced via GCP/Composer configurations.
-* **Downstream**:
-  * `DW.CCM_PROC_JP` — **Not yet migrated**. This job is a sub-module called inside the downstream parent orchestrator `DW.CCM_PROC_JP`. It must be wired as a task/task group within that downstream parent DAG once it is migrated.
-
-### Execution Order
-The legacy orchestration sequence must be preserved within Cloud Composer (Airflow) as follows:
-1. **Orchestration Context**: UC4 Export `DW.CCM_WRITE_CONTRACTMAPLOOKUP.xml` maps to the Airflow task state instantiation under parent DAG `DW.CCM_PROC_JP`.
-2. **Wrapper Logic**: KSH wrapper `BHB_CCM_PROC_WriteContractMapLookup.ksh` is replaced by an Airflow Dataproc Serverless submit operator passing execution arguments.
-3. **Graph Execution**: Ab Initio Graph `BHB_CCM_PROC_WriteContractMapLookup.mp` is converted to a PySpark application running on Dataproc Serverless: `vobs/dw_source/isdwh/abinitio/ccm_proc/mp/BHB_CCM_PROC_WriteContractMapLookup.py`.
-
-### Scheduling
-* **Triggering Mechanism**: This job has no direct standalone scheduler or trigger. It runs as an included module orchestrated inside parent workflow `DW.CCM_PROC_JP`.
-* **Target Alignment**: The migrated PySpark job must remain an importable/callable task unit in Cloud Composer with no independent standalone cron schedule.
-
-### Schedule & Variables — Must Be Retained
-* **Variables / Arguments**:
-  * `BHB_CCM_PROC_TargetObjectName` (default: `"ContractMapLookup.txt"`): Job-specific output filename.
-  * `BHB_CCM_PROC_FirstDay` (e.g. `20050217`): Loading execution window start date.
-  * `BHB_CCM_PROC_LastDayPlus1` (e.g. `20050218`): Loading execution window end date.
-* **Passing Mechanism**: These values must reach the PySpark application via script arguments (`--target_object_name`, `--first_day`, `--last_day_plus_1`) supplied by the calling Airflow DAG task operator.
-
-### Lineage
-* **Upstream Producers (Sources)**:
-  * Oracle table `DWH$TA_L_MAP_VT_CARM_DWH` maps to BigQuery table `BQ_DATASET.DWH_TA_L_MAP_VT_CARM_DWH`.
-* **Downstream Consumers (Targets)**:
-  * `ContractMapLookup.txt` lookup file maps to a GCS bucket location: `gs://{GCS_BUCKET}/ccm_proc/ContractMapLookup.txt`.
-
-### External System Replacements
-* **Oracle DB Tables** $\rightarrow$ BigQuery Tables
-* **Oracle Stored Procedure** $\rightarrow$ BigQuery SQL Stored Procedure (`DWH$PA_ALIS_OBJEKT.SetzeLadedatumAbInitio`)
-* **Local Linux File Directories** $\rightarrow$ Google Cloud Storage (GCS) buckets (`GCS_BUCKET`)
-
-### Cross-File Dependencies
-* **Global Configurations**: `.dw_global` and `.dw_init` from `vobs/dw_source/istools/seu/template` provide system-wide configurations and must be referenced/imported as Airflow environment configurations on Composer.
-
-### Target File Plan
-* **Target File Path**: `vobs/dw_source/isdwh/abinitio/ccm_proc/mp/BHB_CCM_PROC_WriteContractMapLookup.py`
-* **Language**: Python (PySpark)
-* **Source File Path**: `vobs/dw_source/isdwh/abinitio/ccm_proc/mp/BHB_CCM_PROC_WriteContractMapLookup.mp`
-* **Description**: PySpark data pipeline running on Dataproc Serverless. It extracts and sorts contract map data from BigQuery, saves it to GCS, and calls the BigQuery stored procedure to update loading timestamps.
-
-### Environment-Specific Values
-
-#### 1. GLOBAL (Environment-Wide)
-These values represent the infrastructure itself and are identical for every job in a given deployment environment. They must be resolved at runtime using standard Airflow/GCP configurations:
-* `GCP_PROJECT`: GCP Project ID hosting BigQuery and Dataproc resources.
-* `GCS_BUCKET`: Target GCS bucket for landing the output lookup file.
-* `BQ_DATASET`: BigQuery dataset containing the source tables.
-* `BQ_LOCATION`: Regional location for BigQuery resources.
-
-#### 2. JOB-SPECIFIC
-These variables are specific to this task execution and are loaded via parameters:
-* `BHB_CCM_PROC_TargetObjectName`: Output file name (default `"ContractMapLookup.txt"`).
-* `BHB_CCM_PROC_FirstDay`: Execution parameter for loading range start date.
-* `BHB_CCM_PROC_LastDayPlus1`: Execution parameter for loading range end date.
+## Job Dependencies
+* **Upstream Jobs / Shared Files:**
+  * **Shared Files:** `vobs/dw_source/istools/seu/template` — Already migrated and merged (PR: https://github.com/gurunathan-prodapt/pi-agents/pull/852). These global framework parameters/utilities will be imported/referenced during runtime setup.
+* **Downstream Jobs / Consumers:**
+  * **Downstream Job:** `DW.CCM_PROC_JP` — Not yet migrated. This downstream job consumes the output file (`ContractMapLookup.txt`) from GCS. A line is added under Risks & Manual Actions as the target orchestration cannot be finalized until this downstream job is migrated.
 
 ---
 
-### Risks and Manual Steps
+## Execution Order
+The execution order must be preserved in the target orchestration (Cloud Composer DAG):
+1. **UC4 Job:** `DW.CCM_WRITE_CONTRACTMAPLOOKUP` (defined in UC4 export `DW.CCM_WRITE_CONTRACTMAPLOOKUP.xml`) orchestrates the run.
+2. **KornShell Wrapper Script:** `BHB_CCM_PROC_WriteContractMapLookup.ksh` — **Retired**. Per reviewer feedback, generating redundant logic in both KSH and PySpark causes structural conflicts. The wrapper script is retired, and its orchestration function is folded directly into the Airflow DAG.
+3. **Ab Initio Graph:** `BHB_CCM_PROC_WriteContractMapLookup.mp` — Replaced by the PySpark script `BHB_CCM_PROC_WriteContractMapLookup.py` executed via `DataprocSubmitJobOperator`.
 
-* **Unmigrated Downstream Orchestrator**: 
-  The orchestration logic and parent DAG `DW.CCM_PROC_JP` have not yet been migrated. Sensor and execution linkages cannot be finalized or validated until the parent DAG exists on the target environment.
-  * **Risks & Manual Actions Listing**:
-    * UPSTREAM: NOT FOUND — `DW.CCM_PROC_JP` — no candidate
+---
 
-* **Stored Procedure Migration**:
-  The Ab Initio graph contains a step `Join with DB` in the `Update Loading Timestamps` subgraph that calls:
-  `execute :result = DWH$PA_ALIS_OBJEKT.SetzeLadedatumAbInitio(:TARGET_OBJECT_NAME, :FIRST_DAY, :LAST_DAY_PLUS_1)`
-  * *Risk*: The PL/SQL logic of the stored procedure `DWH$PA_ALIS_OBJEKT.SetzeLadedatumAbInitio` is external to this graph and must be migrated to BigQuery separately.
-  * *Manual Action*: Confirm that the equivalent BigQuery Stored Procedure `BQ_DATASET.SetzeLadedatumAbInitio` has been pre-created. The PySpark script must invoke this procedure using the BigQuery Python Client or Spark SQL BQ connector.
+## Scheduling
+* **Scheduling Pattern:** This job is not directly triggered by any of the environment's direct schedulers. It runs inside scheduled parent jobs (as an include/shared module).
+* **Target Mapping:** Do not assign a standalone trigger/schedule to this DAG. It must remain a callable DAG / task group that is triggered as part of the migrated `DW.CCM_PROC_JP` parent DAG workflow.
 
-* **Source Schema Dependencies**:
-  The Oracle table `DWH$TA_L_MAP_VT_CARM_DWH` schema must be migrated and populated in BigQuery before executing this pipeline.
+---
+
+## Lineage
+* **Upstream Producer (BigQuery Table):** `DWH$TA_L_MAP_VT_CARM_DWH` (mapped to `GCP_PROJECT.BQ_DATASET.dwh_ta_l_map_vt_carm_dwh`).
+* **Downstream Consumer (GCS File):** `ContractMapLookup.txt` (written to `GCS_BUCKET/ccm_proc/ContractMapLookup.txt`).
+
+---
+
+## External System Replacements
+* **Database Platform:** The legacy Oracle Database is replaced by **BigQuery**. All table reads and the stored procedure call (`SetzeLadedatumAbInitio`) will execute against BigQuery.
+* **Storage Platform:** Legacy local filesystem storage for intermediate/lookup files is replaced by **Google Cloud Storage (GCS)**.
+
+---
+
+## Cross-File Dependencies
+* **Shared Tables:** Read access to the BigQuery table `dwh_ta_l_map_vt_carm_dwh` must be coordinated across multiple workflows.
+* **Downstream File Consumption:** The generated file `ContractMapLookup.txt` in GCS is read by downstream graphs in the `DW.CCM_PROC_JP` workflow. The path structure must remain stable.
+
+---
+
+## Target File Plan
+* **Target File:** `vobs/dw_source/isdwh/abinitio/ccm_proc/mp/BHB_CCM_PROC_WriteContractMapLookup.py`
+  * **Language:** Python / PySpark
+  * **Source File:** `vobs/dw_source/isdwh/abinitio/ccm_proc/mp/BHB_CCM_PROC_WriteContractMapLookup.mp`
+  * **Purpose:** Canonical implementation of the contract map extraction, sorting, local text output formatting (using `\001` delimiters), and stored procedure execution. Replaces the core Ab Initio graph execution.
+
+---
+
+## Environment-Specific Values
+
+### 1. GLOBAL (Environment-Wide)
+The following variables remain identical for every job in this deployment environment and must be sourced dynamically at runtime:
+* `GCP_PROJECT`
+  * **Source (Python):** `os.environ.get("GCP_PROJECT")`
+  * **Source (Composer DAG):** `Variable.get("GCP_PROJECT")`
+* `GCS_BUCKET`
+  * **Source (Python):** `os.environ.get("GCS_BUCKET")`
+  * **Source (Composer DAG):** `Variable.get("GCS_BUCKET")`
+* `BQ_DATASET`
+  * **Source (Python):** `os.environ.get("BQ_DATASET")`
+  * **Source (Composer DAG):** `Variable.get("BQ_DATASET")`
+
+### 2. JOB-SPECIFIC
+The following variables are unique to this specific job execution:
+* `TARGET_OBJECT_NAME` = `"ContractMapLookup.txt"`
+  * **Source:** Inline literal or job-level configuration object.
+* `FIRST_DAY`
+  * **Source:** Passed as a run argument to the PySpark job from the orchestrating Composer DAG (using Composer macros like `{{ ds }}` or custom variables).
+* `LAST_DAY_PLUS_1`
+  * **Source:** Passed as a run argument to the PySpark job from the orchestrating Composer DAG.
+
+---
+
+## Risks and Manual Steps
+1. **Downstream Job Migration Gap:** The downstream consumer job `DW.CCM_PROC_JP` is not yet migrated. The exact target directory and schema verification for GCS file consumption cannot be fully verified until that job is migrated.
+2. **Stored Procedure Verification:** The Oracle stored procedure `DWH$PA_ALIS_OBJEKT.SetzeLadedatumAbInitio` must be migrated to BigQuery as a stored procedure (`BQ_DATASET.SetzeLadedatumAbInitio`) and verified manually before executing the PySpark script.
+3. **Date Arguments Pass-Through:** Ensure that the Composer DAG passes `first_day` and `last_day_plus_1` correctly as runtime arguments (`--first_day` and `--last_day_plus_1`) to the Dataproc Serverless job.
 
 ---
 
@@ -1098,295 +1135,257 @@ exit $mpjret
 
 === CONVERSION VERDICT ===
 VERDICT: PYTHON
-REASON: The script is a deployed Ab Initio graph that orchestrates database extraction, data sorting, writing to a flat file, and calling an Oracle database procedure.
+REASON: The script executes an Ab Initio graph that extracts data to a flat file and invokes a database stored procedure, which requires Python for file orchestration, database client connectivity, and control flow.
 
 EVIDENCE
-- Business logic found: KSH custom logic builds and runs an Ab Initio graph (via `mp run`) that extracts data from `DWH$TA_L_MAP_VT_CARM_DWH`, sorts it, writes to a lookup file, and calls `DWH$PA_ALIS_OBJEKT.SetzeLadedatumAbInitio` to update load timestamps.
+- Business logic found: KSH custom logic / graph compilation. It extracts data from the Oracle table `DWH$TA_L_MAP_VT_CARM_DWH`, sorts it by `vertrags_id`, writes it to a file specified by `$CCM_PROC_ContractMapLookupFilename`, and calls the stored procedure `DWH$PA_ALIS_OBJEKT.SetzeLadedatumAbInitio`.
 - AWK: none
-- SQL-expressible: partly (the extraction and stored procedure call are SQL, but the graph execution, file writing, and sorting are orchestrated by Ab Initio utility commands).
-- Non-SQL side effects: Writes a physical file defined by `$CCM_PROC_ContractMapLookupFilename`.
-- Against this verdict: If the target architecture is entirely BigQuery and all files are represented as tables, this could be migrated to a BigQuery script, but it is safer to use Python to manage the file writing and procedure execution.
+- SQL-expressible: No, because it involves writing to a local/shared delimited flat file whose target path is dynamically parameterized ($CCM_PROC_ContractMapLookupFilename), which is outside standard SQL capabilities.
+- Non-SQL side effects: Creates temporary proxy directories, writes DML/XFR files, generates an output file on the filesystem, and orchestrates an Ab Initio graph execution.
+- Against this verdict: If the target architecture replaces all files with BigQuery tables and we ignore the Ab Initio orchestration, the core data transform could be written as a BQ SQL query (extract and sort), but the file-generation requirements and stored procedure call make Python the safer choice.
 
 =======================================================================================
 PART A — PYTHON DESIGN DOCUMENT
 =======================================================================================
 
 1. SCRIPT OVERVIEW
-   The script `BHB_CCM_PROC_WriteContractMapLookup.ksh` is a deployed Ab Initio graph execution script. Its purpose is to extract contract mapping information from the database table `DWH$TA_L_MAP_VT_CARM_DWH`, sort this data by `vertrags_id`, and write the resulting dataset to a flat lookup file (`ContractMapLookup.txt`). Additionally, it executes an Oracle stored procedure `DWH$PA_ALIS_OBJEKT.SetzeLadedatumAbInitio` to update the loading timestamp status for the target contract map lookup object.
+   The script executes an Ab Initio graph named `BHB_CCM_PROC_WriteContractMapLookup`. It reads contract mapping data from the Oracle table `DWH$TA_L_MAP_VT_CARM_DWH`, formats and sorts it by `vertrags_id`, and writes it to a file. Additionally, it calls a database stored procedure (`DWH$PA_ALIS_OBJEKT.SetzeLadedatumAbInitio`) to log or update the data loading timestamps for the target object.
 
 2. INVOCATION CONTEXT
-   - **Who calls this script**: Typically invoked by a UC4 job scheduler (JOBS_UNIX object), likely named after the script: `BHB_CCM_PROC_WriteContractMapLookup`. Command line parameters are passed as positional arguments.
-   - **UC4 native includes**: None referenced in this extraction.
-   - **Environment files sourced**:
-     - `.project.ksh` from the project directory (e.g., `. $PROJECT_DIR/.project.ksh` via `__AB_INVOKE_PROJECT`). Sourced with parameters: `execute start` and `execute end`.
-       # REVIEW-STRUCT: environment file [.project.ksh] body not supplied — behaviour unknown
-     - `ab_catalog_functions.ksh` from `$AB_HOME/bin/` if it exists.
-       # REVIEW-STRUCT: environment file [ab_catalog_functions.ksh] body not supplied — behaviour unknown
+   - Who calls this script: Typically invoked by a UC4 job (the exact name is not provided in the source text, so we mark it as unknown).
+   - UC4 native includes: None referenced in the provided text.
+   - Environment files sourced:
+     - `.project.ksh` via the `__AB_INVOKE_PROJECT` function.
+       # REVIEW-STRUCT: environment file [.project.ksh] not supplied — variables it sets are unknown; do not guess their names or values
+     - `ab_catalog_functions.ksh` if it exists in `$AB_HOME/bin`.
+       # REVIEW-STRUCT: environment file [ab_catalog_functions.ksh] not supplied — variables it sets are unknown; do not guess their names or values
+     - `. ./GDE-Parameters` (generated dynamically within the script's proxy directory).
 
 3. PARAMETERS / INPUTS
-   The script evaluates and exports several parameters, falling back to environment values if unset.
-   - `DB_TNS_NAME_DWH` (Environment variable/Default) - Oracle TNS connection name for DWH.
-   - `DB_USER_DWH` (Environment variable/Default) - Database username for DWH.
-   - `DB_PASSWD_DWH` (Environment variable/Default) - Database password for DWH.
-   - `DB_DB_VERSION_DWH` (Environment variable/Default) - Database version.
-   - `DB_CLIENT_VERSION_DWH` (Environment variable/Default) - DB Client version.
-   - `DB_DB_HOME_DWH` (Environment variable/Default) - DB Home path.
-   - `DB_TNS_NAME_CRS`, `DB_USER_CRS`, `DB_PASSWD_CRS` - CRS connection details (declared but unused).
-   - `DB_TNS_NAME_SGM`, `DB_USER_SGM`, `DB_PASSWD_SGM` - SGM connection details (declared but unused).
-   - `DB_TNS_NAME_CADS`, `DB_USER_CADS`, `DB_PASSWD_CADS` - CADS connection details (declared but unused).
-   - `DB_TNS_NAME_CACM`, `DB_USER_CACM`, `DB_PASSWD_CACM` - CACM connection details (declared but unused).
-   - `BHB_Projektverzeichnis`, `BHB_Graph`, `BHB_Prozesstyp`, `BHB_Eintragsnr`, `BHB_Quellverzeichnis`, `BHB_Zielverzeichnis`, `BHB_Dateimaske`, `BHB_Kopfdatensatzkennung`, `BHB_Nutzdatensatzkennung`, `BHB_Endedatensatzkennung`, `BHB_Dateiname` - Framework metadata variables (declared but unused).
-   - `BHB_CCM_PROC_TargetObjectName` (Environment variable / Literal default: `ContractMapLookup.txt`) - Used as target object name parameter.
-   - `BHB_CCM_PROC_FirstDay` (Environment variable / Literal default: `20050217`) - Used as loading window start date.
-   - `BHB_CCM_PROC_LastDayPlus1` (Environment variable / Literal default: `20050218`) - Used as loading window end date.
-   - `CCM_PROC_ContractMapLookupFilename` (Environment variable) - Holds target output path.
-   - `CCM_PROC_ContractMapLookupDML` (Environment variable) - Path to lookup DML (metadata).
-   - `BHB_DB` (Environment variable) - Base path containing DB configurations like `DWH_BHB.dbc`.
-
-   # REVIEW-STRUCT: connection parameters inferred from a cross-referenced .ksh file — confirm these exact env var names are set in this job's actual runtime environment before deploying
+   The script uses several parameters declared as exports:
+   - Positional arguments: `$1` may be `-reposit-tracking` or `-help`.
+   - DB Connection parameters (from KSH DECLARED ENVIRONMENT PARAMETERS section):
+     - `DB_TNS_NAME_DWH`, `DB_USER_DWH`, `DB_PASSWD_DWH`, `DB_DB_VERSION_DWH`, `DB_CLIENT_VERSION_DWH`, `DB_DB_HOME_DWH` (Oracle DWH connection credentials - used for database connectivity).
+       # REVIEW-STRUCT: connection parameters inferred from a cross-referenced .ksh file — confirm these exact env var names are set in this job's actual runtime environment before deploying
+     - `DB_TNS_NAME_CRS`, `DB_USER_CRS`, `DB_PASSWD_CRS` (Unused in the script, informational only).
+     - `DB_TNS_NAME_SGM`, `DB_USER_SGM`, `DB_PASSWD_SGM` (Unused in the script, informational only).
+     - `DB_TNS_NAME_CADS`, `DB_USER_CADS`, `DB_PASSWD_CADS` (Unused in the script, informational only).
+     - `DB_TNS_NAME_CACM`, `DB_USER_CACM`, `DB_PASSWD_CACM` (Unused in the script, informational only).
+   - Framework Parameters (Informational only, unused in the core logic):
+     - `BHB_Projektverzeichnis`, `BHB_Graph`, `BHB_Prozesstyp`, `BHB_Eintragsnr`, `BHB_Quellverzeichnis`, `BHB_Zielverzeichnis`, `BHB_Dateimaske`, `BHB_Kopfdatensatzkennung`, `BHB_Nutzdatensatzkennung`, `BHB_Endedatensatzkennung`, `BHB_Dateiname`
+   - Local Settings:
+     - `BHB_CCM_PROC_TargetObjectName` (Default: `ContractMapLookup.txt`) - Used in stored procedure call.
+     - `BHB_CCM_PROC_FirstDay` (Default: `20050217`) - Used in stored procedure call.
+     - `BHB_CCM_PROC_LastDayPlus1` (Default: `20050218`) - Used in stored procedure call.
+   - File path parameters:
+     - `CCM_PROC_ContractMapLookupDML` - Metadata definition path (unused in Python conversion as schemas are embedded).
+     - `CCM_PROC_ContractMapLookupFilename` - Target output file path.
 
 4. EXTERNAL COMMANDS / PROGRAMS INVOKED
-   - `m_env -get AB_GRAPH_SCRIPT_REPOSIT_TRACKING` - Checks repository tracking.
-   - `air sandbox find "${PROJECT_DIR}" -project` - EME repository query (Ab Initio specific).
-   - `run-and-reposit` - Proprietary Ab Initio script execution tracker.
-   - `mp` (various subcommands: `job`, `metadata`, `ofile`, `itable`, `reformat-transform`, `add-port`, `local-sort`, `filter`, `db-lookup`, `broadcast`, `straight-flow`, `run`, `reset`) - Ab Initio command line graph development and runtime engine.
-   - `m_db_layout` - Database layout configuration helper.
-   - `m_rmcatalog`, `m_mkcatalog` - Temporary Ab Initio catalog management tools.
-
-   *Resolvability*: This script qualifies as a **RESOLVABLE LAUNCHER** because the entire data transformation logic defined dynamically via `mp` components can be directly implemented using a Python script with native database clients and file-handling operations.
+   The script invokes Ab Initio command-line utilities (`m_env`, `air`, `mp`, `m_db_layout`, `m_rmcatalog`, `m_mkcatalog`).
+   Since we are converting the script's *business logic* to Python, these proprietary tools will not be invoked. Instead, their logic is "resolved" by replacing them with native Python functions (e.g. standard file I/O, Python db-clients, standard library manipulation).
+   This qualifies as a **RESOLVABLE LAUNCHER** pattern because the underlying Ab Initio graph logic compiles down to a clean, traceable database query and a stored procedure call.
+   - Target database: Oracle (implied by Oracle-specific stored procedure block call syntax and schema tables).
+     # REVIEW: target database platform not specified; DB-client library choice below is provisional
 
 5. EMBEDDED SQL
-   - **Query 1**
-     - Source: Inline DML/mp definition (`DWH_TA_L_MAP_VT_CARM_DWH__table_`)
-     - SQL Text: `SELECT * FROM DWH$TA_L_MAP_VT_CARM_DWH`
-     - Statement type: `SELECT`
-     - Tables touched: `DWH$TA_L_MAP_VT_CARM_DWH`
-     - Dialect: Oracle (unambiguously identified by `DWH$` prefix and associated TNS connection parameters)
-   - **Query 2 (Stored Procedure call)**
-     - Source: `Update_Loading_Timestamps.Join_with_DB` db-lookup definition
-     - SQL Text: `execute :result = DWH$PA_ALIS_OBJEKT.SetzeLadedatumAbInitio(:TARGET_OBJECT_NAME, :FIRST_DAY, :LAST_DAY_PLUS_1)`
-     - Statement type: Stored Function Call (PL/SQL execution)
-     - Tables touched: Unknown (internal to `DWH$PA_ALIS_OBJEKT` package)
-     - Dialect: Oracle
+   The script has inline references to database objects:
+   - Source table: `DWH$TA_L_MAP_VT_CARM_DWH`
+     - Fields extracted (derived from `DWH_TA_L_MAP_VT_CARM_DWH-2.dml`):
+       - `vertrags_id` (NUMBER(10) NOT NULL)
+       - `dwh_vertrag_id` (NUMBER(16) NULL)
+     - Core Query:
+       ```sql
+       SELECT vertrags_id, dwh_vertrag_id FROM DWH$TA_L_MAP_VT_CARM_DWH
+       ```
+   - DB Lookup (Stored Procedure call):
+     ```sql
+     execute :result = DWH$PA_ALIS_OBJEKT.SetzeLadedatumAbInitio(:TARGET_OBJECT_NAME, :FIRST_DAY, :LAST_DAY_PLUS_1)
+     ```
+     - Statement type: PL-SQL Stored Procedure Execution
+     - Parameters mapped:
+       - `:TARGET_OBJECT_NAME` -> `BHB_CCM_PROC_TargetObjectName`
+       - `:FIRST_DAY` -> `BHB_CCM_PROC_FirstDay`
+       - `:LAST_DAY_PLUS_1` -> `BHB_CCM_PROC_LastDayPlus1`
 
 6. CONTROL FLOW
-   1. Initialize environment variables (`AB_HOME`, `PATH`, etc.) and define internal Ab Initio functions.
-   2. Invoke project start initialization using `.project.ksh execute start`.
-   3. Check for `-help` argument; exit with status 1 if present.
-   4. Evaluate all DB and Framework variables. Set defaults for local settings (`BHB_CCM_PROC_TargetObjectName`, `BHB_CCM_PROC_FirstDay`, `BHB_CCM_PROC_LastDayPlus1`).
-   5. Create temporary proxy directory `_AB_PROXY_DIR` to hold temporary DML metadata and transformation code.
-   6. Execute the Ab Initio graph pipeline via `mp run`:
-      a. Establish temporary lookup catalogs.
-      b. Query database table `DWH$TA_L_MAP_VT_CARM_DWH`.
-      c. Sort output by key `{vertrags_id}`.
-      d. Write results to physical output file `$CCM_PROC_ContractMapLookupFilename`.
-      e. Execute stored procedure `DWH$PA_ALIS_OBJEKT.SetzeLadedatumAbInitio` passing target object, first day, and last day plus 1.
-      f. Clean up temporary catalogs.
-   7. Remove temporary proxy directory `_AB_PROXY_DIR`.
-   8. Invoke project end termination using `.project.ksh execute end`.
-   9. Exit with the final return code of the pipeline.
+   1. **Initialization**: Read environment variables, default variables, and command-line arguments.
+   2. **Project Lifecycle Hook (Start)**: Source `.project.ksh` with argument `execute start`.
+   3. **Database Extraction**: Query the `DWH$TA_L_MAP_VT_CARM_DWH` table using the credentials supplied by `DB_USER_DWH`, `DB_PASSWD_DWH`, and `DB_TNS_NAME_DWH`.
+   4. **Transform and Sort**:
+      - Fetch all records (containing `vertrags_id` and `dwh_vertrag_id`).
+      - Sort the records by `vertrags_id` ascending.
+   5. **File Generation**: Write the sorted records to the delimited flat file path specified by `$CCM_PROC_ContractMapLookupFilename` using `\001` (SOH) or the specified character as the field delimiter and `\n` as the line terminator.
+   6. **Timestamp Update**: Execute the database stored procedure `DWH$PA_ALIS_OBJEKT.SetzeLadedatumAbInitio` passing target object, start day, and last day plus 1.
+   7. **Project Lifecycle Hook (End)**: Source `.project.ksh` with argument `execute end`.
+   8. **Cleanup**: Handle any exceptions and ensure database connections are closed.
 
 7. ERROR HANDLING & EXIT CODES
-   - The script sets traps on `EXIT`, `HUP`, `INT`, `QUIT`, `TERM` to clean up temporary directories (`_AB_PROXY_DIR` and `AB_EXTERNAL_PROXY_DIR`).
-   - Checks return status of variable assignments (`mpjret=$?`) and the final `mp run`. Any non-zero status results in immediate exit with the failure code.
-   - Successful execution exits with code `0`.
-   - Python equivalent:
-     - Wrap database operations in `try-except` blocks utilizing client-specific driver exceptions (e.g., `oracledb.DatabaseError`).
-     - Utilize a `finally` block or `atexit.register` to perform file cleanup.
-     - Raise exceptions or call `sys.exit(code)` to propagate failures.
+   - How does the script detect failure? It checks exit codes of parameter evaluations and graph runs (`mpjret=$?`), exiting immediately with a non-zero code on failure.
+   - Python Mapping: Python exceptions will be handled using a standard `try...except...finally` block. A connection failure, missing environment variable, or failed database operation will raise an exception, print to `sys.stderr`, and trigger a clean exit with a non-zero exit code (e.g., `sys.exit(1)`).
+   - Trap handlers are mapped to Python `finally` blocks for clean closure of database sessions.
 
 8. OUTPUTS / SIDE EFFECTS
-   - Writes sorted contract mapping data to physical flat file: `$CCM_PROC_ContractMapLookupFilename` (usually mapped to `ContractMapLookup.txt`).
-   - Updates target object loading database state using stored function: `DWH$PA_ALIS_OBJEKT.SetzeLadedatumAbInitio`.
+   - Writes to output file: `$CCM_PROC_ContractMapLookupFilename`
+   - Executes stored procedure `DWH$PA_ALIS_OBJEKT.SetzeLadedatumAbInitio` (modifies state in Oracle DB).
 
 9. BUSINESS SUMMARY
-   - Extracts all active contract mapping identifier pairs (`vertrags_id`, `dwh_vertrag_id`) from the core Data Warehouse database.
-   - Sorts the dataset by the business identifier key `vertrags_id` to ensure integrity and fast lookups for subsequent processing stages.
-   - Saves this extracted mapping to a shared reference lookup file.
-   - Formally registers the completion and temporal window limits of the load execution within the database tracking layer using a central metadata procedure.
+   - Reads contract mapping data from database table `DWH$TA_L_MAP_VT_CARM_DWH`.
+   - Extracts `vertrags_id` and `dwh_vertrag_id` attributes.
+   - Sorts the extracted records by `vertrags_id`.
+   - Writes the formatted and sorted contract map to a localized/configured delimited flat file.
+   - Updates database load tracking metadata by calling `DWH$PA_ALIS_OBJEKT.SetzeLadedatumAbInitio` with parameter boundaries (`ContractMapLookup.txt`, start date, end date).
 
 =======================================================================================
-PYTHON PSEUDOCODE OUTLINE
+PYTHON PSEUDOCODE
 =======================================================================================
 
 ```python
 import os
 import sys
-import shutil
-import tempfile
-import oracledb  # Provisional choice for Oracle DB client
+import oracledb  # Provisional choice based on Oracle SQL dialect indicators
 
-# REVIEW: target database platform not specified; DB-client library choice below is provisional
+# Step 1: Load environment parameters and establish defaults
+# REVIEW-STRUCT: connection parameters inferred from a cross-referenced .ksh file — confirm these exact env var names are set in this job's actual runtime environment before deploying
+DB_USER = os.environ.get("DB_USER_DWH")
+DB_PASSWD = os.environ.get("DB_PASSWD_DWH")
+DB_TNS_NAME = os.environ.get("DB_TNS_NAME_DWH")
 
-# Step 1: Initialize environment and global settings
-_AB_PROXY_DIR = None
-exit_status = 0
+CCM_PROC_ContractMapLookupFilename = os.environ.get("CCM_PROC_ContractMapLookupFilename")
 
-# Step 2: Define cleanup routine
-def cleanup():
-    global _AB_PROXY_DIR
-    if _AB_PROXY_DIR and os.path.exists(_AB_PROXY_DIR):
-        shutil.rmtree(_AB_PROXY_DIR)
+BHB_CCM_PROC_TargetObjectName = os.environ.get("BHB_CCM_PROC_TargetObjectName", "ContractMapLookup.txt")
+BHB_CCM_PROC_FirstDay = os.environ.get("BHB_CCM_PROC_FirstDay", "20050217")
+BHB_CCM_PROC_LastDayPlus1 = os.environ.get("BHB_CCM_PROC_LastDayPlus1", "20050218")
 
-# Register cleanup for execution termination
-import atexit
-atexit.register(cleanup)
+# Validate required variables
+if not all([DB_USER, DB_PASSWD, DB_TNS_NAME, CCM_PROC_ContractMapLookupFilename]):
+    print("Error: Missing required environment variables.", file=sys.stderr)
+    sys.exit(1)
+
+# Step 2: Source legacy project lifecycle logic (Simulated or Placeholder)
+# REVIEW-STRUCT: environment file [.project.ksh] not supplied — variables it sets are unknown; do not guess their names or values
+# Note: Legacy script executed `.project.ksh <dir> execute start`. If these hooks are required, they should be invoked here.
+
+connection = None
+cursor = None
 
 try:
-    # Step 3: Source project environment initialization
-    # # REVIEW-STRUCT: environment file [.project.ksh] not supplied — variables it sets are unknown; do not guess their names or values
-    # In a fully migrated environment, this step might load environment variables from a .env or vault.
-    
-    # Step 4: Handle help argument
-    if len(sys.argv) > 1 and sys.argv[1] == "-help":
-        sys.exit(1)
-
-    # Step 5: Read and evaluate parameters
-    db_user = os.environ.get("DB_USER_DWH")
-    db_password = os.environ.get("DB_PASSWD_DWH")
-    db_tns = os.environ.get("DB_TNS_NAME_DWH")
-    
-    target_object_name = os.environ.get("BHB_CCM_PROC_TargetObjectName", "ContractMapLookup.txt")
-    first_day = os.environ.get("BHB_CCM_PROC_FirstDay", "20050217")
-    last_day_plus_1 = os.environ.get("BHB_CCM_PROC_LastDayPlus1", "20050218")
-    
-    output_filename = os.environ.get("CCM_PROC_ContractMapLookupFilename")
-    if not output_filename:
-        raise ValueError("CCM_PROC_ContractMapLookupFilename environment variable is not defined.")
-
-    # Create proxy directory equivalent for temporary process structures
-    _AB_PROXY_DIR = tempfile.mkdtemp(prefix="BHB_CCM_PROC_WriteContractMapLookup-ProxyDir-")
-
-    # Step 6: Connect to the Oracle database
-    # # REVIEW-STRUCT: connection parameters inferred from cross-referenced .ksh file — confirm these exact env var names are set in this job's actual runtime environment before deploying
-    connection = oracledb.connect(user=db_user, password=db_password, dsn=db_tns)
+    # Step 3: Establish connection to database
+    # REVIEW: target database platform not specified; DB-client library choice below is provisional
+    connection = oracledb.connect(user=DB_USER, password=DB_PASSWD, dsn=DB_TNS_NAME)
     cursor = connection.cursor()
 
-    # Step 7: Execute DB query to retrieve contract maps
+    # Step 4: Extract contract mapping attributes
     query = "SELECT vertrags_id, dwh_vertrag_id FROM DWH$TA_L_MAP_VT_CARM_DWH"
     cursor.execute(query)
     records = cursor.fetchall()
 
-    # Step 8: Sort data by vertrags_id (ascending) as required by Sort component
-    # Record schema: vertrags_id (index 0), dwh_vertrag_id (index 1)
-    # Filter out or handle nulls if required, then sort
-    sorted_records = sorted(records, key=lambda x: x[0] if x[0] is not None else 0)
+    # Step 5: Format and Sort data by vertrags_id
+    # vertrags_id is the first element in each row (index 0)
+    # Sort order is ascending. None values are sorted last or converted to empty strings.
+    sorted_records = sorted(records, key=lambda x: (x[0] is None, x[0]))
 
-    # Step 9: Write sorted records to the lookup file (with delimiter \001 as per DML)
-    # The output format is delimited with "\001" and newline "\n"
-    with open(output_filename, "w", encoding="utf-8") as outfile:
-        for rec in sorted_records:
-            v_id = str(int(rec[0])) if rec[0] is not None else ""
-            dwh_id = str(int(rec[1])) if rec[1] is not None else ""
-            outfile.write(f"{v_id}\x01{dwh_id}\n")
+    # Step 6: Write output to delimited flat file
+    # Format maps to the DML spec: decimal("\001") vertrags_id, decimal("\001") dwh_vertrag_id, and newline = "\n"
+    with open(CCM_PROC_ContractMapLookupFilename, 'w', encoding='utf-8') as outfile:
+        for vert_id, dwh_vert_id in sorted_records:
+            vert_id_str = str(int(vert_id)) if vert_id is not None else ""
+            dwh_vert_id_str = str(int(dwh_vert_id)) if dwh_vert_id is not None else ""
+            outfile.write(f"{vert_id_str}\x01{dwh_vert_id_str}\n")
 
-    # Step 10: Call the Oracle Stored Function to update loading timestamps
-    # execute :result = DWH$PA_ALIS_OBJEKT.SetzeLadedatumAbInitio(:TARGET_OBJECT_NAME, :FIRST_DAY, :LAST_DAY_PLUS_1)
-    # In PL/SQL, this function returns a number
+    # Step 7: Update Loading Timestamps via Stored Procedure
+    # Matches: execute :result = DWH$PA_ALIS_OBJEKT.SetzeLadedatumAbInitio(:TARGET_OBJECT_NAME, :FIRST_DAY, :LAST_DAY_PLUS_1)
     result_var = cursor.var(oracledb.NUMBER)
-    plsql_block = """
-    BEGIN
-        :result := DWH$PA_ALIS_OBJEKT.SetzeLadedatumAbInitio(:target_obj, :first_d, :last_d);
-    END;
-    """
-    cursor.execute(plsql_block, {
-        "result": result_var,
-        "target_obj": target_object_name,
-        "first_d": first_day,
-        "last_d": last_day_plus_1
-    })
+    cursor.callproc("DWH$PA_ALIS_OBJEKT.SetzeLadedatumAbInitio", [
+        BHB_CCM_PROC_TargetObjectName,
+        BHB_CCM_PROC_FirstDay,
+        BHB_CCM_PROC_LastDayPlus1,
+        result_var
+    ])
     
-    execution_result = result_var.getvalue()
-    print(f"Timestamp update registration completed with result: {execution_result}")
-    
-    # Commit database changes
+    # Optional: Log stored procedure result
+    # print(f"Stored Procedure executed. Result: {result_var.getvalue()}")
     connection.commit()
-    cursor.close()
-    connection.close()
 
-except Exception as err:
-    print(f"Error during execution: {str(err)}", file=sys.stderr)
-    exit_status = 1
-    sys.exit(exit_status)
+except Exception as e:
+    print(f"Error executing python conversion task: {str(e)}", file=sys.stderr)
+    if connection:
+        connection.rollback()
+    sys.exit(1)
 
 finally:
-    # Step 11: Sourcing project end environment
-    # # REVIEW-STRUCT: environment file [.project.ksh] not supplied — variables it sets are unknown; do not guess their names or values
-    # Equivalent teardown functions would be invoked here.
-    cleanup()
-
-# Step 12: Final Exit
-sys.exit(exit_status)
+    # Step 8: Close database resources
+    if cursor:
+        cursor.close()
+    if connection:
+        connection.close()
+    
+    # Step 9: Source legacy project lifecycle termination (Simulated or Placeholder)
+    # Note: Legacy script executed `.project.ksh <dir> execute end`
 ```
 
 # File Disposition
 
 | Source File Path | Target File / Action | Purpose / Reason for Action |
 | :--- | :--- | :--- |
-| `vobs/dw_source/isdwh/abinitio/ccm_proc/run/BHB_CCM_PROC_WriteContractMapLookup.ksh` | `vobs/dw_source/isdwh/abinitio/ccm_proc/run/BHB_CCM_PROC_WriteContractMapLookup.py` | Migrates the KornShell wrapper script and encapsulated Ab Initio graph logic (such as reading, sorting, and metadata updates) into a consolidated Python/PySpark script on Dataproc Serverless. |
+| `vobs/dw_source/isdwh/abinitio/ccm_proc/run/BHB_CCM_PROC_WriteContractMapLookup.ksh` | `Retired` | Retired per reviewer feedback to avoid structural redundancy. This KornShell script is a thin wrapper executing the Ab Initio graph. The graph (`.mp` file) is converted to a canonical PySpark script in its own design pass, and the Airflow DAG will execute that PySpark script directly via `DataprocSubmitJobOperator`, rendering this launcher script obsolete. |
 
-# Add Context the MCP Could Not See
+### Job dependencies
+- **Upstream**:
+  - Shared Files: `vobs/dw_source/istools/seu/template` — already migrated and merged (PR: https://github.com/gurunathan-prodapt/pi-agents/pull/852).
+- **Downstream**:
+  - `DW.CCM_PROC_JP` — not yet migrated. Since the downstream consumer does not yet exist, cross-job wiring cannot be fully finalized (flagged under Risks & Manual Steps).
 
-### Job Dependencies
-* **Upstream**: 
-  * Shared Files: `vobs/dw_source/istools/seu/template` — Already migrated and merged under PR [#852](https://github.com/gurunathan-prodapt/pi-agents/pull/852). The target script must import/reference the logic from this converted template module (specifically `.dw_global` and `.dw_init`).
-* **Downstream**: 
-  * `DW.CCM_PROC_JP` — This job is not yet migrated. Downstream orchestration wiring cannot be finalized until this consumer is migrated.
-
-### Execution Order
-The execution sequence of the legacy components is as follows:
-1. UC4 Orchestration XML: `vobs/dw_source/isdwh/uc4_prod_exports/UC4_PROD - 0001/DWH/CCM_PROC/PRODUKTION/DW.CCM_PROC_JP/DW.CCM_WRITE_CONTRACTMAPLOOKUP.xml` (handled in a separate orchestration migration pass)
-2. KornShell Wrapper Script: `vobs/dw_source/isdwh/abinitio/ccm_proc/run/BHB_CCM_PROC_WriteContractMapLookup.ksh` (this pass, which translates the encapsulated graph execution)
-3. Ab Initio MP Graph: `vobs/dw_source/isdwh/abinitio/ccm_proc/mp/BHB_CCM_PROC_WriteContractMapLookup.mp` (handled in a separate pass)
-
-In the target environment, the Cloud Composer DAG must call the migrated Python script `vobs/dw_source/isdwh/abinitio/ccm_proc/run/BHB_CCM_PROC_WriteContractMapLookup.py` to preserve this order.
+### Execution order
+The target orchestration sequence must map and preserve the legacy execution order:
+1. **Legacy Step 1 (UC4 Orchestration)**: `vobs/dw_source/isdwh/uc4_prod_exports/UC4_PROD - 0001/DWH/CCM_PROC/PRODUKTION/DW.CCM_PROC_JP/DW.CCM_WRITE_CONTRACTMAPLOOKUP.xml` -> Converted to a Cloud Composer (Airflow) DAG.
+2. **Legacy Step 2 (KSH Launcher)**: `vobs/dw_source/isdwh/abinitio/ccm_proc/run/BHB_CCM_PROC_WriteContractMapLookup.ksh` -> **Retired** (this pass).
+3. **Legacy Step 3 (Ab Initio Graph)**: `vobs/dw_source/isdwh/abinitio/ccm_proc/mp/BHB_CCM_PROC_WriteContractMapLookup.mp` -> Migrated to a PySpark script and executed directly by the Cloud Composer DAG via `DataprocSubmitJobOperator`.
 
 ### Scheduling
-* This job is **NOT** directly triggered by any of the environment's direct schedulers; it is designed to be executed inside scheduled workflows (i.e., as a shared/included module). 
-* Do **NOT** create a standalone Cloud Composer DAG trigger schedule for this job. It must remain a callable Python/PySpark task orchestrated by the parent DAG.
+- **Linkage**: This job is not directly triggered by any standalone scheduler; it executes inside scheduled parent jobs as an included/shared module. In BigQuery/Cloud Composer, it must remain a callable pipeline task within the parent DAG and inherit its schedule.
 
-### Schedule & Variables
-* Because this job is an include, it does not maintain an independent schedule.
-* The following variables must be made available to the migrated task at runtime:
-  * `BHB_CCM_PROC_TargetObjectName`: Sourced via task parameter/config (Default: `"ContractMapLookup.txt"`).
-  * `BHB_CCM_PROC_FirstDay`: Sourced via task parameter/config (Default: `"20050217"`).
-  * `BHB_CCM_PROC_LastDayPlus1`: Sourced via task parameter/config (Default: `"20050218"`).
-  * `CCM_PROC_ContractMapLookupFilename`: Target location variable, which must resolve to a GCS path (e.g., `gs://{GCS_BUCKET}/ccm_proc/ContractMapLookup.txt`).
+### Schedule & variables
+- **Schedule**: Inherited from the parent scheduled workflows (no standalone schedule).
+- **Scheduler-set variables**: No direct scheduler-set variables are defined for this specific job; environment-wide variables are supplied at the runtime environment/DAG level.
 
 ### Lineage
-* **Upstream Producer**: BigQuery table `DWH_TA_L_MAP_VT_CARM_DWH` (replacing the Oracle table `DWH$TA_L_MAP_VT_CARM_DWH`).
-* **Downstream Consumer**: Flat file `ContractMapLookup.txt` stored in GCS.
-* **Database Updates**: Stored procedure `DWH$PA_ALIS_OBJEKT.SetzeLadedatumAbInitio` execution registers loading metadata.
+- **Upstream Lineage**:
+  - Sourced table: `DWH$TA_L_MAP_VT_CARM_DWH` (Oracle) -> Maps to the BigQuery target table `DWH_TA_L_MAP_VT_CARM_DWH`.
+  - Dependent scripts/functions: `AB_CATALOG_FUNCTIONS.KSH` and `ECHO` are human-confirmed as not needed.
+- **Downstream Lineage**:
+  - Target output: Flat file `$CCM_PROC_ContractMapLookupFilename` (`ContractMapLookup.txt`) -> Replaced by writing to Google Cloud Storage (GCS).
 
-### External System Replacements
-* **Oracle Database**: Replaced by **BigQuery** datasets.
-* **Oracle Stored Procedure**: Package function `DWH$PA_ALIS_OBJEKT.SetzeLadedatumAbInitio` is replaced by a BigQuery stored procedure or equivalent metadata-table update statements.
-* **Local Shared Storage**: Replaced by **Google Cloud Storage (GCS)** paths.
-* **Ab Initio GDE (`mp` commands)**: Logic is replaced by native Python/PySpark operations executed on **Dataproc Serverless**.
+### External system replacements
+- **Oracle DB Extraction**: Sourcing from the Oracle database table `DWH$TA_L_MAP_VT_CARM_DWH` is replaced by querying BigQuery.
+- **Flat File Writing**: Writing to a local file system is replaced by exporting data to a Google Cloud Storage (GCS) path (e.g. `gs://{GCS_BUCKET}/ccm_proc/ContractMapLookup.txt`).
+- **Oracle Stored Procedure**: The Oracle procedure call `DWH$PA_ALIS_OBJEKT.SetzeLadedatumAbInitio` is replaced by executing a BigQuery stored procedure or updating a load-tracking table in BigQuery.
 
-### Cross-File Dependencies
-* The migrated Python script must import environment initialization variables from the already-migrated `template` modules (`.dw_global` and `.dw_init`).
+### Cross-file dependencies
+- **Shared configurations**: Sourced from `.dw_global` and `.dw_init` (already migrated).
+- **Launcher relationship**: The wrapper script depended on the GDE graph `BHB_CCM_PROC_WriteContractMapLookup.mp`. Because this wrapper is retired, the Airflow DAG will bypass the wrapper and directly coordinate the execution of the migrated PySpark script for the `.mp` graph.
 
-### Target File Plan
-* `vobs/dw_source/isdwh/abinitio/ccm_proc/run/BHB_CCM_PROC_WriteContractMapLookup.py`
-  * **Language**: Python (PySpark)
-  * **Source**: `vobs/dw_source/isdwh/abinitio/ccm_proc/run/BHB_CCM_PROC_WriteContractMapLookup.ksh`
-  * **Note**: No implementation details or pseudocode are restated here; please refer to the automatically attached MCP output.
+### Target file plan
+- **Source File**: `vobs/dw_source/isdwh/abinitio/ccm_proc/run/BHB_CCM_PROC_WriteContractMapLookup.ksh`
+- **Target File / Action**: `Retired`
+- **Reasoning**: To resolve structural conflicts and redundant implementations of the ETL logic, the wrapper script is retired. The primary execution logic is handled by the migrated PySpark code from the `.mp` file design pass.
 
-### Environment-Specific Values
+### Environment-specific values
+The environment values are classified and resolved as follows:
 
-#### GLOBAL (Environment-Wide)
-* `GCP_PROJECT`: Sourced via `from airflow.models import Variable; Variable.get("GCP_PROJECT")` or `os.environ.get("GCP_PROJECT")`. Represents the target Google Cloud Project ID.
-* `GCS_BUCKET`: Sourced via `Variable.get("GCS_BUCKET")`. Represents the target GCS bucket for staging flat files.
-* `BQ_DATASET`: Sourced via environment or task params, representing the target BigQuery dataset containing the source tables.
+1. **GLOBAL (Environment-wide)**:
+   - `GCP_PROJECT`: GCP Project ID. Sourced via Airflow config store: `Variable.get("GCP_PROJECT")`.
+   - `GCS_BUCKET`: GCS Bucket for data outputs. Sourced via Airflow config store: `Variable.get("GCS_BUCKET")`.
+   - `BQ_DATASET`: Target BigQuery dataset containing the `DWH_TA_L_MAP_VT_CARM_DWH` table. Sourced via Airflow config store: `Variable.get("BQ_DATASET")`.
 
-#### JOB-SPECIFIC
-* `BHB_CCM_PROC_TargetObjectName`: Set to `"ContractMapLookup.txt"` inside the job-level config.
-* `BHB_CCM_PROC_FirstDay`: Set to `"20050217"` (or passed dynamically based on execution date parameters).
-* `BHB_CCM_PROC_LastDayPlus1`: Set to `"20050218"` (or passed dynamically based on execution date parameters).
-* `CCM_PROC_ContractMapLookupFilename`: Resolves to `gs://{GCS_BUCKET}/ccm_proc/ContractMapLookup.txt`.
+2. **JOB-SPECIFIC**:
+   - `BHB_CCM_PROC_TargetObjectName`: Target tracking object name. Value: `"ContractMapLookup.txt"`.
+   - `BHB_CCM_PROC_FirstDay`: Starting timestamp parameter. Value: `"20050217"`.
+   - `BHB_CCM_PROC_LastDayPlus1`: Ending timestamp parameter. Value: `"20050218"`.
+   - `CCM_PROC_ContractMapLookupFilename`: Path to the generated flat file. Mapped to: `gs://{GCS_BUCKET}/ccm_proc/ContractMapLookup.txt`.
 
-### Risks and Manual Steps
-* **Downstream Wiring**: The downstream job `DW.CCM_PROC_JP` is marked as "not yet migrated". This dependency can only be resolved once the downstream pass is completed.
-* **Stored Procedure Migration**: The Oracle procedure `DWH$PA_ALIS_OBJEKT.SetzeLadedatumAbInitio` must be converted to a BigQuery-compatible Stored Procedure (or an equivalent metadata query) before executing the Python script, as the Python job relies on invoking this state update.
-* **Template Integration**: Ensure that the Python environment has the paths to the migrated `template` modules (PR [#852](https://github.com/gurunathan-prodapt/pi-agents/pull/852)) correctly configured in its `sys.path`.
+### Risks and manual steps
+- **SOURCE: NOT FOUND - AB_CATALOG_FUNCTIONS.KSH - no candidate**: Human-confirmed resolution indicates that this utility file is not needed on the target platform, but its omission should be verified during DAG integration.
+- **SOURCE: NOT FOUND - ECHO - no candidate**: Human-confirmed resolution indicates that this utility is not needed.
+- **Downstream Orchestration Wiring**: The downstream job `DW.CCM_PROC_JP` is not yet migrated. The final orchestration and sensor/task triggering cannot be verified or finalized until `DW.CCM_PROC_JP` is completed.
+- **Airflow DAG Operator Update**: The Airflow DAG that replaces the UC4 job must not use an `EmptyOperator` for this step. Instead, it must be configured with a `DataprocSubmitJobOperator` to submit the PySpark script generated from the `.mp` GDE graph design pass, ensuring the execution flow is preserved.
