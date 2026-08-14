@@ -1,0 +1,1 @@
+# Retired: This KornShell wrapper script has been retired. The primary execution logic is handled by the migrated PySpark code from the .mp file design pass, orchestrated directly via Cloud Composer.
