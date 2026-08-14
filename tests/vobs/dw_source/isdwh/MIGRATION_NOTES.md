@@ -1,125 +1,139 @@
 # Migration Notes: DW.CCM_WRITE_CONTRACTMAPLOOKUP
 
-This document details the migration of the UC4 UNIX job `DW.CCM_WRITE_CONTRACTMAPLOOKUP` and its underlying Ab Initio graph `BHB_CCM_PROC_WriteContractMapLookup.mp` to Google Cloud Platform (GCP).
+This document details the migration of the UC4 Unix job `DW.CCM_WRITE_CONTRACTMAPLOOKUP` and its associated Ab Initio graph `BHB_CCM_PROC_WriteContractMapLookup.mp` to Google Cloud Platform (GCP).
 
 ---
 
 ## 1. Summary
 
-The legacy standalone UC4 UNIX job `DW.CCM_WRITE_CONTRACTMAPLOOKUP` has been migrated to a modern cloud-native architecture. 
+The legacy job `DW.CCM_WRITE_CONTRACTMAPLOOKUP` was responsible for extracting contract map attributes from an Oracle database, sorting them, writing them to a delimited flat file, and updating execution metadata via an Oracle stored procedure. 
 
-* **Source Platform:** UC4 (Orchestration) + Ab Initio GDE/Co>Operating System (ETL) running on an on-premise Unix host (`dwhdwh2p`).
-* **Target Platform:** Google Cloud Platform (GCP) utilizing **Cloud Composer (Apache Airflow)** for orchestration and **Dataproc Serverless (PySpark)** for data processing.
-* **Data Warehouse Target:** **BigQuery** (replacing Oracle).
-* **Storage Target:** **Google Cloud Storage (GCS)** (replacing local Unix filesystems).
-
-The core business logic extracts contract mapping records from a database, sorts them by `vertrags_id`, materializes them into a delimited lookup file, and registers the load execution window using a metadata stored procedure.
+This workload has been migrated from an on-premise **UC4 / Unix / Ab Initio** environment to **GCP**, utilizing **Cloud Composer (Apache Airflow)** for orchestration, **Dataproc Serverless (PySpark)** for data processing, **Google BigQuery** as the data warehouse, and **Google Cloud Storage (GCS)** for file storage.
 
 ---
 
 ## 2. Generated Artifacts
 
-The migration process generated the following key artifacts:
+The migration process generated the following files:
 
-| Artifact Path | Language / Type | Role |
+| File Path | Role | Description |
 | :--- | :--- | :--- |
-| `dags/vobs/dw_source/isdwh/uc4_prod_exports/UC4_PROD - 0001/DWH/CCM_PROC/PRODUKTION/DW.CCM_PROC_JP/dw_ccm_write_contractmaplookup.py` | Python / Airflow DAG | Orchestrates the execution of the migrated job. It defines a single-task DAG that submits the PySpark job to Dataproc Serverless. |
-| `vobs/dw_source/isdwh/abinitio/ccm_proc/run/BHB_CCM_PROC_WriteContractMapLookup.py` | Python / PySpark | Replaces both the legacy KornShell wrapper (`.ksh`) and the Ab Initio graph (`.mp`). It extracts data from BigQuery, sorts it, writes the delimited file to GCS, and calls the BigQuery metadata stored procedure. |
+| `vobs/dw_source/isdwh/uc4_prod_exports/UC4_PROD - 0001/DWH/CCM_PROC/PRODUKTION/DW.CCM_PROC_JP/DW.CCM_WRITE_CONTRACTMAPLOOKUP.py` | **Airflow DAG** | Orchestrates the execution of the PySpark job on Dataproc Serverless. Replaces the legacy UC4 job definition. |
+| `vobs/dw_source/isdwh/abinitio/ccm_proc/mp/BHB_CCM_PROC_WriteContractMapLookup.py` | **PySpark Script** | Implements the core ETL logic: reads from BigQuery, sorts, deduplicates, writes a delimited file to GCS, and calls the BigQuery stored procedure. Replaces the Ab Initio graph. |
+| `vobs/dw_source/isdwh/abinitio/ccm_proc/run/BHB_CCM_PROC_WriteContractMapLookup.ksh` | **Retired** | This KornShell wrapper script has been retired to eliminate redundant orchestration layers. |
 
 ---
 
 ## 3. Key Design Decisions
 
-### 3.1. Compute Engine: Dataproc Serverless (PySpark)
-* **Decision:** Convert the Ab Initio graph (`.mp`) directly into a PySpark application running on Dataproc Serverless.
-* **Trade-off / Reason:** Dataproc Serverless eliminates the need to manage VM clusters, scales dynamically, and integrates natively with BigQuery and GCS. PySpark natively handles the sorting and formatting operations previously performed by Ab Initio's `Sort` and `Reformat` components.
+### Retirement of the KornShell Wrapper
+The legacy wrapper script `BHB_CCM_PROC_WriteContractMapLookup.ksh` was used to set environment variables and trigger the Ab Initio graph. In the target architecture, environment variables are managed via Airflow/GCP, and the PySpark script is executed directly by the Airflow DAG. Retiring the `.ksh` script avoids redundant logic and simplifies the execution chain.
 
-### 3.2. Orchestration: Airflow DAG with `schedule=None`
-* **Decision:** The migrated Airflow DAG is configured with `schedule=None`.
-* **Trade-off / Reason:** The original UC4 job was a sub-module of the parent Job Plan `DW.CCM_PROC_JP` (which is not yet migrated). Keeping the schedule as `None` prevents accidental standalone runs and allows it to be triggered dynamically or embedded as a `TriggerDagRunOperator` / Task Group inside the parent DAG once migrated.
+### Single-File GCS Output Pattern
+PySpark writes output files in parallel, resulting in directory structures containing multiple `part-*.csv` files. To match the legacy requirement of generating a single, cleanly named flat file (`ContractMapLookup.txt`), the PySpark script:
+1. Coalesces the DataFrame to a single partition (`coalesce(1)`).
+2. Writes the output to a temporary GCS directory.
+3. Uses the Google Cloud Storage client library to locate the generated part file, copy it to the final destination (`gs://{GCS_BUCKET}/ccm_proc/ContractMapLookup.txt`), and clean up the temporary directory.
 
-### 3.3. Storage: GCS Delimited Files
-* **Decision:** The output lookup file is written directly to a GCS bucket using PySpark's CSV writer with the `\x01` (SOH) delimiter, matching the legacy Ab Initio DML specification.
-* **Trade-off / Reason:** GCS provides highly durable, shared cloud storage accessible by downstream cloud processes, replacing the local Unix filesystem.
+### Delimiter Configuration
+The legacy Ab Initio graph used the `\001` (SOH) character as a field delimiter and `\n` as a line terminator. This formatting has been preserved in the PySpark CSV writer options (`delimiter="\u0001"`) to ensure downstream compatibility.
 
-### 3.4. Metadata Update: BigQuery Stored Procedure
-* **Decision:** The legacy Oracle PL/SQL call `DWH$PA_ALIS_OBJEKT.SetzeLadedatumAbInitio` is replaced by a BigQuery SQL Stored Procedure call using the Google Cloud BigQuery Python client.
-* **Trade-off / Reason:** This maintains transactional metadata tracking within the target data warehouse environment without requiring an external database connection.
+### BigQuery Stored Procedure Integration
+The legacy graph executed an Oracle stored procedure `DWH$PA_ALIS_OBJEKT.SetzeLadedatumAbInitio` to update load tracking tables. This has been replaced by a native BigQuery stored procedure call (`CALL {GCP_PROJECT}.{BQ_DATASET}.SetzeLadedatumAbInitio(...)`) executed via the BigQuery Python client within the PySpark job.
 
 ---
 
 ## 4. Manual Steps Before Go-Live
 
-The following setup steps must be completed in the target GCP environment before executing the migrated workflow:
+Before deploying and running the migrated workflow, the following setup steps must be completed:
 
-### 4.1. Schema and Dataset Creation
-1. Ensure the source table `DWH_TA_L_MAP_VT_CARM_DWH` is migrated and populated in the target BigQuery dataset (e.g., `DWH`).
-2. Deploy the migrated BigQuery Stored Procedure `SetzeLadedatumAbInitio` within the target BigQuery dataset.
+### 1. BigQuery Schema & Dataset Creation
+Ensure the target BigQuery dataset and table exist:
+* **Dataset**: `{BQ_DATASET}` (e.g., `ccm_proc`)
+* **Table**: `dwh_ta_l_map_vt_carm_dwh`
+* **Stored Procedure**: `SetzeLadedatumAbInitio` must be migrated from Oracle PL/SQL to BigQuery SQL and compiled within the target dataset.
 
-### 4.2. IAM & Permissions
-Ensure the Service Account executing the Cloud Composer worker and Dataproc Serverless workloads has the following IAM roles:
-* **BigQuery:** `roles/bigquery.dataViewer` (on the source table) and `roles/bigquery.jobUser` (to execute the stored procedure).
-* **Cloud Storage:** `roles/storage.objectAdmin` on the target GCS bucket.
-* **Dataproc:** `roles/dataproc.worker` and `roles/dataproc.editor`.
+### 2. IAM & Permissions
+The Service Account running the Cloud Composer environment and Dataproc Serverless workloads must have the following roles:
+* `roles/bigquery.dataEditor` and `roles/bigquery.jobUser` on the target BigQuery dataset.
+* `roles/storage.objectAdmin` on the target GCS bucket.
+* `roles/dataproc.worker` and `roles/dataproc.editor` for Dataproc Serverless execution.
 
-### 4.3. Airflow Variables & Connections
-Configure the following Airflow Variables in the Cloud Composer environment:
+### 3. Airflow Variables
+The following Airflow variables must be configured in the Cloud Composer environment:
 
-| Variable Name | Example Value | Description |
-| :--- | :--- | :--- |
-| `GCP_PROJECT` | `my-gcp-project-id` | The target GCP Project ID. |
-| `GCS_BUCKET` | `my-dwh-data-bucket` | The GCS bucket where the output lookup file will be written. |
-| `BQ_DATASET` | `DWH` | The BigQuery dataset containing the source table and stored procedure. |
+```json
+{
+  "GCP_PROJECT": "your-gcp-project-id",
+  "GCP_REGION": "your-gcp-region",
+  "DATAPROC_REGION": "your-dataproc-region",
+  "DATAPROC_CLUSTER": "your-dataproc-cluster-name",
+  "GCS_BUCKET": "your-gcs-bucket-name",
+  "BQ_DATASET": "your_bigquery_dataset"
+}
+```
 
-### 4.4. Environment Variables
-The PySpark script expects the following environment variables (which can be passed via the Airflow Dataproc operator or set globally):
-* `BHB_CCM_PROC_TargetObjectName` (Default: `ContractMapLookup.txt`)
-* `BHB_CCM_PROC_FirstDay` (Default: `20050217`)
-* `BHB_CCM_PROC_LastDayPlus1` (Default: `20050218`)
+### 4. PySpark Script Deployment
+Upload the generated PySpark script to GCS:
+* **Source**: `vobs/dw_source/isdwh/abinitio/ccm_proc/mp/BHB_CCM_PROC_WriteContractMapLookup.py`
+* **Destination**: `gs://{GCS_BUCKET}/pyspark_scripts/bhb_ccm_proc_writecontractmaplookup.py`
+
+### 5. Scheduling
+The Airflow DAG is configured with `schedule=None` because the legacy job was externally triggered. Once the parent workflow `DW.CCM_PROC_JP` is migrated, this DAG should be integrated as a sub-task group or triggered via a `TriggerDagRunOperator`.
 
 ---
 
 ## 5. Known Gaps & Unresolved References
 
-* **Downstream Orchestrator (`DW.CCM_PROC_JP`):** The parent UC4 Job Plan has not yet been migrated. The migrated DAG `dw_ccm_write_contractmaplookup` must be integrated into the parent workflow DAG once that migration pass is completed.
-* **Stored Procedure Logic:** The internal PL/SQL logic of `DWH$PA_ALIS_OBJEKT.SetzeLadedatumAbInitio` was not part of this bundle. It must be manually translated to BigQuery SQL and deployed to the target dataset before go-live.
-* **Template Sourcing:** The legacy script sourced `.dw_init` and `.dw_global` for environment setup. The migrated Python script attempts to import these from the migrated `istools/seu/template` directory. Ensure these template files are present in the Python path or Composer environment.
+* **Downstream Consumer (`DW.CCM_PROC_JP`)**: The parent/downstream job plan `DW.CCM_PROC_JP` has not yet been migrated. The final cross-DAG triggering mechanism or task-group integration cannot be completed until that migration pass occurs.
+* **Stored Procedure Verification**: The translation of `DWH$PA_ALIS_OBJEKT.SetzeLadedatumAbInitio` to BigQuery must be manually verified to ensure it correctly updates the metadata tables.
 
 ---
 
 ## 6. Validation
 
-To validate the migration, perform the following steps in a lower environment (e.g., UAT):
+To validate the migration, perform the following tests:
 
-### 6.1. Execution
-1. Upload the PySpark script `BHB_CCM_PROC_WriteContractMapLookup.py` to your environment's GCS code bucket.
-2. Trigger the Airflow DAG manually via the Airflow UI or CLI:
-   ```bash
-   airflow dags trigger dw_ccm_write_contractmaplookup
-   ```
+### Local/Interactive PySpark Test
+Submit the PySpark job manually using the gcloud CLI to verify data processing:
 
-### 6.2. Definition of "Passing"
-The validation is successful if:
-1. The Airflow DAG run completes with a status of `SUCCESS`.
-2. A folder/file is created in GCS at `gs://{GCS_BUCKET}/ccm_proc/ContractMapLookup.txt/` containing the extracted records.
-3. The output file is verified to be:
-   * Sorted by `vertrags_id` in ascending order.
-   * Delimited by the `\x01` character.
-4. The BigQuery job history logs a successful execution of the stored procedure:
-   ```sql
-   CALL `DWH.SetzeLadedatumAbInitio`('ContractMapLookup.txt', '20050217', '20050218')
-   ```
+```bash
+gcloud dataproc batches submit pyspark \
+    gs://{GCS_BUCKET}/pyspark_scripts/bhb_ccm_proc_writecontractmaplookup.py \
+    --project={GCP_PROJECT} \
+    --region={DATAPROC_REGION} \
+    --env-vars GCP_PROJECT={GCP_PROJECT},GCS_BUCKET={GCS_BUCKET},BQ_DATASET={BQ_DATASET} \
+    -- --first_day 20050217 --last_day_plus_1 20050218
+```
+
+### Airflow DAG Test
+Trigger the Airflow DAG manually from the Airflow UI or via the CLI:
+
+```bash
+airflow dags trigger dw_ccm_write_contractmaplookup
+```
+
+### Success Criteria
+The validation is considered **passing** if:
+1. The Dataproc Serverless batch job completes with an `EXIT_CODE 0`.
+2. A single file is created at `gs://{GCS_BUCKET}/ccm_proc/ContractMapLookup.txt`.
+3. The file contains the extracted attributes, delimited by `\001`, sorted by `vertrags_id` in ascending order, with no duplicate `vertrags_id` keys.
+4. The BigQuery stored procedure `SetzeLadedatumAbInitio` executes successfully and updates the load tracking metadata.
 
 ---
 
 ## 7. Rollback Procedure
 
-In the event of a critical failure during deployment or go-live, use the following steps to roll back to the legacy on-premise system:
+In the event of a critical failure during deployment or go-live, execute the following rollback steps:
 
-1. **Pause Airflow DAG:** Pause the migrated DAG in the Cloud Composer UI to prevent further cloud executions:
+1. **Pause the Airflow DAG**:
    ```bash
    airflow dags pause dw_ccm_write_contractmaplookup
    ```
-2. **Re-enable UC4 Job:** In the UC4 client, locate the job `DW.CCM_WRITE_CONTRACTMAPLOOKUP` and set its status back to Active (`active=1`).
-3. **Verify On-Premise Environment:** Ensure that the legacy Oracle database and the on-premise Unix filesystem paths are intact and synchronized.
-4. **Data Reconciliation:** If the cloud job executed partially, verify if any downstream systems consumed the GCS file. If necessary, manually copy the legacy-generated `ContractMapLookup.txt` from the on-premise server to GCS to ensure downstream cloud processes do not fail.
+2. **Re-enable the Legacy UC4 Job**:
+   * Log into the UC4/Automic interface.
+   * Locate the job `DW.CCM_WRITE_CONTRACTMAPLOOKUP`.
+   * Set the active flag back to `1` (Active).
+3. **Verify Legacy Environment**:
+   * Ensure the on-premise Oracle database and the local filesystem paths for `$CCM_PROC_ContractMapLookupFilename` are accessible and active.
+   * Verify that the wrapper script `BHB_CCM_PROC_WriteContractMapLookup.ksh` is intact on the host `|DWHDWH2P|HOST`.
