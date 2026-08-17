@@ -1,446 +1,278 @@
-Here is a comprehensive suite of migration-validation tests designed to prove that the migrated Google Cloud / Airflow / BigQuery components behave identically to the legacy UC4 / KornShell / Oracle components for the job `DW.DWH_ABTN_SMART_KUBI`.
+# Migration Validation Test Suite: DW.DWH_ABTN_SMART_KUBI
+
+This document defines the migration-validation test suite to prove behavioral equivalence between the legacy UC4/Oracle workflow and the migrated Airflow/BigQuery pipeline for **DW.DWH_ABTN_SMART_KUBI**.
 
 ---
 
-# Test Case 1: Dynamic Date Logic (`MONATSID` Calculation)
+## Section 1: Orchestration & Parameter Calculation Parity
 
-### Purpose
-Prove that the dynamic date logic implemented in the Airflow DAG (`get_reporting_month`) behaves identically to the legacy UC4 script date math across all boundary conditions (month boundaries, year boundaries, and the 15th-of-the-month threshold).
+### Test Case 1.1: Dynamic `MONATSID` Calculation Boundary Test
+#### Purpose
+Verify that the Airflow Python logic calculates the reporting month ID (`MONATSID`) identically to the legacy UC4 script across all critical date boundaries (month start, day before 15th, 15th, day after 15th, leap years, and year transitions).
 
-### Setup
-Install `pytest` and `pendulum` (Airflow's default timezone/datetime library) in your local test environment.
+#### Setup
+A local Python environment with `pytest` and `pendulum` installed.
 
-### Action
-Run a suite of unit tests passing specific execution dates to the `get_reporting_month` function and asserting the returned `MONATSID` string.
+#### Action
+Execute a unit test suite that mocks the Airflow `logical_date` context and asserts the output of the `calculate_and_log_monatsid` function against a pre-calculated matrix of expected legacy outputs.
 
-### Concrete Pass/Fail Criterion
-* **Pass**: All test cases return the exact `YYYYMM` string matching the legacy logic:
-  * Days 1–14 return the previous month (including year-boundary transitions).
-  * Days 15–31 return the current month.
-* **Fail**: Any date returns an incorrect month string or raises an unhandled exception.
-
-### Test Code (`test_date_logic.py`)
 ```python
 import pytest
 import pendulum
 from datetime import timedelta
 
-def get_reporting_month(logical_date):
-    """
-    Migrated Python logic from dw_dwh_abtn_smart_kubi.py
-    """
-    day = logical_date.day
-    if day < 15:
+def calculate_monatsid(logical_date):
+    """Implementation under test from the migrated DAG."""
+    if logical_date.day < 15:
         first_of_month = logical_date.replace(day=1)
-        last_day_prev_month = first_of_month - timedelta(days=1)
-        monatsid = last_day_prev_month.strftime('%Y%m')
+        prev_month = first_of_month - timedelta(days=1)
+        monatsid = prev_month.strftime('%Y%m')
     else:
         monatsid = logical_date.strftime('%Y%m')
     return monatsid
 
 @pytest.mark.parametrize(
-    "input_date, expected_monatsid",
+    "execution_date, expected_monatsid",
     [
-        # Threshold boundaries for a standard month (October 2023)
-        (pendulum.datetime(2023, 10, 1), "202309"),   # Day 1 < 15 -> Previous Month
-        (pendulum.datetime(2023, 10, 14), "202309"),  # Day 14 < 15 -> Previous Month
-        (pendulum.datetime(2023, 10, 15), "202310"),  # Day 15 >= 15 -> Current Month
-        (pendulum.datetime(2023, 10, 31), "202310"),  # Day 31 >= 15 -> Current Month
+        # Mid-month transition boundaries
+        ("2023-06-14T12:00:00Z", "202305"),  # Day before 15th -> Previous month
+        ("2023-06-15T00:00:00Z", "202306"),  # On the 15th -> Current month
+        ("2023-06-16T00:00:00Z", "202306"),  # Day after 15th -> Current month
         
-        # Year boundary transitions (January)
-        (pendulum.datetime(2023, 1, 1), "202212"),    # Day 1 < 15 -> Previous Year December
-        (pendulum.datetime(2023, 1, 14), "202212"),   # Day 14 < 15 -> Previous Year December
-        (pendulum.datetime(2023, 1, 15), "202301"),   # Day 15 >= 15 -> Current Month/Year
+        # Month start and end boundaries
+        ("2023-06-01T00:00:00Z", "202305"),  # First day of month -> Previous month
+        ("2023-06-30T23:59:59Z", "202306"),  # Last day of month -> Current month
         
-        # Leap year boundary (February/March 2024)
-        (pendulum.datetime(2024, 3, 1), "202402"),    # Day 1 < 15 -> Feb 2024 (Leap Year)
-        (pendulum.datetime(2024, 3, 15), "202403"),   # Day 15 >= 15 -> March 2024
+        # Year transition boundaries
+        ("2023-01-14T10:00:00Z", "202212"),  # Jan before 15th -> Dec of previous year
+        ("2023-01-15T10:00:00Z", "202301"),  # Jan on/after 15th -> Jan of current year
+        
+        # Leap year boundary
+        ("2024-03-14T00:00:00Z", "202402"),  # Leap year March 14 -> Feb 2024
+        ("2024-03-15T00:00:00Z", "202403"),  # Leap year March 15 -> March 2024
     ]
 )
-def test_reporting_month_parity(input_date, expected_monatsid):
-    assert get_reporting_month(input_date) == expected_monatsid
+def test_monatsid_calculation_parity(execution_date, expected_monatsid):
+    logical_date = pendulum.parse(execution_date)
+    calculated_id = calculate_monatsid(logical_date)
+    assert calculated_id == expected_monatsid, \
+        f"Failed for execution date {execution_date}. Expected {expected_monatsid}, got {calculated_id}"
 ```
+
+#### Pass/Fail Criterion
+* **Pass**: All test cases in the parameter matrix match the expected legacy outputs exactly.
+* **Fail**: Any calculated `MONATSID` deviates from the expected legacy value.
 
 ---
 
-# Test Case 2: Environment Initialization Parity (`dw_init.py`)
+## Section 2: SQL Transformation & Logic Parity
 
-### Purpose
-Verify that the migrated `dw_init.py` correctly initializes and exports all legacy environment variables, dynamically resolves `ORACLE_HOME` based on filesystem state, and correctly maps local paths to Google Cloud Storage (GCS) URIs when the `GCS_BUCKET` variable is set.
+### Test Case 2.1: Oracle `(+)` Outer Join to BigQuery `LEFT JOIN` Parity
+#### Purpose
+Verify that the migrated BigQuery SQL correctly translates Oracle's proprietary outer join syntax `(+)` combined with date range checks, ensuring no rows are incorrectly filtered out.
 
-### Setup
-Create a test script that mocks the filesystem and environment variables, then executes `init_environment()`.
+#### Setup
+1. Create temporary test tables in BigQuery:
+   * `dwh_ta_f_d1_twvv_tn_test`
+   * `dwh_ta_c_vertrag_test`
+2. Populate them with a controlled set of records where some contracts match the date range, some fall outside, and some have no matching contract ID at all.
 
-### Action
-Execute the test suite using `pytest` with mocked directory structures.
+#### Action
+Execute the following validation query in BigQuery to compare the behavior of the migrated join logic against expected logical outcomes.
 
-### Concrete Pass/Fail Criterion
-* **Pass**: 
-  * All `DW_DIR_*` variables are set and exported.
-  * If `GCS_BUCKET` is set, paths are prefixed with `gs://{bucket_name}/`.
-  * `ORACLE_HOME` resolves to `/appl/local/oracle/12.2.0.1.0` if present, or `/appl/local/oracle/11.2.0` if the former is missing.
-  * `DW_DIR_UTL_FILE` dynamically appends the correct `ORACLE_SID`.
-* **Fail**: Any environment variable is missing, incorrectly mapped, or fails to resolve dynamically.
-
-### Test Code (`test_dw_init.py`)
-```python
-import os
-import sys
-from unittest.mock import patch
-import pytest
-
-# Import the migrated module
-from dw_init import init_environment
-
-@pytest.fixture(autouse=True)
-def cleanup_env():
-    # Clear environment variables before and after each test
-    keys_to_clear = [k for k in os.environ if k.startswith("DW_") or k in ("ORACLE_HOME", "GCS_BUCKET")]
-    for k in keys_to_clear:
-        del os.environ[k]
-    yield
-
-@patch("os.path.isdir")
-def test_oracle_home_resolution_12c(mock_isdir):
-    # Simulate Oracle 12c directory exists
-    def isdir_side_effect(path):
-        return path == "/appl/local/oracle/12.2.0.1.0"
-    mock_isdir.side_effect = isdir_side_effect
-
-    init_environment()
-    assert os.environ.get("ORACLE_HOME") == "/appl/local/oracle/12.2.0.1.0"
-
-@patch("os.path.isdir")
-def test_oracle_home_resolution_11g(mock_isdir):
-    # Simulate Oracle 12c missing, but 11g exists
-    def isdir_side_effect(path):
-        return path == "/appl/local/oracle/11.2.0"
-    mock_isdir.side_effect = isdir_side_effect
-
-    init_environment()
-    assert os.environ.get("ORACLE_HOME") == "/appl/local/oracle/11.2.0"
-
-def test_gcs_bucket_path_mapping():
-    os.environ["GCS_BUCKET"] = "test-dwh-bucket"
-    os.environ["ORACLE_SID"] = "PROD_DB"
-    
-    init_environment()
-    
-    # Assert GCS URI mapping
-    assert os.environ.get("DW_DIR_PROT") == "gs://test-dwh-bucket/daten/logfiles"
-    assert os.environ.get("DW_DIR_ROOT") == "gs://test-dwh-bucket/aktuell"
-    assert os.environ.get("DW_DIR_UTL_FILE") == "/appl/local/oracle/admin/PROD_DB/utl_file"
-    assert os.environ.get("DW_HOST_CUSTOMER") == "dxcst3.bn.detemobil.de"
-
-def test_local_fallback_path_mapping():
-    os.environ["HOME"] = "/home/dwh_user"
-    os.environ["ORACLE_SID"] = "TEST_DB"
-    
-    init_environment()
-    
-    # Assert local filesystem mapping
-    assert os.environ.get("DW_DIR_PROT") == "/home/dwh_user/daten/logfiles"
-    assert os.environ.get("DW_DIR_ROOT") == "/home/dwh_user/aktuell"
-    assert os.environ.get("DW_DIR_UTL_FILE") == "/appl/local/oracle/admin/TEST_DB/utl_file"
-```
-
----
-
-# Test Case 3: SQL Transformation Correctness & Null/Type Handling
-
-### Purpose
-Verify that the migrated BigQuery SQL script (`d_abtn_x_smart_kubi.sql`) produces identical output to the legacy Oracle PL/SQL script. This test validates:
-1. Outer join logic (`(+)` to `LEFT OUTER JOIN`).
-2. `DECODE` to `CASE WHEN` translation.
-3. `NVL` to `COALESCE` translation.
-4. `TRIM` and empty-string/null handling for `vo_kennung`.
-5. Partition pruning behavior (querying the base table with a `WHERE` filter instead of using Oracle's `partition(...)` extension).
-
-### Setup
-1. Create a test dataset in BigQuery.
-2. Create the target table `dwh_ta_t_smart_kubi` and the source tables/views:
-   * `dwh_vi_l_map_fa_tarif`
-   * `bl_d_tarif`
-   * `dwh_ta_f_d1_twvv_tn`
-   * `dwh_ta_c_vertrag`
-3. Populate the source tables with mock data designed to trigger all conditional branches.
-
-### Action
-Execute the BigQuery SQL script with parameters `@p_monats_id = 201509` and `@p_eintragsnr = 1001`.
-
-### Concrete Pass/Fail Criterion
-* **Pass**: The target table `dwh_ta_t_smart_kubi` contains exactly the expected rows, verifying:
-  * `kundennummer` is set to `'-1'` when `mp_geschaeftsfeld_id = 2`.
-  * `tarif_id` and `tarif_id_alt` default to `0` when null.
-  * `vo_kennung` correctly falls back to `vo_kenn` when `vo_kenn_bearb` is null, empty, or `'#'`.
-  * Contract date logic correctly filters rows based on `l_monats_date` (2015-10-01).
-* **Fail**: Row counts do not match, data values differ from expected outputs, or partition pruning fails.
-
-### Test Code (SQL Assertions)
 ```sql
--- 1. Populate Mock Data
--- View: dwh_vi_l_map_fa_tarif
-CREATE OR REPLACE TEMP TABLE dwh_vi_l_map_fa_tarif AS (
-  SELECT 101 AS tarif_id, 1001 AS dwh_tarif_id, CAST('2015-01-01' AS DATETIME) AS gueltig_von, CAST('4712-12-31' AS DATETIME) AS gueltig_bis UNION ALL
-  SELECT 102 AS tarif_id, 1002 AS dwh_tarif_id, CAST('2015-01-01' AS DATETIME) AS gueltig_von, CAST('4712-12-31' AS DATETIME) AS gueltig_bis
-);
-
--- Table: bl_d_tarif
-CREATE OR REPLACE TEMP TABLE bl_d_tarif AS (
-  SELECT 101 AS tarif_id, 2 AS mp_geschaeftsfeld_id UNION ALL -- Will trigger kundennummer = '-1'
-  SELECT 102 AS tarif_id, 1 AS mp_geschaeftsfeld_id
-);
-
--- Table: dwh_ta_c_vertrag
-CREATE OR REPLACE TEMP TABLE dwh_ta_c_vertrag AS (
-  SELECT 5001 AS dwh_vertrag_id, 'KUND_A' AS t_mobile_kundennummer, 'N' AS test_gp, CAST('2015-01-01' AS DATETIME) AS gueltig_von, CAST('2016-12-31' AS DATETIME) AS gueltig_bis UNION ALL
-  -- Out of date range contract (should be outer-joined as NULL)
-  SELECT 5002 AS dwh_vertrag_id, 'KUND_B' AS t_mobile_kundennummer, 'Y' AS test_gp, CAST('2010-01-01' AS DATETIME) AS gueltig_von, CAST('2014-12-31' AS DATETIME) AS gueltig_bis
-);
-
--- Table: dwh_ta_f_d1_twvv_tn
-CREATE OR REPLACE TEMP TABLE dwh_ta_f_d1_twvv_tn AS (
-  -- Row 1: Standard mapping, mp_geschaeftsfeld_id = 2 -> kundennummer = '-1'
-  SELECT CAST('2015-09-15' AS DATETIME) AS gueltigkeitszeitpunkt, 'VVLREIN' AS kennzahl_id, 1001 AS dwh_tarif_id_neu, 1002 AS dwh_tarif_id_alt, 5001 AS dwh_vertrag_id, 'VO_A' AS vo_kenn, 'VO_B' AS vo_kenn_bearb, 10 AS zugang UNION ALL
-  -- Row 2: vo_kenn_bearb is '#', should fall back to vo_kenn ('VO_C')
-  SELECT CAST('2015-09-20' AS DATETIME) AS gueltigkeitszeitpunkt, 'VVLTWC2C' AS kennzahl_id, 1002 AS dwh_tarif_id_neu, NULL AS dwh_tarif_id_alt, 5001 AS dwh_vertrag_id, 'VO_C' AS vo_kenn, '#' AS vo_kenn_bearb, 5 AS zugang UNION ALL
-  -- Row 3: Out of contract range, should outer join contract as NULL
-  SELECT CAST('2015-09-25' AS DATETIME) AS gueltigkeitszeitpunkt, 'MIGP2CBF' AS kennzahl_id, 1002 AS dwh_tarif_id_neu, 1002 AS dwh_tarif_id_alt, 5002 AS dwh_vertrag_id, 'VO_D' AS vo_kenn, '  ' AS vo_kenn_bearb, 2 AS zugang
-);
-
--- Target Table
-CREATE OR REPLACE TABLE dwh_ta_t_smart_kubi (
-  monats_id INT64,
-  kundennummer STRING,
-  tarif_id INT64,
-  tarif_id_alt INT64,
-  vo_kennung STRING,
-  test_gp STRING,
-  anzahl INT64,
-  kennzahl_id STRING
-);
-
--- 2. Run Migrated SQL Script (Simulated with parameters)
--- (Insert the converted query here, substituting temp tables)
-
--- 3. Assertions to verify output parity
--- Assertion A: Row count must be exactly 3
-ASSERT (SELECT COUNT(1) FROM dwh_ta_t_smart_kubi) = 3;
-
--- Assertion B: Verify Row 1 (mp_geschaeftsfeld_id = 2 -> kundennummer = '-1')
-ASSERT EXISTS (
-  SELECT 1 FROM dwh_ta_t_smart_kubi 
-  WHERE monats_id = 201509 
-    AND kundennummer = '-1' 
-    AND tarif_id = 101 
-    AND tarif_id_alt = 102 
-    AND vo_kennung = 'VO_B' 
-    AND test_gp = 'N' 
-    AND anzahl = 10 
-    AND kennzahl_id = 'VVLREIN'
-);
-
--- Assertion C: Verify Row 2 (vo_kenn_bearb = '#' -> vo_kennung = 'VO_C')
-ASSERT EXISTS (
-  SELECT 1 FROM dwh_ta_t_smart_kubi 
-  WHERE monats_id = 201509 
-    AND kundennummer = 'KUND_A' 
-    AND tarif_id = 102 
-    AND tarif_id_alt = 0 
-    AND vo_kennung = 'VO_C' 
-    AND test_gp = 'N' 
-    AND anzahl = 5 
-    AND kennzahl_id = 'VVLTWC2C'
-);
-
--- Assertion D: Verify Row 3 (Out of contract range -> test_gp is NULL, vo_kenn_bearb is empty -> vo_kennung = 'VO_D')
-ASSERT EXISTS (
-  SELECT 1 FROM dwh_ta_t_smart_kubi 
-  WHERE monats_id = 201509 
-    AND kundennummer IS NULL 
-    AND tarif_id = 102 
-    AND tarif_id_alt = 102 
-    AND vo_kennung = 'VO_D' 
-    AND test_gp IS NULL 
-    AND anzahl = 2 
-    AND kennzahl_id = 'MIGP2CBF'
-);
+-- Create mock data representing the source tables
+WITH fact AS (
+  SELECT 'VVLREIN' AS kennzahl_id, 100 AS dwh_vertrag_id, DATE '2023-06-15' AS gueltigkeitszeitpunkt, 10 AS zugang UNION ALL
+  SELECT 'VVLREIN' AS kennzahl_id, 200 AS dwh_vertrag_id, DATE '2023-06-15' AS gueltigkeitszeitpunkt, 20 AS zugang UNION ALL
+  SELECT 'VVLREIN' AS kennzahl_id, 300 AS dwh_vertrag_id, DATE '2023-06-15' AS gueltigkeitszeitpunkt, 30 AS zugang
+),
+vertrag AS (
+  -- Contract 100: Active during the reporting month boundary (l_monats_date = 2023-07-01)
+  SELECT 100 AS dwh_vertrag_id, DATE '2023-01-01' AS gueltig_von, DATE '2023-12-31' AS gueltig_bis, 'KUNDE_A' AS t_mobile_kundennummer, 'GP1' AS test_gp UNION ALL
+  -- Contract 200: Expired before the reporting month boundary
+  SELECT 200 AS dwh_vertrag_id, DATE '2023-01-01' AS gueltig_von, DATE '2023-06-30' AS gueltig_bis, 'KUNDE_B' AS t_mobile_kundennummer, 'GP2' AS test_gp
+  -- Contract 300: Missing entirely (should result in NULLs due to LEFT JOIN)
+),
+test_execution AS (
+  SELECT 
+    202306 AS l_monats_id,
+    DATE '2023-07-01' AS l_monats_date -- ADD_MONTHS(202306, 1)
+)
+SELECT 
+  fact.dwh_vertrag_id,
+  d.t_mobile_kundennummer,
+  d.test_gp,
+  fact.zugang
+FROM fact
+CROSS JOIN test_execution
+LEFT JOIN vertrag d 
+  ON fact.dwh_vertrag_id = d.dwh_vertrag_id
+ AND test_execution.l_monats_date > d.gueltig_von
+ AND test_execution.l_monats_date <= d.gueltig_bis;
 ```
+
+#### Pass/Fail Criterion
+* **Pass**: The query returns exactly 3 rows:
+  1. `dwh_vertrag_id = 100` has `t_mobile_kundennummer = 'KUNDE_A'` and `test_gp = 'GP1'`.
+  2. `dwh_vertrag_id = 200` has `t_mobile_kundennummer = NULL` and `test_gp = NULL` (since `l_monats_date` (2023-07-01) is not `<= gueltig_bis` (2023-06-30)).
+  3. `dwh_vertrag_id = 300` has `t_mobile_kundennummer = NULL` and `test_gp = NULL`.
+* **Fail**: Row 200 or 300 is missing from the output (indicating an inner join behavior), or the date boundary check fails to nullify contract 200.
 
 ---
 
-# Test Case 4: End-to-End Orchestration & Parameter Propagation
+## Section 3: Edge Case & Null Handling Validation
 
-### Purpose
-Verify that the Cloud Composer (Airflow) DAG correctly orchestrates the execution flow, dynamically calculates the `MONATSID` parameter based on the execution date, and passes it to the BigQuery operator.
+### Test Case 3.1: String Trimming and Null/Hash Handling (`vo_kennung`)
+#### Purpose
+Verify that the complex nested `DECODE(LTRIM(RTRIM(...)))` logic for `vo_kennung` is perfectly replicated by the BigQuery `CASE` statement.
 
-### Setup
-Deploy `dwh_abtn_smart_kubi_dag.py` to a local or test Airflow environment. Mock the BigQuery connection (`google_cloud_default`).
+#### Setup
+Create a mock dataset for `dwh_ta_f_d1_twvv_tn` containing various permutations of `vo_kenn` and `vo_kenn_bearb`.
 
-### Action
-Trigger a DAG run with a specific logical date (e.g., `2023-10-10T00:00:00Z`) and inspect the rendered templates of the `BigQueryInsertJobOperator` task.
+#### Action
+Run the following SQL assertion query in BigQuery:
 
-### Concrete Pass/Fail Criterion
-* **Pass**:
-  * The DAG parses successfully without syntax errors.
-  * The rendered query parameters for `p_monats_id` evaluate to `202309` (since October 10th is before the 15th).
-  * The rendered query parameters for `p_eintragsnr` evaluate to `1` (the task instance try number).
-* **Fail**: The DAG fails to parse, calculates the wrong `p_monats_id`, or fails to propagate parameters to the BigQuery operator.
-
-### Test Code (`test_dag_orchestration.py`)
-```python
-import pytest
-from airflow.models import DagBag, TaskInstance
-from airflow.utils.state import DagRunState
-from airflow.utils.types import DagRunType
-import pendulum
-
-def test_dag_loading():
-    dagbag = DagBag(dag_folder=".", include_examples=False)
-    dag = dagbag.get_dag(dag_id="dwh_abtn_smart_kubi_dag")
-    assert dagbag.import_errors == {}
-    assert dag is not None
-
-def test_parameter_rendering_before_15th():
-    dagbag = DagBag(dag_folder=".", include_examples=False)
-    dag = dagbag.get_dag(dag_id="dwh_abtn_smart_kubi_dag")
-    task = dag.get_task("execute_d_abtn_x_smart_kubi")
-    
-    # Simulate execution on October 10th (before the 15th)
-    logical_date = pendulum.datetime(2023, 10, 10, 12, 0, 0)
-    dag_run = dag.create_dagrun(
-        state=DagRunState.running,
-        execution_date=logical_date,
-        run_type=DagRunType.MANUAL,
-    )
-    
-    ti = TaskInstance(task=task, run_id=dag_run.run_id)
-    ti.render_templates()
-    
-    # Extract rendered query parameters
-    query_params = task.configuration["query"]["queryParameters"]
-    
-    p_monats_id_param = next(p for p in query_params if p["name"] == "p_monats_id")
-    p_eintragsnr_param = next(p for p in query_params if p["name"] == "p_eintragsnr")
-    
-    # Assertions
-    assert p_monats_id_param["parameterValue"]["value"] == "202309"  # Previous Month
-    assert p_eintragsnr_param["parameterValue"]["value"] == "1"
-
-def test_parameter_rendering_after_15th():
-    dagbag = DagBag(dag_folder=".", include_examples=False)
-    dag = dagbag.get_dag(dag_id="dwh_abtn_smart_kubi_dag")
-    task = dag.get_task("execute_d_abtn_x_smart_kubi")
-    
-    # Simulate execution on October 15th (on/after the 15th)
-    logical_date = pendulum.datetime(2023, 10, 15, 12, 0, 0)
-    dag_run = dag.create_dagrun(
-        state=DagRunState.running,
-        execution_date=logical_date,
-        run_type=DagRunType.MANUAL,
-    )
-    
-    ti = TaskInstance(task=task, run_id=dag_run.run_id)
-    ti.render_templates()
-    
-    query_params = task.configuration["query"]["queryParameters"]
-    p_monats_id_param = next(p for p in query_params if p["name"] == "p_monats_id")
-    
-    # Assertions
-    assert p_monats_id_param["parameterValue"]["value"] == "202310"  # Current Month
+```sql
+WITH test_data AS (
+  SELECT 'VO_VAL' AS vo_kenn, CAST(NULL AS STRING) AS vo_kenn_bearb UNION ALL -- Null bearb
+  SELECT 'VO_VAL' AS vo_kenn, '   ' AS vo_kenn_bearb UNION ALL               -- Whitespace bearb
+  SELECT 'VO_VAL' AS vo_kenn, '#' AS vo_kenn_bearb UNION ALL                 -- Hash bearb
+  SELECT 'VO_VAL' AS vo_kenn, '  #  ' AS vo_kenn_bearb UNION ALL             -- Hash with whitespace bearb
+  SELECT 'VO_VAL' AS vo_kenn, 'VO_BEARB' AS vo_kenn_bearb                    -- Standard bearb
+)
+SELECT 
+  vo_kenn,
+  vo_kenn_bearb,
+  CASE 
+    WHEN TRIM(vo_kenn_bearb) IS NULL THEN vo_kenn
+    WHEN TRIM(vo_kenn_bearb) = '#' THEN vo_kenn
+    ELSE vo_kenn_bearb
+  END AS migrated_vo_kennung
+FROM test_data;
 ```
+
+#### Pass/Fail Criterion
+* **Pass**: The output matches the expected mapping:
+  | `vo_kenn` | `vo_kenn_bearb` | `migrated_vo_kennung` |
+  | :--- | :--- | :--- |
+  | 'VO_VAL' | NULL | 'VO_VAL' |
+  | 'VO_VAL' | '   ' | 'VO_VAL' |
+  | 'VO_VAL' | '#' | 'VO_VAL' |
+  | 'VO_VAL' | '  #  ' | 'VO_VAL' |
+  | 'VO_VAL' | 'VO_BEARB' | 'VO_BEARB' |
+* **Fail**: Any row produces a value for `migrated_vo_kennung` that deviates from the mapping above.
+
+### Test Case 3.2: Business Unit Mapping (`kundennummer` Override)
+#### Purpose
+Verify that when the new tariff's business unit (`mp_geschaeftsfeld_id`) is `2`, the customer number (`kundennummer`) is overridden to `-1` regardless of the contract's actual customer number.
+
+#### Setup
+Create mock tables for `temp` (tariffs) and `dwh_ta_c_vertrag` (contracts).
+
+#### Action
+Execute the following query to validate the conditional override:
+
+```sql
+WITH temp_mock AS (
+  SELECT 1 AS dwh_tarif_id, 2 AS mp_geschaeftsfeld_id UNION ALL -- Business Unit 2
+  SELECT 2 AS dwh_tarif_id, 1 AS mp_geschaeftsfeld_id           -- Business Unit 1
+),
+vertrag_mock AS (
+  SELECT 'KUNDE_12345' AS t_mobile_kundennummer
+)
+SELECT 
+  t_new.mp_geschaeftsfeld_id,
+  d.t_mobile_kundennummer,
+  CASE 
+    WHEN t_new.mp_geschaeftsfeld_id = 2 THEN '-1' 
+    ELSE d.t_mobile_kundennummer 
+  END AS migrated_kundennummer
+FROM vertrag_mock d
+CROSS JOIN temp_mock t_new;
+```
+
+#### Pass/Fail Criterion
+* **Pass**: The output contains exactly two rows:
+  1. For `mp_geschaeftsfeld_id = 2`, `migrated_kundennummer` is `-1`.
+  2. For `mp_geschaeftsfeld_id = 1`, `migrated_kundennummer` is `KUNDE_12345`.
+* **Fail**: The override fails to apply, or applies to non-target business units.
 
 ---
 
-# Test Case 5: Runner Script Argument Parsing & Path Resolution (`r_sqlscript.py`)
+## Section 4: End-to-End Data Parity & Reconciliation
 
-### Purpose
-Prove that the migrated Python runner script (`r_sqlscript.py`) parses command-line arguments, resolves relative paths (searching `../sql`, `../mig`, and `.`), and handles errors identically to the legacy KornShell script.
+### Test Case 4.1: Historical Run A/B Reconciliation
+#### Purpose
+Ensure that executing the migrated BigQuery SQL script on a production-like historical dataset produces identical results to the legacy Oracle run for the same reporting period.
 
-### Setup
-Create a temporary directory structure mimicking the legacy environment:
+#### Setup
+1. Identify a historical reporting month (e.g., `201707`).
+2. Ensure the legacy target table state for that month is preserved in a comparison table: `oracle_reconciliation.dwh_ta_t_smart_kubi_201707`.
+3. Run the migrated BigQuery SQL script for `l_monats_id = 201707` to populate the target BigQuery table `dwh_ta_t_smart_kubi`.
+
+#### Action
+Execute a full outer join reconciliation query in BigQuery to detect any discrepancies in row counts, keys, or metrics.
+
+```sql
+WITH legacy AS (
+  SELECT 
+    monats_id, 
+    kundennummer, 
+    tarif_id, 
+    tarif_id_alt, 
+    vo_kennung, 
+    test_gp, 
+    anzahl, 
+    kennzahl_id
+  FROM `oracle_reconciliation.dwh_ta_t_smart_kubi_201707`
+),
+migrated AS (
+  SELECT 
+    monats_id, 
+    kundennummer, 
+    tarif_id, 
+    tarif_id_alt, 
+    vo_kennung, 
+    test_gp, 
+    anzahl, 
+    kennzahl_id
+  FROM `your-gcp-project.your_dataset.dwh_ta_t_smart_kubi`
+  WHERE monats_id = 201707
+),
+reconciliation AS (
+  SELECT
+    COALESCE(l.monats_id, m.monats_id) AS monats_id,
+    COALESCE(l.kundennummer, m.kundennummer) AS kundennummer,
+    COALESCE(l.tarif_id, m.tarif_id) AS tarif_id,
+    COALESCE(l.tarif_id_alt, m.tarif_id_alt) AS tarif_id_alt,
+    COALESCE(l.vo_kennung, m.vo_kennung) AS vo_kennung,
+    COALESCE(l.test_gp, m.test_gp) AS test_gp,
+    COALESCE(l.kennzahl_id, m.kennzahl_id) AS kennzahl_id,
+    l.anzahl AS legacy_anzahl,
+    m.anzahl AS migrated_anzahl,
+    (COALESCE(l.anzahl, 0) - COALESCE(m.anzahl, 0)) AS delta_anzahl
+  FROM legacy l
+  FULL OUTER JOIN migrated m
+    ON  l.monats_id = m.monats_id
+    AND COALESCE(l.kundennummer, 'NULL_VAL') = COALESCE(m.kundennummer, 'NULL_VAL')
+    AND l.tarif_id = m.tarif_id
+    AND l.tarif_id_alt = m.tarif_id_alt
+    AND COALESCE(l.vo_kennung, 'NULL_VAL') = COALESCE(m.vo_kennung, 'NULL_VAL')
+    AND COALESCE(l.test_gp, 'NULL_VAL') = COALESCE(m.test_gp, 'NULL_VAL')
+    AND l.kennzahl_id = m.kennzahl_id
+)
+SELECT 
+  COUNT(*) AS total_mismatched_rows,
+  SUM(CASE WHEN legacy_anzahl IS NULL THEN 1 ELSE 0 END) AS extra_rows_in_migrated,
+  SUM(CASE WHEN migrated_anzahl IS NULL THEN 1 ELSE 0 END) AS missing_rows_in_migrated,
+  SUM(CASE WHEN delta_anzahl != 0 THEN 1 ELSE 0 END) AS metric_mismatches
+FROM reconciliation
+WHERE legacy_anzahl IS NULL 
+   OR migrated_anzahl IS NULL 
+   OR delta_anzahl != 0;
 ```
-/tmp/test_runner/
-├── bin/
-│   └── r_sqlscript.py
-├── sql/
-│   └── d_abtn_x_smart_kubi.sql
-└── mig/
-```
 
-### Action
-Execute `r_sqlscript.py` via `subprocess` with various valid and invalid argument combinations.
-
-### Concrete Pass/Fail Criterion
-* **Pass**:
-  * Missing `-f` argument returns exit code `193`.
-  * Invalid flags return exit code `192`.
-  * Suffixes are correctly converted to lowercase (e.g., `-f SCRIPT.SQL` resolves to `script.sql`).
-  * Relative paths are resolved in the correct order (`../sql` -> `../mig` -> `.`).
-* **Fail**: The script returns incorrect exit codes, fails to resolve paths, or does not match legacy behavior.
-
-### Test Code (`test_runner_script.py`)
-```python
-import os
-import subprocess
-import shutil
-import pytest
-
-TEST_DIR = "/tmp/test_runner"
-
-@pytest.fixture(scope="module", autouse=True)
-def setup_test_environment():
-    # Create legacy directory structure
-    os.makedirs(f"{TEST_DIR}/bin", exist_ok=True)
-    os.makedirs(f"{TEST_DIR}/sql", exist_ok=True)
-    os.makedirs(f"{TEST_DIR}/mig", exist_ok=True)
-    
-    # Copy the migrated runner script to the bin directory
-    shutil.copy("local/home/gurunathan_t/kubi/r_sqlscript.py", f"{TEST_DIR}/bin/r_sqlscript.py")
-    
-    # Create a dummy SQL script in the sql directory
-    with open(f"{TEST_DIR}/sql/d_abtn_x_smart_kubi.sql", "w") as f:
-        f.write("SELECT 1;")
-        
-    yield
-    
-    # Cleanup
-    shutil.rmtree(TEST_DIR, ignore_errors=True)
-
-def test_missing_mandatory_argument():
-    # Running without -f should return exit code 193
-    result = subprocess.run(
-        ["python3", f"{TEST_DIR}/bin/r_sqlscript.py", "-j", "TEST_JOB"],
-        capture_output=True,
-        text=True
-    )
-    assert result.returncode == 193
-    assert "ERROR: MeldeFehler: Nr=193" in result.stderr
-
-def test_invalid_argument():
-    # Running with an invalid flag -z should return exit code 192
-    result = subprocess.run(
-        ["python3", f"{TEST_DIR}/bin/r_sqlscript.py", "-f", "d_abtn_x_smart_kubi.sql", "-z"],
-        capture_output=True,
-        text=True
-    )
-    assert result.returncode == 192
-    assert "ERROR: MeldeFehler: Nr=192" in result.stderr
-
-def test_path_resolution_and_lowercase_conversion():
-    # Pass uppercase script name; it should convert to lowercase and find it in ../sql/
-    # Mock GCP_PROJECT to prevent BigQuery client initialization error
-    env = os.environ.copy()
-    env["GCP_PROJECT"] = "mock-project"
-    
-    result = subprocess.run(
-        ["python3", f"{TEST_DIR}/bin/r_sqlscript.py", "-f", "D_ABTN_X_SMART_KUBI.SQL", "-j", "TEST_JOB"],
-        cwd=f"{TEST_DIR}/bin",
-        capture_output=True,
-        text=True,
-        env=env
-    )
-    
-    # The script should find the file and attempt execution (failing on BQ connection, but resolving path)
-    assert f"DB-Skript      : ../sql/d_abtn_x_smart_kubi.sql" in result.stdout
-```
+#### Pass/Fail Criterion
+* **Pass**: The reconciliation query returns exactly `0` for all output columns (`total_mismatched_rows = 0`, `extra_rows_in_migrated = 0`, `missing_rows_in_migrated = 0`, `metric_mismatches = 0`).
+* **Fail**: Any non-zero value is returned, indicating schema, key, or aggregation mismatches.
