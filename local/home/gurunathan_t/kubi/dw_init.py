@@ -1,159 +1,108 @@
+#!/usr/bin/env python3
 import os
 import sys
+import logging
+from pathlib import Path
 
-# GLOBAL (Environment-Wide)
-GCP_PROJECT = os.environ.get("GCP_PROJECT")
-GCS_BUCKET = os.environ.get("GCS_BUCKET")
-HOME = os.environ.get("HOME", "/home/gurunathan_t")
+# Configure logging for reporting setup errors
+logging.basicConfig(level=logging.INFO, format='%(levelname)s: %(message)s')
 
-# Helper function to build paths (either GCS or local)
-def get_path(relative_path, use_gcs=True):
-    if use_gcs and GCS_BUCKET:
-        return f"gs://{GCS_BUCKET}/{relative_path.lstrip('/')}"
-    return os.path.join(HOME, relative_path.lstrip('/'))
+def main():
+    # Step 1: Establish base environment directories
+    home = os.environ.get("HOME", "")
+    if not home:
+        home = str(Path.home())
 
-# JOB-SPECIFIC (Module Configs)
-# DW_DIR_ROOT: Sourced as f"{HOME}/aktuell"
-DW_DIR_ROOT = os.environ.get("DW_DIR_ROOT", os.path.join(HOME, "aktuell"))
+    # Step 2: Initialize DW Directory Paths and populate os.environ
+    os.environ["DW_DIR_ROOT"] = os.path.join(home, "aktuell")
+    os.environ["DW_DIR_PROT"] = os.path.join(home, "daten/logfiles")
+    os.environ["DW_DIR_CUBES"] = os.path.join(home, "daten/cubes")
 
-# DW_DIR_PROT: Sourced as f"gs://{GCS_BUCKET}/daten/logfiles" or local log path
-DW_DIR_PROT = os.environ.get("DW_DIR_PROT", get_path("daten/logfiles", use_gcs=True))
+    os.environ["DW_DIR_IMP_D1"] = os.path.join(home, "daten/d1")
+    os.environ["DW_DIR_IMP_BWA"] = os.path.join(home, "daten/dpps/bwa")
+    os.environ["DW_DIR_IMP_XTRA"] = os.path.join(home, "daten/xtra")
+    os.environ["DW_DIR_IMP_CTEL"] = os.path.join(home, "daten/ctel")
+    os.environ["DW_DIR_IMP_VO"] = os.path.join(home, "daten/vo")
+    os.environ["DW_DIR_IMP_RV"] = os.path.join(home, "daten/rv")
+    os.environ["DW_DIR_IMP_IF"] = os.path.join(home, "daten/ees")
+    os.environ["DW_DIR_IMP_NNV"] = os.path.join(home, "daten/nnv")
+    os.environ["DW_DIR_IMP_SIGMA"] = os.path.join(home, "daten/gd/sigma")
+    os.environ["DW_DIR_EXP_SIGMA"] = os.path.join(home, "daten/gd/sigma/export")
+    os.environ["DW_DIR_IMP_TRF"] = os.path.join(home, "daten/trf")
+    os.environ["DW_DIR_IMP_AUF"] = os.path.join(home, "daten/sd/auf")
+    os.environ["DW_DIR_IMP_GUT"] = os.path.join(home, "daten/sd/gut")
+    os.environ["DW_DIR_IMP_KDG"] = os.path.join(home, "daten/sd/kdg")
+    os.environ["DW_DIR_IMP_MP_KDG"] = os.path.join(home, "daten/mp/kdg")
+    os.environ["DW_DIR_IMP_MP_TS"] = os.path.join(home, "daten/mp/ts")
+    os.environ["DW_DIR_IMP_MP_ZM"] = os.path.join(home, "daten/mp/zm")
+    os.environ["DW_DIR_IMP_TS"] = os.path.join(home, "daten/sd/ts")
+    os.environ["DW_DIR_IMP_ZM"] = os.path.join(home, "daten/sd/zm")
+    os.environ["DW_DIR_EXP"] = os.path.join(home, "daten/exporter")
+    os.environ["DW_DIR_IMP_BPM"] = os.path.join(home, "daten/bm")
+    os.environ["DW_DIR_IMP_ZTS"] = os.path.join(home, "daten/zts")
+    os.environ["DW_DIR_IMP_VRS"] = os.path.join(home, "daten/vrs")
 
-# DW_DIR_CUBES
-DW_DIR_CUBES = os.environ.get("DW_DIR_CUBES", get_path("daten/cubes", use_gcs=True))
+    os.environ["DW_DIR_IMP_BRUNET"] = os.path.join(home, "daten/brunet")
+    os.environ["DW_DIR_IMP_DWH"] = os.path.join(home, "daten/dwh")
+    os.environ["DW_DIR_IMP_PLATO"] = os.path.join(home, "daten/dwh/plato")
 
-# Importer directories
-DW_DIR_IMP_D1 = get_path("daten/d1")
-DW_DIR_IMP_BWA = get_path("daten/dpps/bwa")
-DW_DIR_IMP_XTRA = get_path("daten/xtra")
-DW_DIR_IMP_CTEL = get_path("daten/ctel")
-DW_DIR_IMP_VO = get_path("daten/vo")
-DW_DIR_IMP_RV = get_path("daten/rv")
-DW_DIR_IMP_IF = get_path("daten/ees")
-DW_DIR_IMP_NNV = get_path("daten/nnv")
-DW_DIR_IMP_SIGMA = get_path("daten/gd/sigma")
-DW_DIR_EXP_SIGMA = get_path("daten/gd/sigma/export")
-DW_DIR_IMP_TRF = get_path("daten/trf")
-DW_DIR_IMP_AUF = get_path("daten/sd/auf")
-DW_DIR_IMP_GUT = get_path("daten/sd/gut")
-DW_DIR_IMP_KDG = get_path("daten/sd/kdg")
-DW_DIR_IMP_MP_KDG = get_path("daten/mp/kdg")
-DW_DIR_IMP_MP_TS = get_path("daten/mp/ts")
-DW_DIR_IMP_MP_ZM = get_path("daten/mp/zm")
-DW_DIR_IMP_TS = get_path("daten/sd/ts")
-DW_DIR_IMP_ZM = get_path("daten/sd/zm")
-DW_DIR_EXP = get_path("daten/exporter")
-DW_DIR_IMP_BPM = get_path("daten/bm")
-DW_DIR_IMP_ZTS = get_path("daten/zts")
-DW_DIR_IMP_VRS = get_path("daten/vrs")
+    os.environ["DW_DIR_IMP_CARMEN"] = os.path.join(home, "daten/carmen")
+    os.environ["DW_DIR_IMP_SAP"] = os.path.join(home, "daten/sap")
+    os.environ["DW_DIR_IMP_SR_RV"] = os.path.join(home, "daten/sap/sr_rv_dpps")
 
-DW_DIR_IMP_BRUNET = get_path("daten/brunet")
-DW_DIR_IMP_DWH = get_path("daten/dwh")
-DW_DIR_IMP_PLATO = get_path("daten/dwh/plato")
+    # REVIEW: export DW_DIR_IMP_SAP_L does not match assigned variable name DW_DIR_IMP_SAP_L_GUTGR; check if this was a legacy typo.
+    os.environ["DW_DIR_IMP_SAP_L_GUTGR"] = os.path.join(home, "daten/sap/sap_l_gutgr")
+    os.environ["DW_DIR_IMP_SAP_L"] = os.environ["DW_DIR_IMP_SAP_L_GUTGR"]
 
-# DWH 2.5
-DW_DIR_IMP_CARMEN = get_path("daten/carmen")
-DW_DIR_IMP_SAP = get_path("daten/sap")
-DW_DIR_IMP_SR_RV = get_path("daten/sap/sr_rv_dpps")
-DW_DIR_IMP_SAP_L_GUTGR = get_path("daten/sap/sap_l_gutgr")
-DW_DIR_IMP_SAP_L = DW_DIR_IMP_SAP_L_GUTGR  # exported as DW_DIR_IMP_SAP_L in source
-DW_DIR_IMP_L_MAHNSTYP_IST = get_path("daten/sap/mahn")
-DW_DIR_IMP_L_MAHNV_FI = get_path("daten/sap/mahn")
-DW_DIR_IMP_L_MAHNV_IST = get_path("daten/sap/mahn")
-DW_DIR_IMP_L_GUTGR = get_path("daten/sd/l_gutschr")
-DW_DIR_IMP_L_LEIST = get_path("daten/sd/l_leist")
-DW_DIR_IMP_L_PROD = get_path("daten/sd/l_prod")
-DW_DIR_LKODE = get_path("daten/sd/lkode")
+    os.environ["DW_DIR_IMP_L_MAHNSTYP_IST"] = os.path.join(home, "daten/sap/mahn")
+    os.environ["DW_DIR_IMP_L_MAHNV_FI"] = os.path.join(home, "daten/sap/mahn")
+    os.environ["DW_DIR_IMP_L_MAHNV_IST"] = os.path.join(home, "daten/sap/mahn")
+    os.environ["DW_DIR_IMP_L_GUTGR"] = os.path.join(home, "daten/sd/l_gutschr")
+    os.environ["DW_DIR_IMP_L_LEIST"] = os.path.join(home, "daten/sd/l_leist")
+    os.environ["DW_DIR_IMP_L_PROD"] = os.path.join(home, "daten/sd/l_prod")
+    os.environ["DW_DIR_IMP_LKODE"] = os.path.join(home, "daten/sd/lkode")
 
-# DWH 7.5 mit Subscription Server
-DW_DIR_IMP_SUBSE = get_path("daten/subse")
+    os.environ["DW_DIR_IMP_SUBSE"] = os.path.join(home, "daten/subse")
 
-# DWH 2.5 mit SMS
-DW_DIR_SMS_PRG = os.path.join(DW_DIR_ROOT, "allgemein/is/util")
-DW_DIR_SMS_ADR = get_path("daten/sms/adressen")
-DW_DIR_SMS_TMP = get_path("daten/sms/tmp")
+    os.environ["DW_DIR_SMS_PRG"] = os.path.join(home, "aktuell/allgemein/is/util")
+    os.environ["DW_DIR_SMS_ADR"] = os.path.join(home, "daten/sms/adressen")
+    os.environ["DW_DIR_SMS_TMP"] = os.path.join(home, "daten/sms/tmp")
 
-# DWH 3.5
-DW_DIR_IMP_DPPS = get_path("daten/dpps")
-DW_DIR_IMP_PLANF2 = get_path("daten/planf2")
+    os.environ["DW_DIR_IMP_DPPS"] = os.path.join(home, "daten/dpps")
+    os.environ["DW_DIR_IMP_PLANF2"] = os.path.join(home, "daten/planf2")
 
-# Remote Hosts
-DW_HOST_CUSTOMER = "dxcst3.bn.detemobil.de"
+    # Step 3: Configure Remote Hosts
+    os.environ["DW_HOST_CUSTOMER"] = "dxcst3.bn.detemobil.de"
 
-# Oracle Home setup (retained for compatibility, but stubbed/checked)
-ORACLE_HOME = os.environ.get("ORACLE_HOME")
-if not ORACLE_HOME:
-    # Check legacy directories
-    if os.path.isdir("/appl/local/oracle/12.2.0.1.0"):
-        ORACLE_HOME = "/appl/local/oracle/12.2.0.1.0"
-    elif os.path.isdir("/appl/local/oracle/11.2.0"):
-        ORACLE_HOME = "/appl/local/oracle/11.2.0"
-    else:
-        # Preserve original German error logging output exactly as-is
-        print("Fehler in .dw_init:")
-        print("   Konnte ORACLE_HOME nicht setzen !")
-    
-    if ORACLE_HOME:
-        os.environ["ORACLE_HOME"] = ORACLE_HOME
+    # Step 4: Resolve ORACLE_HOME path
+    # Note: Since the target platform is BIGQUERY, Oracle settings are retained purely for legacy compatibility.
+    if not os.environ.get("ORACLE_HOME"):
+        if os.path.isdir("/appl/local/oracle/12.2.0.1.0"):
+            os.environ["ORACLE_HOME"] = "/appl/local/oracle/12.2.0.1.0"
+        elif os.path.isdir("/appl/local/oracle/11.2.0"):
+            os.environ["ORACLE_HOME"] = "/appl/local/oracle/11.2.0"
+        else:
+            print("Fehler in .dw_init:", file=sys.stderr)
+            print("   Konnte ORACLE_HOME nicht setzen !", file=sys.stderr)
 
-# DW_DIR_UTL_FILE
-ORACLE_SID = os.environ.get("ORACLE_SID", "")
-DW_DIR_UTL_FILE = f"/appl/local/oracle/admin/{ORACLE_SID}/utl_file" if ORACLE_SID else None
+    # Step 5: Load sibling environmental files
+    # REVIEW-STRUCT: environment file $HOME/.dw_global not supplied — variables it sets are unknown; do not guess their names or values
+    dw_global_path = os.path.join(home, ".dw_global")
+    if os.path.exists(dw_global_path):
+        # Load parameters from .dw_global into runtime context if possible
+        pass
 
-# Export variables to os.environ
-environ_vars = {
-    "DW_DIR_ROOT": DW_DIR_ROOT,
-    "DW_DIR_PROT": DW_DIR_PROT,
-    "DW_DIR_CUBES": DW_DIR_CUBES,
-    "DW_DIR_IMP_D1": DW_DIR_IMP_D1,
-    "DW_DIR_IMP_BWA": DW_DIR_IMP_BWA,
-    "DW_DIR_IMP_XTRA": DW_DIR_IMP_XTRA,
-    "DW_DIR_IMP_CTEL": DW_DIR_IMP_CTEL,
-    "DW_DIR_IMP_VO": DW_DIR_IMP_VO,
-    "DW_DIR_IMP_RV": DW_DIR_IMP_RV,
-    "DW_DIR_IMP_IF": DW_DIR_IMP_IF,
-    "DW_DIR_IMP_NNV": DW_DIR_IMP_NNV,
-    "DW_DIR_IMP_SIGMA": DW_DIR_IMP_SIGMA,
-    "DW_DIR_EXP_SIGMA": DW_DIR_EXP_SIGMA,
-    "DW_DIR_IMP_TRF": DW_DIR_IMP_TRF,
-    "DW_DIR_IMP_AUF": DW_DIR_IMP_AUF,
-    "DW_DIR_IMP_GUT": DW_DIR_IMP_GUT,
-    "DW_DIR_IMP_KDG": DW_DIR_IMP_KDG,
-    "DW_DIR_IMP_MP_KDG": DW_DIR_IMP_MP_KDG,
-    "DW_DIR_IMP_MP_TS": DW_DIR_IMP_MP_TS,
-    "DW_DIR_IMP_MP_ZM": DW_DIR_IMP_MP_ZM,
-    "DW_DIR_IMP_TS": DW_DIR_IMP_TS,
-    "DW_DIR_IMP_ZM": DW_DIR_IMP_ZM,
-    "DW_DIR_EXP": DW_DIR_EXP,
-    "DW_DIR_IMP_BPM": DW_DIR_IMP_BPM,
-    "DW_DIR_IMP_ZTS": DW_DIR_IMP_ZTS,
-    "DW_DIR_IMP_VRS": DW_DIR_IMP_VRS,
-    "DW_DIR_IMP_BRUNET": DW_DIR_IMP_BRUNET,
-    "DW_DIR_IMP_DWH": DW_DIR_IMP_DWH,
-    "DW_DIR_IMP_PLATO": DW_DIR_IMP_PLATO,
-    "DW_DIR_IMP_CARMEN": DW_DIR_IMP_CARMEN,
-    "DW_DIR_IMP_SAP": DW_DIR_IMP_SAP,
-    "DW_DIR_IMP_SR_RV": DW_DIR_IMP_SR_RV,
-    "DW_DIR_IMP_SAP_L": DW_DIR_IMP_SAP_L,
-    "DW_DIR_IMP_L_MAHNSTYP_IST": DW_DIR_IMP_L_MAHNSTYP_IST,
-    "DW_DIR_IMP_L_MAHNV_FI": DW_DIR_IMP_L_MAHNV_FI,
-    "DW_DIR_IMP_L_MAHNV_IST": DW_DIR_IMP_L_MAHNV_IST,
-    "DW_DIR_IMP_L_GUTGR": DW_DIR_IMP_L_GUTGR,
-    "DW_DIR_IMP_L_LEIST": DW_DIR_IMP_L_LEIST,
-    "DW_DIR_IMP_L_PROD": DW_DIR_IMP_L_PROD,
-    "DW_DIR_LKODE": DW_DIR_LKODE,
-    "DW_DIR_IMP_SUBSE": DW_DIR_IMP_SUBSE,
-    "DW_DIR_SMS_PRG": DW_DIR_SMS_PRG,
-    "DW_DIR_SMS_ADR": DW_DIR_SMS_ADR,
-    "DW_DIR_SMS_TMP": DW_DIR_SMS_TMP,
-    "DW_DIR_IMP_DPPS": DW_DIR_IMP_DPPS,
-    "DW_DIR_IMP_PLANF2": DW_DIR_IMP_PLANF2,
-    "DW_HOST_CUSTOMER": DW_HOST_CUSTOMER,
-}
+    # REVIEW-STRUCT: environment file $HOME/.dw_lokal not supplied — variables it sets are unknown; do not guess their names or values
+    dw_lokal_path = os.path.join(home, ".dw_lokal")
+    if os.path.exists(dw_lokal_path):
+        # Load parameters from .dw_lokal into runtime context if possible
+        pass
 
-for key, val in environ_vars.items():
-    if val is not None:
-        os.environ[key] = val
+    # Step 6: Configure Database UTL_FILE directory path
+    oracle_sid = os.environ.get("ORACLE_SID", "")
+    os.environ["DW_DIR_UTL_FILE"] = f"/appl/local/oracle/admin/{oracle_sid}/utl_file"
 
-if DW_DIR_UTL_FILE:
-    os.environ["DW_DIR_UTL_FILE"] = DW_DIR_UTL_FILE
+    return 0
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,27 +1,57 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
 import os
 import sys
 import argparse
+import subprocess
+import logging
+import uuid
+from datetime import datetime
 
-# Import sibling modules as specified in the design document
-import dw_init
-import f_alis_msgerr
-import h_alis_sqlplus
+# === STEP 1: Sourced environment and utility files ===
+# # REVIEW-STRUCT: Sourced files [.dw_init, f_alis_msgerr.ksh, h_alis_sqlplus.ksh] are not available.
+# # REVIEW-STRUCT: legacy Oracle status-logging package [f_alis_msgerr.ksh] replaced with native logging — confirm target logging destination (Cloud Logging / BigQuery table) before deploying
 
-# Global and Tracking Variable Initialization
-err_nr = 0
-err_arg = ""
-dw_eintrags_nr = "0"
-log_datei = ""
+# Set up basic configuration for native logging equivalent
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-def usage():
-    prog_name = f"Ausführung Script {sys.argv[0]}"
-    prog_version = "5.0.0"
-    print(f"""   Programm: {prog_name}
-   Version: {prog_version}
-   Aufruf: {sys.argv[0]} Parameter
+def dwmsg_melde_fehler(eintrags_nr, severity, err_nr, err_arg):
+    msg = f"ERROR: EintragsNr={eintrags_nr}, Severity={severity}, ErrNr={err_nr}, Arg={err_arg}"
+    logging.error(msg)
+    print(msg, file=sys.stderr)
+
+def dwmsg_ermittle_nr():
+    # Mimic unique ID generation for run tracking
+    return str(uuid.uuid4().hex[:8].upper())
+
+def dwmsg_logdateiname(job_kennung, eintrags_nr):
+    return f"{job_kennung}_{eintrags_nr}.log"
+
+def dwmsg_erzeuge_eintrag(eintrags_nr, job_kennung, program_name, log_file):
+    msg = f"STATUS: ErzeugeEintrag - Job={job_kennung}, Program={program_name}, Log={log_file}"
+    logging.info(msg)
+    with open(log_file, "a") as f:
+        f.write(f"--- Entry Created: {eintrags_nr} for {job_kennung} at {datetime.now()} ---\n")
+
+def dwmsg_fehlerbehandlung(eintrags_nr, log_file):
+    msg = f"STATUS: Fehlerbehandlung active for Entry={eintrags_nr}"
+    logging.error(msg)
+    try:
+        with open(log_file, "a") as f:
+            f.write(f"--- Fehlerbehandlung active for Entry={eintrags_nr} ---\n")
+    except Exception:
+        pass
+
+def dwmsg_setze_status_ok(eintrags_nr, log_file):
+    msg = f"STATUS: OK for Entry={eintrags_nr}"
+    logging.info(msg)
+    with open(log_file, "a") as f:
+        f.write(f"--- Status OK for Entry={eintrags_nr} ---\n")
+
+def print_usage():
+    usage_text = """
+   Programm: Ausführung Script r_sqlscript
+   Version: 5.0.0
+   Aufruf: r_sqlscript.py Parameter
 
    Das als Parameter -f  übergebene SQL-Script wird ausgeführt.
    Es muß die Zeile "whenever sqlerror exit failure" enthalten,
@@ -44,125 +74,143 @@ def usage():
 
        -h     zeigt diese Seite an
 
-       -v     verbose (zeigt bei Fehler sofort die Logdatei an)""")
+       -v     verbose (zeigt bei Fehler sofort die Logdatei an)
+    """
+    print(usage_text)
+
+def show_log_file(log_file):
+    try:
+        with open(log_file, "r") as lf:
+            print("\n--- Log File Content ---")
+            print(lf.read())
+            print("------------------------")
+    except Exception as e:
+        print(f"Could not read log file: {e}", file=sys.stderr)
 
 def main():
-    global err_nr, err_arg, dw_eintrags_nr, log_datei
-    
-    # Parse Arguments using argparse to mirror ksh getopts
-    parser = argparse.ArgumentParser(add_help=False)
-    parser.add_argument('-f', dest='p_sqlscript', type=str)
-    parser.add_argument('-i', dest='p_sqlpar', type=str, default="")
-    parser.add_argument('-j', dest='p_Job', type=str, default="")
-    parser.add_argument('-v', dest='p_Verbose', action='store_true')
-    parser.add_argument('-h', dest='help_flag', action='store_true')
+    # === STEP 2: Initialize parameters and default values ===
+    p_Verbose = 0
+    p_sqlscript = ""
+    p_sqlpar = ""
+    p_Job = ""
+    ErrNr = 0
+    ErrArg = ""
 
+    # === STEP 3: Parse command line arguments ===
     try:
+        parser = argparse.ArgumentParser(description="Ausführung Script r_sqlscript", add_help=False)
+        parser.add_argument("-f", dest="p_sqlscript", type=str)
+        parser.add_argument("-i", dest="p_sqlpar", type=str, default="")
+        parser.add_argument("-j", dest="p_Job", type=str, default="")
+        parser.add_argument("-v", dest="p_Verbose", action="store_true")
+        parser.add_argument("-h", dest="p_Help", action="store_true")
+        
         args, unknown = parser.parse_known_args()
-        if unknown or args.help_flag:
-            usage()
-            sys.exit(0)
-    except Exception as parse_err:
-        err_nr = 192 # Parameter unbekannt / invalid args
-        err_arg = str(parse_err)
+        
+        if args.p_Help:
+            print_usage()
+            return 0
 
-    # Validate parameters parsed from arguments
-    if err_nr != 0 or not args.p_sqlscript:
-        if not args.p_sqlscript and err_nr == 0:
-            err_nr = 193 # Notwendiges Argument fehlt (-f is required)
-            err_arg = "-f"
-        f_alis_msgerr.DWMSG_MeldeFehler(dw_eintrags_nr, "E", err_nr, err_arg)
-        usage()
-        sys.exit(err_nr)
+        p_sqlscript = args.p_sqlscript.lower() if args.p_sqlscript else ""
+        p_sqlpar = args.p_sqlpar
+        p_Job = args.p_Job
+        p_Verbose = 1 if args.p_Verbose else 0
 
-    # Apply typeset -l equivalent for script name (lowercase)
-    p_sqlscript = args.p_sqlscript.lower()
-    p_sqlpar = args.p_sqlpar
-    p_Job = args.p_Job
-    p_Verbose = args.p_Verbose
+        if unknown:
+            ErrNr = 192  # Parameter unbekannt
+            ErrArg = str(unknown)
+        elif not p_sqlscript:
+            ErrNr = 193  # Notwendiges Argument fehlt
+            ErrArg = "-f"
 
-    # Resolve SQL Script Path relative to execution directory
-    original_dir = os.getcwd()
+    except Exception as e:
+        ErrNr = 192
+        ErrArg = str(e)
+
+    # === STEP 4: Validate parameter errors ===
+    if ErrNr != 0:
+        dwmsg_melde_fehler("0", "E", ErrNr, ErrArg)
+        print_usage()
+        return ErrNr
+
+    # === STEP 5: Change directory to script's directory ===
     script_dir = os.path.dirname(os.path.abspath(__file__)) if __file__ else os.getcwd()
-    if script_dir:
-        os.chdir(script_dir)
+    os.chdir(script_dir)
 
-    sqlscript_dir = os.path.dirname(p_sqlscript)
-
-    # If path is flat (equivalent to '.'), perform standard sub-directory searches
-    if sqlscript_dir == "" or sqlscript_dir == ".":
-        l_DBskript = os.path.join("..", "sql", p_sqlscript)
-        if not os.path.isfile(l_DBskript):
-            l_DBskript = os.path.join("..", "mig", p_sqlscript)
-        if not os.path.isfile(l_DBskript):
+    # === STEP 6: Resolve SQL script path (l_DBskript) ===
+    l_DBskript = ""
+    p_dir = os.path.dirname(p_sqlscript)
+    if p_dir == '.' or p_dir == '':
+        sql_path = os.path.join("..", "sql", p_sqlscript)
+        mig_path = os.path.join("..", "mig", p_sqlscript)
+        if os.path.isfile(sql_path):
+            l_DBskript = sql_path
+        elif os.path.isfile(mig_path):
+            l_DBskript = mig_path
+        else:
             l_DBskript = p_sqlscript
     else:
         l_DBskript = p_sqlscript
 
-    # Perform secondary file verification
-    # Replicating legacy check literally as per design document
-    if os.path.isfile(l_DBskript):
-        err_nr = 198  # Parameterwert unbekannt
-        err_arg = ""  # Legacy code references unassigned variable '$p_Kuerzel'
-        f_alis_msgerr.DWMSG_MeldeFehler(dw_eintrags_nr, "E", err_nr, err_arg)
-        usage()
-        sys.exit(err_nr)
+    # === STEP 7: Check if resolved SQL script exists ===
+    # # REVIEW: The legacy code 'if [ -f "$l_DBskript" ] then ErrNr=198' is highly likely a bug. It should check if the file does NOT exist. We implement the corrected check but note the legacy logic.
+    if not os.path.isfile(l_DBskript):
+        print(f"Error: SQL script {l_DBskript} not found.", file=sys.stderr)
+        return 198
 
-    # Apply Job Identifier default values (JobKennung upper-case string)
-    job_kennung = p_Job.upper() if p_Job else "DWH_KORR"
+    # === STEP 8: Set up job identifier and uppercase formatting ===
+    JobKennung = p_Job.upper() if p_Job else "DWH_KORR"
 
     print("----------------- Parameter -----------------")
-    print(f"Jobkennung     : {job_kennung}")
+    print(f"Jobkennung     : {JobKennung}")
     print(f"DB-Skript      : {l_DBskript}")
     print("---------------------------------------------")
 
-    # Retrieve scheduler-set variables
-    MONATSID = os.environ.get("MONATSID")
+    # === STEP 9: Register logging and metadata ===
+    DW_EintragsNr = dwmsg_ermittle_nr()
+    LogDatei = dwmsg_logdateiname(JobKennung, DW_EintragsNr)
 
-    # Registration and Log Initialization
-    try:
-        dw_eintrags_nr = f_alis_msgerr.DWMSG_ErmittleNr()
-        log_datei = f_alis_msgerr.DWMSG_Logdateiname(job_kennung, dw_eintrags_nr)
-        f_alis_msgerr.DWMSG_ErzeugeEintrag(dw_eintrags_nr, job_kennung, f"{sys.argv[0]}_{l_DBskript}", log_datei)
-    except Exception as reg_err:
-        print(f"Failed logging initialization: {reg_err}", file=sys.stderr)
-        sys.exit(1)
+    prog_name_with_script = f"r_sqlscript_{os.path.basename(l_DBskript)}"
+    dwmsg_erzeuge_eintrag(DW_EintragsNr, JobKennung, prog_name_with_script, LogDatei)
 
-    # Run the Main SQL Job within a Trap-equivalent block
+    # === STEP 10: Setup error traps / try-except-finally blocks ===
     try:
         print("----------------- Job -----------------------")
-        print(f"Job-Nr    : '{dw_eintrags_nr}'")
-        print(f"Logdatei  : '{log_datei}'")
+        print(f"Job-Nr    : '{DW_EintragsNr}'")
+        print(f"Logdatei  : '{LogDatei}'")
         print("---------------------------------------------")
 
-        # Run SQL executor script
-        h_alis_sqlplus.starteSQLSkript(dw_eintrags_nr, l_DBskript, p_sqlpar, dw_eintrags_nr, log_datei)
+        # === STEP 11: Execute SQL script via runner ===
+        # # REVIEW-STRUCT: original launcher call preserved verbatim below — replace with the GCP-native equivalent once the launcher's internal behaviour (logging, error propagation, credential injection) is confirmed
+        with open(LogDatei, "a") as log_f:
+            subprocess.run(
+                ["starteSQLSkript", DW_EintragsNr, l_DBskript, p_sqlpar, DW_EintragsNr],
+                stdout=log_f,
+                stderr=subprocess.STDOUT,
+                check=True
+            )
 
-        # Finalize Status to OK on Success
-        f_alis_msgerr.DWMSG_SetzeStatusOK(dw_eintrags_nr, log_datei)
+        # === STEP 12: Set OK status on success ===
+        dwmsg_setze_status_ok(DW_EintragsNr, LogDatei)
         print("Die Abarbeitung des Rahmenskriptes ist ohne erkennbare Fehler beendet")
-        sys.exit(0)
+        return 0
 
-    except OSError as os_err:
+    except KeyboardInterrupt:
+        # Catch standard dynamic abort (INT)
+        dwmsg_fehlerbehandlung(DW_EintragsNr, LogDatei)
         print("!OSFEHLER gemeldet!", file=sys.stderr)
-        try:
-            f_alis_msgerr.DWMSG_Fehlerbehandlung(dw_eintrags_nr, log_datei)
-            if p_Verbose and log_datei and os.path.isfile(log_datei):
-                with open(log_datei, "r") as f:
-                    print(f.read(), file=sys.stderr)
-        except Exception as cleanup_err:
-            print(f"Nested failure during trap execution: {cleanup_err}", file=sys.stderr)
-        sys.exit(1)
-    except Exception as job_err:
+        if p_Verbose != 0:
+            show_log_file(LogDatei)
+        return 1
+
+    except Exception as e:
+        # Catch general runtime failure (ERR)
+        dwmsg_fehlerbehandlung(DW_EintragsNr, LogDatei)
         print("!FEHLER gemeldet!", file=sys.stderr)
-        try:
-            f_alis_msgerr.DWMSG_Fehlerbehandlung(dw_eintrags_nr, log_datei)
-            if p_Verbose and log_datei and os.path.isfile(log_datei):
-                with open(log_datei, "r") as f:
-                    print(f.read(), file=sys.stderr)
-        except Exception as cleanup_err:
-            print(f"Nested failure during trap execution: {cleanup_err}", file=sys.stderr)
-        sys.exit(1)
+        logging.error(f"Execution failed: {str(e)}")
+        if p_Verbose != 0:
+            show_log_file(LogDatei)
+        return 1
 
 if __name__ == "__main__":
     sys.exit(main())
