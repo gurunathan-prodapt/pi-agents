@@ -2,89 +2,97 @@
 import os
 import sys
 import argparse
-import pathlib
-import subprocess
+from pathlib import Path
 from google.cloud import bigquery
+from google.cloud.exceptions import GoogleCloudError
 
-# Step 1: Initialize module-level metadata variables
+# Module metadata variables
 MODUL_NAME = "alis_sqlplus"
 MODUL_VERSION = "V1.1.3"
 
-# Global Environment Values
-GCP_PROJECT = os.environ.get("GCP_PROJECT")
-BQ_DATASET = os.environ.get("BQ_DATASET")
-DW_ORAUSER = os.environ.get("DW_ORAUSER")
 
-# Step 2: Define the central wrapper function
-def starte_sql_skript(p_eintragsnr: str, p_skript: str, *args) -> int:
+# # REVIEW-STRUCT: launcher [DWMSG_MeldeFehler] invoked — internal behaviour not available in this extraction; confirm logging, error propagation, and credential handling before finalizing the conversion
+def dwmsg_melde_fehler(eintrags_nr: str, msg_type: str, code: int, msg_text: str) -> None:
     """
-    Python equivalent of starteSQLSkript function.
-    Validates arguments and executes the specified SQL script.
+    Mock/placeholder for the external DWMSG_MeldeFehler error-reporting utility.
     """
+    print(f"ERROR_LOG [{eintrags_nr}] Type: {msg_type}, Code: {code}, Message: {msg_text}", file=sys.stderr)
+
+
+def starte_sql_skript(p_eintragsnr: str, p_skript: str, *p_params: str) -> int:
+    """
+    Safely executes a SQL script file on BigQuery.
     
-    # Step 3: Audit & Validate mandatory parameters
-    # Original guard: if [ -z "$p_Eintragsnr" -o -z "$p_Skript" ]
+    Ported from KSH: starteSQLSkript()
+    """
+    # Step 1 & 2: Validate that required arguments are present
+    # KSH Guard: if [ -z "$p_Eintragsnr" -o -z "$p_Skript" ]
     if not p_eintragsnr or not p_skript:
-        # Call legacy error handler utility
-        subprocess.run([
-            "DWMSG_MeldeFehler", 
-            p_eintragsnr, 
-            "E", 
-            "196", 
-            f"{MODUL_NAME} {MODUL_VERSION} starteSQLSkript"
-        ], check=False)
+        # Replicates: DWMSG_MeldeFehler $p_Eintragsnr E 196 "${Modul_Name} ${Modul_Version} starteSQLSkript"
+        module_info = f"{MODUL_NAME} {MODUL_VERSION} starteSQLSkript"
+        dwmsg_melde_fehler(p_eintragsnr or "", "E", 196, module_info)
         return 196
 
-    # Step 4: Audit & Validate that the script file is readable
-    # Original guard: if [ ! -r $p_Skript ]
-    script_path = pathlib.Path(p_skript)
+    # Step 3: Check if the SQL script is readable
+    # KSH Guard: if [ ! -r $p_Skript ]
+    script_path = Path(p_skript)
     if not script_path.is_file() or not os.access(script_path, os.R_OK):
-        subprocess.run([
-            "DWMSG_MeldeFehler", 
-            p_eintragsnr, 
-            "E", 
-            "201", 
-            p_skript
-        ], check=False)
+        # Replicates: DWMSG_MeldeFehler $p_Eintragsnr E 201 $p_Skript
+        dwmsg_melde_fehler(p_eintragsnr, "E", 201, str(script_path))
         return 201
 
-    # Step 5: Log invocation details to stdout
+    # Step 4: Log invocation settings
+    # Replicates echo statements verbatim
     print("Rufe SQL*PLUS auf mit folgenden Einstellungen")
     print(f"Sql*Plus-Skript : {p_skript}")
-    print(f"Skript-Parameter: {' '.join(args)}")
+    print(f"Skript-Parameter: {' '.join(p_params)}")
 
-    # Step 6: Execute the SQL script
-    errcode = 0
+    # Step 5: Execute the SQL target
+    # The original script invoked Oracle SQL*Plus. Because the target platform is confirmed 
+    # as BIGQUERY, we utilize the Google Cloud BigQuery client to run the migrated SQL file.
     try:
-        # Target database platform is BIGQUERY.
-        # Execute the SQL script via the google-cloud-bigquery client.
-        client = bigquery.Client(project=GCP_PROJECT)
-        with open(script_path, "r", encoding="utf-8") as f:
-            sql_query = f.read()
-            
-        if args:
-            print(f"Warning: Positional arguments {args} were provided but BigQuery execution of raw SQL files does not natively map them without custom replacement.", file=sys.stderr)
-            
-        query_job = client.query(sql_query)
-        query_job.result() # Waits for query to complete
-        errcode = 0
-    except Exception as e:
-        print(f"Execution failed: {str(e)}", file=sys.stderr)
-        errcode = 1  # Standard fallback error code
+        # Retrieve GCP_PROJECT from environment variables
+        gcp_project = os.environ.get("GCP_PROJECT")
+        
+        # Initialize the BigQuery client
+        client = bigquery.Client(project=gcp_project)
+        
+        # Read the SQL query from the migrated script file
+        with open(script_path, "r", encoding="utf-8") as sql_file:
+            query_text = sql_file.read()
 
-    # Step 7: Return the resulting exit code
+        # # REVIEW: Determine parameter parameterisation strategy (query parameters vs. templating).
+        print(f"Executing Query in file '{p_skript}' via BigQuery Client...")
+        
+        # Run query job on BigQuery
+        query_job = client.query(query_text)
+        
+        # Wait for the query to finish execution
+        query_job.result()
+        
+        errcode = 0
+    except GoogleCloudError as gcp_err:
+        print(f"BigQuery execution failed: {gcp_err}", file=sys.stderr)
+        # Propagate the GCP status code if available, otherwise default to 1
+        errcode = gcp_err.code if hasattr(gcp_err, 'code') and gcp_err.code else 1
+    except Exception as err:
+        print(f"Execution failed: {err}", file=sys.stderr)
+        errcode = 1
+
+    # Step 6: Return exit status code
     return errcode
 
-def main():
-    parser = argparse.ArgumentParser(description="Run BigQuery SQL scripts (formerly via SQL*Plus h_alis_sqlplus.ksh wrapper).")
-    parser.add_argument("p_eintragsnr", help="Error tracking entry number.")
-    parser.add_argument("p_skript", help="Path to the SQL script file.")
-    parser.add_argument("args", nargs="*", help="Dynamic parameters passed to the SQL script.")
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description="Helper routine to validate and run SQL scripts on BigQuery")
+    parser.add_argument("eintragsnr", help="Error Entry ID (Fehlereintragsnummer)")
+    parser.add_argument("skript", help="Path to the SQL script file")
+    parser.add_argument("params", nargs="*", help="Dynamic parameters passed to the SQL script")
     
-    parsed_args = parser.parse_args()
+    args = parser.parse_args()
     
-    rc = starte_sql_skript(parsed_args.p_eintragsnr, parsed_args.p_skript, *parsed_args.args)
-    return rc
+    return starte_sql_skript(args.eintragsnr, args.skript, *args.params)
+
 
 if __name__ == "__main__":
     sys.exit(main())

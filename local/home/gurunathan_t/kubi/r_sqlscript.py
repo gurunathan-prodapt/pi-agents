@@ -1,129 +1,65 @@
 #!/usr/bin/env python3
 import sys
 import os
-import getopt
-import subprocess
+import argparse
+import logging
+from pathlib import Path
+from google.cloud import bigquery
+from google.api_core.exceptions import GoogleAPIError
 
-# Global environment variables sourced at runtime
-GCP_PROJECT = os.environ.get("GCP_PROJECT")
-GCS_BUCKET = os.environ.get("GCS_BUCKET")
-DW_DIR_ROOT = os.environ.get("DW_DIR_ROOT")
+# REVIEW-STRUCT: environment file .dw_init not supplied — variables it sets are unknown; do not guess their names or values
+# REVIEW-STRUCT: environment file f_alis_msgerr.ksh not supplied — variables/functions it sets are unknown; do not guess their names or values
+# REVIEW-STRUCT: environment file h_alis_sqlplus.ksh not supplied — defines starteSQLSkript; behaviour unknown
 
-# Step 1: Framework Stub functions representing sourced behavior
-# REVIEW-STRUCT: environment file [.dw_init] not supplied — variables it sets are unknown; do not guess their names or values
-# REVIEW-STRUCT: environment file [f_alis_msgerr.ksh] not supplied — variables/functions it sets are unknown
-# REVIEW-STRUCT: environment file [h_alis_sqlplus.ksh] not supplied — variables/functions it sets are unknown
+# Ensure mandatory environment parameters are set
+gcp_project = os.environ.get("GCP_PROJECT")
+dw_dir_root = os.environ.get("DW_DIR_ROOT")
+home = os.environ.get("HOME")
 
-# REVIEW-STRUCT: legacy Oracle status-logging package [DWMSG] replaced with native logging — confirm target logging destination (Cloud Logging / BigQuery table) before deploying
-def dwmsg_melde_fehler(eintrags_nr, severity, err_nr, err_arg):
-    print(f"Error logged: {severity} {err_nr} {err_arg}", file=sys.stderr)
+# Configure native logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
 
-def dwmsg_ermittle_nr():
+# REVIEW-STRUCT: legacy Oracle status-logging package DWMSG replaced with native logging — confirm target logging destination (Cloud Logging / BigQuery table) before deploying
+def DWMSG_MeldeFehler(eintrags_nr, severity, err_nr, err_arg):
+    logging.error(f"Error registered: Severity={severity}, ErrNr={err_nr}, Arg={err_arg}")
+
+def DW_MSG_MeldeFehler(eintrags_nr, severity, err_nr, err_arg):
+    DWMSG_MeldeFehler(eintrags_nr, severity, err_nr, err_arg)
+
+def DWMSG_ErmittleNr():
     import time
-    return int(time.time()) % 1000000
+    return int(time.time() * 1000) % 1000000
 
-def dwmsg_logdateiname(job_kennung, eintrags_nr):
-    return f"log_{job_kennung}_{eintrags_nr}.log"
+def DWMSG_Logdateiname(job_kennung, eintrags_nr):
+    return f"/tmp/log_{job_kennung}_{eintrags_nr}.log"
 
-def dwmsg_erzeuge_eintrag(eintrags_nr, job_kennung, script_desc, log_file):
-    log_dir = os.path.dirname(log_file)
-    if log_dir:
-        os.makedirs(log_dir, exist_ok=True)
-    with open(log_file, "a", encoding='utf-8') as f:
-        f.write(f"JOB START: {job_kennung} (ID: {eintrags_nr}) - {script_desc}\n")
+def DWMSG_ErzeugeEintrag(eintrags_nr, job_kennung, script_run, log_file):
+    logging.info(f"Log entry created: {job_kennung} - {script_run} -> {log_file}")
 
-def dwmsg_fehlerbehandlung(eintrags_nr, log_file):
-    print(f"JOB FAILED: (ID: {eintrags_nr})", file=sys.stderr)
-    try:
-        with open(log_file, "a", encoding='utf-8') as f:
-            f.write(f"JOB FAILED: (ID: {eintrags_nr})\n")
-    except Exception:
-        pass
+def DWMSG_Fehlerbehandlung(eintrags_nr, log_file, verbose):
+    logging.error(f"Running error recovery for ID {eintrags_nr}")
+    if verbose == 1:
+        if os.path.exists(log_file):
+            try:
+                with open(log_file, 'r', encoding='utf-8') as f:
+                    logging.error(f"Log content from {log_file}:\n{f.read()}")
+            except Exception as e:
+                logging.error(f"Could not read log file: {e}")
 
-def dwmsg_setze_status_ok(eintrags_nr, log_file):
-    print(f"JOB SUCCESS: (ID: {eintrags_nr})")
-    try:
-        with open(log_file, "a", encoding='utf-8') as f:
-            f.write(f"JOB SUCCESS: (ID: {eintrags_nr})\n")
-    except Exception:
-        pass
+def DW_MSG_Fehlerbehandlung(eintrags_nr, log_file, verbose):
+    DWMSG_Fehlerbehandlung(eintrags_nr, log_file, verbose)
 
-def starte_sql_skript(dw_eintrags_nr, l_db_skript, p_sqlpar, log_file):
-    # Read the SQL file
-    if not os.path.exists(l_db_skript):
-        raise FileNotFoundError(f"SQL script not found: {l_db_skript}")
-        
-    with open(l_db_skript, 'r', encoding='utf-8', errors='ignore') as f:
-        sql_content = f.read()
-
-    # Parse parameters
-    sql_args = []
-    if p_sqlpar:
-        import shlex
-        try:
-            sql_args = shlex.split(p_sqlpar)
-        except Exception:
-            sql_args = p_sqlpar.split()
-            
-    # Append DW_EintragsNr as the last parameter
-    sql_args.append(str(dw_eintrags_nr))
-
-    # Replace positional parameters &1, &2, ... in the SQL content
-    for i, arg in enumerate(sql_args, start=1):
-        sql_content = sql_content.replace(f"&{i}", arg)
-        sql_content = sql_content.replace(f"&{i}.", arg)
-
-    # Replace environment variables if present in SQL
-    for key, val in os.environ.items():
-        sql_content = sql_content.replace(f"&{key}", val)
-        sql_content = sql_content.replace(f"&{key}.", val)
-
-    # Log the execution
-    with open(log_file, "a", encoding='utf-8') as lf:
-        lf.write(f"\n--- Executing SQL Script: {l_db_skript} against BigQuery ---\n")
-        lf.write(f"Parameters: {sql_args}\n")
-        
-    # Execute against BigQuery
-    try:
-        from google.cloud import bigquery
-        from google.api_core.exceptions import GoogleAPIError
-    except ImportError:
-        # Fallback/Mock for environments without google-cloud-bigquery installed
-        print("WARNING: google-cloud-bigquery library not found. Simulating execution.", file=sys.stderr)
-        with open(log_file, "a", encoding='utf-8') as lf:
-            lf.write("WARNING: google-cloud-bigquery library not found. Simulating execution.\n")
-            lf.write(f"SQL Content to execute:\n{sql_content}\n")
-        return
-
-    # Initialize BigQuery client
-    gcp_project = os.environ.get("GCP_PROJECT")
-    client = bigquery.Client(project=gcp_project) if gcp_project else bigquery.Client()
-
-    # Run the query
-    try:
-        query_job = client.query(sql_content)
-        # Wait for the query to complete
-        query_job.result()
-        
-        with open(log_file, "a", encoding='utf-8') as lf:
-            lf.write(f"SQL execution completed successfully. Job ID: {query_job.job_id}\n")
-            
-    except GoogleAPIError as e:
-        with open(log_file, "a", encoding='utf-8') as lf:
-            lf.write(f"BigQuery Error during execution: {str(e)}\n")
-        raise e
-    except Exception as e:
-        with open(log_file, "a", encoding='utf-8') as lf:
-            lf.write(f"Unexpected error during SQL execution: {str(e)}\n")
-        raise e
-
-ProgName = f"Ausführung Script {sys.argv[0]}"
-ProgVersion = "5.0.0"
+def DWMSG_SetzeStatusOK(eintrags_nr):
+    logging.info(f"Status set to OK for run {eintrags_nr}")
 
 def usage():
-    print(f"""   Programm: {ProgName}
-   Version: {ProgVersion}
-   Aufruf: {sys.argv[0]} Parameter
+    print("""   Programm: Ausführung Script r_sqlscript
+   Version: 5.0.0
+   Aufruf: r_sqlscript Parameter
 
    Das als Parameter -f  übergebene SQL-Script wird ausgeführt.
    Es muß die Zeile "whenever sqlerror exit failure" enthalten,
@@ -149,127 +85,130 @@ def usage():
        -v     verbose (zeigt bei Fehler sofort die Logdatei an)""")
 
 def main():
-    # Step 2: Initialize default variables
-    p_verbose = False
-    p_sqlscript = ""
-    p_sqlpar = ""
-    p_job = "DWH_KORR"
-    err_nr = 0
-    err_arg = ""
+    # Step 2: Parse command-line parameters
+    parser = argparse.ArgumentParser(add_help=False)
+    parser.add_argument("-f", dest="p_sqlscript")
+    parser.add_argument("-i", dest="p_sqlpar", default="")
+    parser.add_argument("-j", dest="p_Job", default="DWH_KORR")
+    parser.add_argument("-v", dest="p_Verbose", action="store_true")
+    parser.add_argument("-h", action="store_true")
 
-    # Step 3: Parse Arguments
-    try:
-        opts, args = getopt.getopt(sys.argv[1:], "hvf:i:j:")
-        for opt, arg in opts:
-            if opt == '-h':
-                usage()
-                sys.exit(0)
-            elif opt == '-v':
-                p_verbose = True
-            elif opt == '-f':
-                p_sqlscript = arg.lower()  # typeset -l equivalent
-            elif opt == '-i':
-                p_sqlpar = arg
-            elif opt == '-j':
-                p_job = arg
-    except getopt.GetoptError as err:
-        msg = str(err)
-        opt_name = ""
-        if hasattr(err, 'opt') and err.opt:
-            opt_name = err.opt
-        else:
-            import re
-            m = re.search(r"option\s+(-[a-zA-Z])", msg)
-            if m:
-                opt_name = m.group(1).lstrip('-')
-        
-        if "requires argument" in msg or "requires an argument" in msg:
-            err_nr = 193
-            err_arg = opt_name
-        else:
-            err_nr = 192
-            err_arg = opt_name
+    args, unknown = parser.parse_known_args()
 
-    if err_nr == 0 and not p_sqlscript:
-        err_nr = 193
-        err_arg = "f"
-
-    # Falls Fehler aufgetreten, abbrechen
-    if err_nr != 0:
-        dwmsg_melde_fehler(0, "E", err_nr, err_arg)
+    if args.h:
         usage()
-        sys.exit(err_nr)
+        return 0
 
-    # Step 4: Resolve directory path logic
-    script_dir = os.path.dirname(os.path.realpath(__file__))
-    os.chdir(script_dir)
+    if unknown:
+        DW_MSG_MeldeFehler(0, "E", 192, str(unknown))
+        usage()
+        return 192
 
-    l_db_skript = p_sqlscript
-    p_sqlscript_dir = os.path.dirname(p_sqlscript)
-    if p_sqlscript_dir in ['.', '']:
-        test_path_sql = os.path.join("..", "sql", p_sqlscript)
-        test_path_mig = os.path.join("..", "mig", p_sqlscript)
-        
-        if os.path.isfile(test_path_sql):
-            l_db_skript = test_path_sql
-        elif os.path.isfile(test_path_mig):
-            l_db_skript = test_path_mig
+    if not args.p_sqlscript:
+        DW_MSG_MeldeFehler(0, "E", 193, "-f")
+        usage()
+        return 193
+
+    p_sqlscript = args.p_sqlscript.lower()
+    p_sqlpar = args.p_sqlpar
+    p_Job = args.p_Job
+    p_Verbose = 1 if args.p_Verbose else 0
+
+    # Step 3: Change directory to script's location and resolve SQL script path
+    script_dir = Path(__file__).resolve().parent
+    try:
+        os.chdir(script_dir)
+    except Exception as e:
+        logging.error(f"Could not change directory to {script_dir}: {e}")
+        return 1
+
+    sql_path = Path(p_sqlscript)
+    l_DBskript = None
+
+    if sql_path.parent == Path('.'):
+        # Search priority: ../sql, then ../mig, then current directory
+        opt1 = script_dir.parent / "sql" / p_sqlscript
+        opt2 = script_dir.parent / "mig" / p_sqlscript
+        opt3 = script_dir / p_sqlscript
+
+        if opt1.is_file():
+            l_DBskript = opt1
+        elif opt2.is_file():
+            l_DBskript = opt2
         else:
-            l_db_skript = p_sqlscript
+            l_DBskript = opt3
     else:
-        l_db_skript = p_sqlscript
+        l_DBskript = sql_path
 
-    # Step 5: File Validation (Legacy logic preservation)
-    if os.path.isfile(l_db_skript):
+    # Step 4: Replicate legacy file existence checks and edge behavior
+    # REVIEW: legacy script logic sets ErrNr=198 when the SQL script file EXISTS, and references undefined variable p_Kuerzel. Verify if this check is inverted or obsolete.
+    if l_DBskript.is_file():
         err_nr = 198
-        err_arg = ""  # p_Kuerzel was undefined in legacy ksh
+        p_Kuerzel = ""  # Undefined in legacy script, initialized here to prevent runtime crash
+        DW_MSG_MeldeFehler(0, "E", err_nr, p_Kuerzel)
 
-    # Step 6: Logging registration
-    job_kennung = p_job.upper() if p_job else "DWH_KORR"
-    dw_eintrags_nr = dwmsg_ermittle_nr()
-    log_datei = dwmsg_logdateiname(job_kennung, dw_eintrags_nr)
-    
-    dwmsg_erzeuge_eintrag(dw_eintrags_nr, job_kennung, f"{sys.argv[0]}_{l_db_skript}", log_datei)
+    # Step 5: Format Job Kennung
+    JobKennung = p_Job.upper()
 
     print("----------------- Parameter -----------------")
-    print(f"Jobkennung     : {job_kennung}")
-    print(f"DB-Skript      : {l_db_skript}")
+    print(f"Jobkennung     : {JobKennung}")
+    print(f"DB-Skript      : {l_DBskript}")
     print("---------------------------------------------")
 
-    # Step 7: Execute with Trap equivalents
+    # Step 6: Initialize Logging Framework Parameters
+    DW_EintragsNr = DWMSG_ErmittleNr()
+    LogDatei = DWMSG_Logdateiname(JobKennung, DW_EintragsNr)
+    DWMSG_ErzeugeEintrag(DW_EintragsNr, JobKennung, f"r_sqlscript_{l_DBskript}", LogDatei)
+
+    # Configure file logging to match legacy redirection behavior
+    try:
+        file_handler = logging.FileHandler(LogDatei, encoding='utf-8')
+        file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+        logging.getLogger().addHandler(file_handler)
+    except Exception as e:
+        logging.error(f"Could not create file handler for {LogDatei}: {e}")
+
+    # Step 7: Core Job Block with exception handling (Python equivalent to trap INT ERR)
     try:
         print("----------------- Job -----------------------")
-        print(f"Job-Nr    : '{dw_eintrags_nr}'")
-        print(f"Logdatei  : '{log_datei}'")
+        print(f"Job-Nr    : '{DW_EintragsNr}'")
+        print(f"Logdatei  : '{LogDatei}'")
         print("---------------------------------------------")
 
-        # Execute target SQL against BigQuery via helper
-        starte_sql_skript(dw_eintrags_nr, l_db_skript, p_sqlpar, log_datei)
+        # Step 8: Execute SQL Script (Representing the legacy starteSQLSkript resolved to BigQuery)
+        # REVIEW-STRUCT: launcher starteSQLSkript invoked — internal behaviour not available in this extraction; confirm logging, error propagation, and credential handling before finalizing the conversion
+        # REVIEW-STRUCT: connection parameters inferred from a cross-referenced .ksh file's declared environment parameters — confirm these exact env var names are set in this job's actual runtime environment before deploying
+        if not l_DBskript.exists():
+            raise FileNotFoundError(f"SQL file not found: {l_DBskript}")
+        
+        with open(l_DBskript, 'r', encoding='utf-8') as sql_file:
+            query_text = sql_file.read()
 
-        # Step 8: Finalize OK status
-        dwmsg_setze_status_ok(dw_eintrags_nr, log_datei)
-        print("Die Abarbeitung des Rahmenskriptes ist ohne erkennbare Fehler beendet")
-        sys.exit(0)
+        # Instantiate BigQuery Client using explicit project context
+        client = bigquery.Client(project=gcp_project)
+        
+        logging.info(f"Executing Query: {l_DBskript} on BigQuery")
+        if p_sqlpar:
+            logging.info(f"Note: Parameters provided: {p_sqlpar}. POSITIONAL parameters (&1, &2) in BigQuery require explicit mapping.")
 
-    except KeyboardInterrupt:
-        # Step 9: Catch failures and emulate TRAP behavior
-        dwmsg_fehlerbehandlung(dw_eintrags_nr, log_datei)
-        print("!OSFEHLER gemeldet!", file=sys.stderr)
-        if p_verbose:
-            if os.path.exists(log_datei):
-                with open(log_datei, 'r', encoding='utf-8', errors='ignore') as lf:
-                    print(lf.read(), file=sys.stderr)
-        sys.exit(1)
+        query_job = client.query(query_text)
+        query_job.result()  # Wait for job completion. Will raise GoogleAPIError on SQL failure.
 
-    except Exception as e:
-        # Step 9: Catch failures and emulate TRAP behavior
-        dwmsg_fehlerbehandlung(dw_eintrags_nr, log_datei)
+    except GoogleAPIError as e:
+        logging.error(f"BigQuery execution failed: {str(e)}")
         print("!FEHLER gemeldet!", file=sys.stderr)
-        if p_verbose:
-            if os.path.exists(log_datei):
-                with open(log_datei, 'r', encoding='utf-8', errors='ignore') as lf:
-                    print(lf.read(), file=sys.stderr)
-        sys.exit(1)
+        DW_MSG_Fehlerbehandlung(DW_EintragsNr, LogDatei, p_Verbose)
+        return 1
+    except Exception as e:
+        logging.error(f"Execution failed: {str(e)}")
+        print("!OSFEHLER gemeldet!", file=sys.stderr)
+        DW_MSG_Fehlerbehandlung(DW_EintragsNr, LogDatei, p_Verbose)
+        return 1
+
+    # Step 9: Post-execution success procedures
+    DWMSG_SetzeStatusOK(DW_EintragsNr)
+    print("Die Abarbeitung des Rahmenskriptes ist ohne erkennbare Fehler beendet")
+    return 0
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
