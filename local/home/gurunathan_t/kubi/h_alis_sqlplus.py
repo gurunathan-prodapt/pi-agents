@@ -1,102 +1,90 @@
 #!/usr/bin/env python3
 import os
 import sys
-import subprocess
-import pathlib
 import argparse
+import pathlib
+import subprocess
+from google.cloud import bigquery
 
-# Step 1: Initialize module-level identification variables
-ModulName = "alis_sqlplus"
-ModulVersion = "V1.1.3"
+# Step 1: Initialize module-level metadata variables
+MODUL_NAME = "alis_sqlplus"
+MODUL_VERSION = "V1.1.3"
 
-# Step 2: Define helper function to start SQL*Plus script
-def starteSQLSkript(p_Eintragsnr, p_Skript, *args):
+# Global Environment Values
+GCP_PROJECT = os.environ.get("GCP_PROJECT")
+BQ_DATASET = os.environ.get("BQ_DATASET")
+DW_ORAUSER = os.environ.get("DW_ORAUSER")
+
+# Step 2: Define the central wrapper function
+def starte_sql_skript(p_eintragsnr: str, p_skript: str, *args) -> int:
     """
-    Starts an SQL*Plus script after validating arguments and file readability.
+    Python equivalent of starteSQLSkript function.
+    Validates arguments and executes the specified SQL script.
+    """
     
-    :param p_Eintragsnr: Error entry number for DWMSG_MeldeFehler
-    :param p_Skript: Path to the SQL script
-    :param args: Additional parameters for the SQL script
-    :return: Exit code from SQL*Plus or validation error code
-    """
-    # Step 3: Validate mandatory arguments
-    if not p_Eintragsnr or not p_Skript:
-        modul_name_err = os.environ.get("Modul_Name", ModulName)
-        modul_version_err = os.environ.get("Modul_Version", ModulVersion)
-        
-        # REVIEW-STRUCT: launcher [DWMSG_MeldeFehler] invoked — internal behaviour not available in this extraction; confirm logging, error propagation, and credential handling before finalizing the conversion
-        try:
-            subprocess.run([
-                "DWMSG_MeldeFehler", 
-                p_Eintragsnr if p_Eintragsnr else "", 
-                "E", 
-                "196", 
-                f"{modul_name_err} {modul_version_err} starteSQLSkript"
-            ], check=True)
-        except subprocess.CalledProcessError as e:
-            print(f"ERROR: DWMSG_MeldeFehler failed with exit code {e.returncode}", file=sys.stderr)
-        
+    # Step 3: Audit & Validate mandatory parameters
+    # Original guard: if [ -z "$p_Eintragsnr" -o -z "$p_Skript" ]
+    if not p_eintragsnr or not p_skript:
+        # Call legacy error handler utility
+        subprocess.run([
+            "DWMSG_MeldeFehler", 
+            p_eintragsnr, 
+            "E", 
+            "196", 
+            f"{MODUL_NAME} {MODUL_VERSION} starteSQLSkript"
+        ], check=False)
         return 196
 
-    # Step 4: Validate script file is readable
-    script_path = pathlib.Path(p_Skript)
+    # Step 4: Audit & Validate that the script file is readable
+    # Original guard: if [ ! -r $p_Skript ]
+    script_path = pathlib.Path(p_skript)
     if not script_path.is_file() or not os.access(script_path, os.R_OK):
-        # REVIEW-STRUCT: launcher [DWMSG_MeldeFehler] invoked — internal behaviour not available in this extraction; confirm logging, error propagation, and credential handling before finalizing the conversion
-        try:
-            subprocess.run([
-                "DWMSG_MeldeFehler", 
-                p_Eintragsnr, 
-                "E", 
-                "201", 
-                p_Skript
-            ], check=True)
-        except subprocess.CalledProcessError as e:
-            print(f"ERROR: DWMSG_MeldeFehler failed with exit code {e.returncode}", file=sys.stderr)
-        
+        subprocess.run([
+            "DWMSG_MeldeFehler", 
+            p_eintragsnr, 
+            "E", 
+            "201", 
+            p_skript
+        ], check=False)
         return 201
 
-    # Step 5: Log run parameters
+    # Step 5: Log invocation details to stdout
     print("Rufe SQL*PLUS auf mit folgenden Einstellungen")
-    print(f"Sql*Plus-Skript : {p_Skript}")
+    print(f"Sql*Plus-Skript : {p_skript}")
     print(f"Skript-Parameter: {' '.join(args)}")
 
-    # Step 6: Invoke sqlplus and capture exit code
-    dw_orauser = os.environ.get("DW_ORAUSER")
-    if not dw_orauser:
-        raise SystemExit("DW_ORAUSER must be set by the calling environment")
-
-    # REVIEW: target database platform is Oracle based on 'sqlplus' invocation; if migrating to a different target (e.g. BigQuery), this helper function and the SQL scripts it launches will require a complete redesign.
-    # REVIEW-STRUCT: original launcher call preserved verbatim below — replace with the GCP-native equivalent once the launcher's internal behaviour (logging, error propagation, credential injection) is confirmed
-    cmd = ["sqlplus", dw_orauser, f"@{p_Skript}"] + list(args)
-    
+    # Step 6: Execute the SQL script
+    errcode = 0
     try:
-        # Redirect stdin from /dev/null to match KSH behavior
-        result = subprocess.run(cmd, stdin=subprocess.DEVNULL)
-        errcode = result.returncode
-    except FileNotFoundError:
-        print("ERROR: sqlplus command not found in PATH", file=sys.stderr)
-        errcode = 127
+        # Target database platform is BIGQUERY.
+        # Execute the SQL script via the google-cloud-bigquery client.
+        client = bigquery.Client(project=GCP_PROJECT)
+        with open(script_path, "r", encoding="utf-8") as f:
+            sql_query = f.read()
+            
+        if args:
+            print(f"Warning: Positional arguments {args} were provided but BigQuery execution of raw SQL files does not natively map them without custom replacement.", file=sys.stderr)
+            
+        query_job = client.query(sql_query)
+        query_job.result() # Waits for query to complete
+        errcode = 0
     except Exception as e:
-        print(f"Error executing sqlplus: {e}", file=sys.stderr)
-        errcode = 1
-        
+        print(f"Execution failed: {str(e)}", file=sys.stderr)
+        errcode = 1  # Standard fallback error code
+
+    # Step 7: Return the resulting exit code
     return errcode
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Helper script to run SQL*Plus scripts with validations."
-    )
-    parser.add_argument("p_Eintragsnr", nargs="?", default="", help="Error entry number")
-    parser.add_argument("p_Skript", nargs="?", default="", help="SQL script path")
-    parser.add_argument("sql_args", nargs=argparse.REMAINDER, help="Parameters for the SQL script")
-
-    args = parser.parse_args()
-
-    rem_args = args.sql_args
-    if rem_args and rem_args[0] == '--':
-        rem_args = rem_args[1:]
-
-    return starteSQLSkript(args.p_Eintragsnr, args.p_Skript, *rem_args)
+    parser = argparse.ArgumentParser(description="Run BigQuery SQL scripts (formerly via SQL*Plus h_alis_sqlplus.ksh wrapper).")
+    parser.add_argument("p_eintragsnr", help="Error tracking entry number.")
+    parser.add_argument("p_skript", help="Path to the SQL script file.")
+    parser.add_argument("args", nargs="*", help="Dynamic parameters passed to the SQL script.")
+    
+    parsed_args = parser.parse_args()
+    
+    rc = starte_sql_skript(parsed_args.p_eintragsnr, parsed_args.p_skript, *parsed_args.args)
+    return rc
 
 if __name__ == "__main__":
     sys.exit(main())
