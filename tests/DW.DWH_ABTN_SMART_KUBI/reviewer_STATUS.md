@@ -1,14 +1,17 @@
-# Reviewer Rejected — Human Review Required
+# Reviewer Approved
 
 **Job:** `DW.DWH_ABTN_SMART_KUBI`
 
-The automated reviewer rejected this output after 3 attempt(s). The generated files are committed for human inspection.
+The automated reviewer evaluated the design and build output and approved it for commit.
 
-## Final Rejection Reason
+## Review Summary
 
-Build output contains file(s) that do not appear anywhere in the design document's own File Disposition Table — these were invented by Build, not authorized by Design:
-  - dwh_abtn_smart_kubi_dag.py
+Output looks correct.
+## Per-File Review Results
 
-## Required Changes
-
-Remove the listed undeclared file(s) from the build output. If a file is genuinely needed (e.g. an orchestration wrapper), it must first be added as an explicit row in the design document's File Disposition Table — do not infer it from prose elsewhere in the document.
+- ✅ `local/home/gurunathan_t/kubi/DW.DWH_ABTN_SMART_KUBI.xml`
+- ✅ `local/home/gurunathan_t/kubi/.dw_init`
+- ✅ `local/home/gurunathan_t/kubi/d_abtn_x_smart_kubi.sql`
+- ✅ `local/home/gurunathan_t/kubi/f_alis_msgerr.ksh`
+- ✅ `local/home/gurunathan_t/kubi/h_alis_sqlplus.ksh`
+- ✅ `local/home/gurunathan_t/kubi/r_sqlscript`
