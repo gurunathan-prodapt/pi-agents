@@ -39,105 +39,131 @@ operational_notes=None
   (none — every referenced object was supplied in this bundle)
 
 
-# UC4 to Apache Airflow Migration Design Document
+# Migration Design Document: UC4 to Apache Airflow
+
+---
 
 ## 1. Overview
-This extraction bundle defines a single standalone UC4 UNIX job: `DW.DWH_ABTN_SMART_KUBI`. The primary function of this job is to execute a SQL script (`d_abtn_x_smart_kubi.sql`) that populates a temporary database table (`ABTN_SMART_KUBI`). Because it is packaged as a standalone JOBS_UNIX object with no parent workflow or event schedule supplied, it is treated as an externally triggered process. The script contains custom date logic that calculates a reporting month parameter (`MONATSID`) based on the current execution day of the month.
+This workflow represents a single native Unix job (`DW.DWH_ABTN_SMART_KUBI`) migrating to Apache Airflow. Its primary function is to execute an SQL script (`d_abtn_x_smart_kubi.sql`) that populates a temporary database table. The job dynamically computes a reporting month identifier (`MONATSID`) based on the execution date: if the execution day is before the 15th, it shifts the context back to the prior month. Because this job was extracted standalone without an enclosing UC4 Job Plan (JOBP) or Script (SCRI) trigger, it is classified as an externally triggered or on-demand pipeline.
+
+---
 
 ## 2. UC4 Object Inventory
 | Object Name | Object Type | Active Flag | Title/Description |
 | :--- | :--- | :--- | :--- |
-| DW.DWH_ABTN_SMART_KUBI | JOBS_UNIX | 1 (Active) | Populate temp table |
+| `DW.DWH_ABTN_SMART_KUBI` | JOBS_UNIX | 1 (Active) | Populate temp table |
+
+---
 
 ## 3. Scheduling
-* **Schedule**: None. This workflow contains no calendar-based schedule of its own, and no triggering `SCRI` or `JOBP` workflow wrapper was supplied in this extraction.
-* **Trigger Source**: Externally triggered (source unknown from this extraction alone).
-* **Airflow Schedule**: `schedule=None` (must be triggered manually or via an external dataset/sensor trigger).
+* **Schedule:** `None`
+* **Trigger Analysis:** No `EVNT_TIME` or `JSCH` schedule objects are present in this extraction. Furthermore, there are no parent `JOBP` workflows or activating `SCRI` scripts included in the bundle. Consequently, this pipeline is configured with `schedule=None` (manual or external trigger only).
+
+---
 
 ## 4. Airflow DAG Properties
-Since no parent `JOBP` exists, a dedicated DAG is created for this single job to allow independent lifecycle management and execution.
-
 | Property | Value |
 | :--- | :--- |
 | **dag_id** | `dw_dwh_abtn_smart_kubi` |
 | **schedule** | `None` |
-| **start_date** | `datetime(2023, 1, 1)` *(placeholder)* |
+| **start_date** | `datetime(2023, 1, 1)` (Placeholder) |
 | **catchup** | `False` |
 | **max_active_runs** | `1` |
-| **is_paused_upon_creation** | `False` |
-| **default_args** | `{'owner': 'airflow', 'retries': 1, 'retry_delay': timedelta(seconds=300)}` |
+| **is_paused_upon_creation** | `False` (Derived from Active=1) |
+| **default_args** | `{"owner": "airflow", "retries": 1, "retry_delay": timedelta(minutes=5)}` |
+
+---
 
 ## 5. Task Inventory
 | Task ID | Source Object | Operator | Target Script/DAG | Launch Parameters | Retries | Retry Delay | Earliest Start Time | Calendar Constraint | Fire-and-Forget | on_failure_callback | Notes |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| `populate_temp_table` | DW.DWH_ABTN_SMART_KUBI | `EmptyOperator` | N/A | N/A | 1 | 5 mins | None | None | False | None | # REVIEW-STRUCT: Launcher wraps SQL script `d_abtn_x_smart_kubi.sql`, converted separately by the companion KSH/SQL migration pipeline into EITHER a Python script or BigQuery SQL -- this extraction cannot know which. Confirm the actual artifact produced before wiring a real operator (BashOperator/PythonOperator for Python, BigQueryInsertJobOperator for BigQuery SQL); never assume Python. <br><br># REVIEW: Custom pre-execution logic calculates reporting month `MONATSID` dynamically based on execution date. |
-
-## 6. Task Dependency Map
-Since this DAG consists of a single migrated job task, there are no multi-task dependency chains.
-```python
-populate_temp_table
-```
-
-## 7. Sync / Concurrency Analysis
-No `sync_rows` or resource lock structures were defined in the source extraction. 
-
-## 8. Error Handling and Retry Strategy
-* **Default Retries**: The task is configured with a default of `1` retry after a `5-minute` delay.
-* **Alerting**: Standard Airflow default notification strategies (such as emails or Slack alerts) should be configured at the DAG level. No custom UC4-native error scripts (`postcondition_actions`) were defined.
-
-## 9. Parameter and Variable Mapping
-| UC4 Parameter | Value/Source | Airflow Equivalent |
-| :--- | :--- | :--- |
-| `&DWH_JOB_KENNUNG` | `'ABTN_SMART_KUBI'` | Passed as an environment variable or task parameter. |
-| `&MONATSID` | Custom Bash-based Date Logic: <br>If execution day < 15, use YYYYMM of previous month.<br>Else, use YYYYMM of current month. | Calculated via a Python helper function using Airflow's execution context (`logical_date`) and injected as a parameter. |
-
-## 10. Developer Notes
-* #REVIEW-STRUCT: This extraction only contains a single `JOBS_UNIX` task and no wrapping `JOBP` workflow or schedule. It has been structured into its own single-task DAG `dw_dwh_abtn_smart_kubi` representing an externally triggered workload.
-* #REVIEW-STRUCT: The launcher type is `sql_script` targeting `$HOME/aktuell/aufbereitung/tn/sql/d_abtn_x_smart_kubi.sql`. This requires translation by the KSH/SQL migration pipeline into a BigQuery SQL query (using `BigQueryInsertJobOperator`) or a Python script (using `PythonOperator` or `KubernetesPodOperator`). It is currently stubbed as an `EmptyOperator` inside the pseudocode.
-* #REVIEW: The dynamic calculation logic for `MONATSID` must be replicated in Airflow. The logic has been provided in the pseudocode as a Python helper function utilizing the DAG's `logical_date` (historically known as `execution_date`). Ensure downstream SQL templates or scripts consume this generated string parameter.
+| `dwh_abtn_smart_kubi` | `DW.DWH_ABTN_SMART_KUBI` | `EmptyOperator` | N/A | N/A | 1 | 5 min | None | None | N/A | None | #REVIEW-STRUCT: Launcher wraps SQL script [`d_abtn_x_smart_kubi.sql`], which must be converted separately by the companion KSH/SQL migration pipeline into EITHER a Python script or BigQuery SQL. Confirm the actual artifact produced before wiring a real operator (e.g., `BashOperator`/`PythonOperator` for Python, `BigQueryInsertJobOperator` for BigQuery SQL); never assume Python. Script contains dynamic date logic to calculate `MONATSID`. |
 
 ---
 
-# Pseudocode Outline
+## 6. Task Dependency Map
+As this migration contains only a single standalone job, the dependency map is trivial:
 
 ```python
-# ── Imports ──────────────────────────────────────────────
+dwh_abtn_smart_kubi
+```
+
+---
+
+## 7. Sync / Concurrency Analysis
+* No sync keys or resource locks are declared in this extraction. 
+* Concurrency is managed at the DAG level using `max_active_runs=1` to prevent parallel overlapping executions.
+
+---
+
+## 8. Error Handling and Retry Strategy
+* **Retries:** Inherits the default argument of `1` retry with a `5`-minute delay.
+* **Failure Actions:** No post-conditions or failure actions are specified in the extraction.
+* **Date Pre-conditions:** There are no `earliest_start_time` or complex calendar conditions. However, the execution date calculation must be carried over.
+
+---
+
+## 9. Parameter and Variable Mapping
+| UC4 Parameter | Value/Source | Airflow Equivalent / Calculation Logic |
+| :--- | :--- | :--- |
+| `&MONATSID` | Calculated dynamically from execution run date | Calculated in a Python helper using the execution date (`logical_date`):<br>`if logical_date.day < 15: calculate previous month`<br>`else: calculate current month (format: YYYYMM)` |
+| `&DWH_JOB_KENNUNG` | `'ABTN_SMART_KUBI'` | Passed as metadata or environment variable if required by target script. |
+
+---
+
+## 10. Developer Notes
+* **#REVIEW-STRUCT: SQL Script Migration Pipeline Integration:** The source job wraps SQL script execution (`$HOME/aktuell/aufbereitung/tn/sql/d_abtn_x_smart_kubi.sql`). This SQL must be handled by the external SQL migration team. Do not attempt to run it directly; instead, swap the `EmptyOperator` placeholder with the appropriate operator once the target target architecture (e.g., BigQuery, Postgres, Snowflake) and artifact type (SQL vs Python wrapper) are finalized.
+* **Month Calculation Logic replication:** Ensure the target execution layer uses the calculated `MONATSID` parameter. The logic in Python should look like this:
+  ```python
+  def get_monatsid(logical_date):
+      # If day of execution < 15, use previous month
+      if logical_date.day < 15:
+          first_of_month = logical_date.replace(day=1)
+          previous_month = first_of_month - timedelta(days=1)
+          return previous_month.strftime("%Y%m")
+      return logical_date.strftime("%Y%m")
+  ```
+
+---
+
+# Numbered Pseudocode Outline
+
+```python
+# 1. Imports
+# -------------------------------------------------------------
 from datetime import datetime, timedelta
 from airflow import DAG
 from airflow.operators.empty import EmptyOperator
-from airflow.decorators import task
+# NOTE: Once the SQL migration strategy is finalized, import the appropriate operator:
+# from airflow.providers.google.cloud.operators.bigquery import BigQueryInsertJobOperator
+# or
+# from airflow.operators.bash import BashOperator
 
-# ── Helper Functions / Dynamic Parameters ────────────────
-# REVIEW: Custom translation of the original shell/UC4 date logic:
-# :if &cday < '15' -> previous month; else -> current month
-def calculate_monatsid(logical_date: datetime) -> str:
-    day = logical_date.day
-    if day < 15:
-        # Subtracting days to ensure we land in the previous month
-        first_day_of_current = logical_date.replace(day=1)
-        previous_month_date = first_day_of_current - timedelta(days=1)
-        return previous_month_date.strftime("%Y%m")
-    else:
-        return logical_date.strftime("%Y%m")
+# 2. GCP Configuration
+# -------------------------------------------------------------
+# # REVIEW-STRUCT: Placeholders to be filled once migration target is confirmed
+GCP_PROJECT_ID = "your-gcp-project-id"
+GCP_REGION = "us-central1"
 
-# ── GCP Configuration ────────────────────────────────────
-# Placeholder configurations for future GCS / BigQuery / Dataproc usage
-GCP_PROJECT = "your-gcp-project-id"
-GCS_BUCKET = "gs://YOUR_BUCKET_NAME"
-
-# ── Default Args ─────────────────────────────────────────
-default_args = {
+# 3. Default Args
+# -------------------------------------------------------------
+DEFAULT_ARGS = {
     "owner": "airflow",
     "depends_on_past": False,
     "retries": 1,
     "retry_delay": timedelta(minutes=5),
 }
 
-# ── DAG Definition ───────────────────────────────────────
+# 4. on_failure_callback stubs
+# -------------------------------------------------------------
+# No standard UC4 global failure hooks were defined in the extraction.
+
+# 5. DAG Definition
+# -------------------------------------------------------------
 with DAG(
     dag_id="dw_dwh_abtn_smart_kubi",
-    default_args=default_args,
-    description="Populate temp table - Migrated from UC4",
+    default_args=DEFAULT_ARGS,
+    description="Populate temp table - Migrated from DW.DWH_ABTN_SMART_KUBI",
     schedule=None,  # Externally triggered
     start_date=datetime(2023, 1, 1),
     catchup=False,
@@ -145,86 +171,147 @@ with DAG(
     tags=["migrated_uc4", "jobs_unix"],
 ) as dag:
 
-    # ── Param Calculation Task ───────────────────────────
-    @task(task_id="calculate_parameters")
-    def resolve_parameters(**context):
-        logical_date = context["logical_date"]
-        monatsid = calculate_monatsid(logical_date)
-        print(f"Calculated MONATSID: {monatsid}")
-        return {
-            "monatsid": monatsid,
-            "job_kennung": "ABTN_SMART_KUBI"
-        }
+    # 6. Guard Task (None required)
+    # 7. Sensor Task (None required)
+    # 8. Calendar Check Task (None required)
 
-    params = resolve_parameters()
-
-    # ── Task: populate_temp_table ────────────────────────
-    # REVIEW-STRUCT: Launcher wraps SQL script [d_abtn_x_smart_kubi.sql], 
-    # converted separately by the companion KSH/SQL migration pipeline.
-    # Replace EmptyOperator with appropriate BigQueryInsertJobOperator or 
-    # PythonOperator/BashOperator once target SQL artifact destination is finalized.
-    populate_temp_table = EmptyOperator(
-        task_id="populate_temp_table",
-        # Pass resolved calculated parameters contextually for when real operator is defined
-        # e.g., templates_dict={"MONATSID": "{{ task_instance.xcom_pull(task_ids='calculate_parameters')['monatsid'] }}"}
+    # 9. Task: dwh_abtn_smart_kubi
+    # ---------------------------------------------------------
+    # # REVIEW-STRUCT: The UC4 script executes the SQL file:
+    # # "$HOME/aktuell/aufbereitung/tn/sql/d_abtn_x_smart_kubi.sql" 
+    # # with parameter -i &MONATSID (calculated date variable).
+    # # 
+    # # Calculate &MONATSID in Python equivalent:
+    # # monatsid = "{{ (dag_run.logical_date.replace(day=1) - macros.dateutil.relativedelta.relativedelta(days=1)).strftime('%Y%m') if dag_run.logical_date.day < 15 else dag_run.logical_date.strftime('%Y%m') }}"
+    # #
+    # # Currently implemented as EmptyOperator placeholder until companion pipeline 
+    # # determines target execution type (e.g., BigQuery SQL vs wrapper Python).
+    
+    dwh_abtn_smart_kubi = EmptyOperator(
+        task_id="dwh_abtn_smart_kubi",
+        # Keep track of UC4 metadata in doc_md
+        doc_md="""
+        ### UC4 Source Metadata
+        * **Source Name:** DW.DWH_ABTN_SMART_KUBI
+        * **Original Host:** |DWHDWH1P|HOST
+        * **Original Login:** DW.UNIX.ISTNS
+        * **Original Script Target:** `$HOME/aktuell/aufbereitung/tn/sql/d_abtn_x_smart_kubi.sql`
+        """,
     )
 
-    # ── Dependencies ─────────────────────────────────────────
-    params >> populate_temp_table
+    # 10. Dependencies
+    # ---------------------------------------------------------
+    # Single standalone task pipeline. No internal dependencies defined.
+    dwh_abtn_smart_kubi
 ```
 
 ### Execution Order
-The target orchestration must preserve the legacy sequential execution order through the following mapping:
-1. **Step 1: DW.DWH_ABTN_SMART_KUBI.xml** maps to the initialization of the parent Airflow DAG and the parameter resolution task (`calculate_parameters`).
-2. **Step 2: d_abtn_x_smart_kubi.sql** maps to a `BigQueryInsertJobOperator` task that executes the migrated query on BigQuery.
-3. **Step 3: r_sqlscript** is retired; its routing functions are replaced by native Airflow task operator calls.
-4. **Step 4: .dw_init** is retired; environment settings are handled via Composer environment variables and Airflow connection profiles.
-5. **Step 5: f_alis_msgerr.ksh** is retired; logging and error reporting are handled natively via Airflow logs and task failure callbacks (`on_failure_callback`).
-6. **Step 6: h_alis_sqlplus.ksh** is retired; database operations are executed via native GCP connections instead of SQL*Plus wrappers.
 
-### Schedule & Variables
-* **Schedule**: The UC4 job is externally triggered with no independent schedule. The migrated Airflow DAG is configured with `schedule=None` (manual or external event trigger).
-* **Scheduler-Set Variables**:
-  * `DWH_JOB_KENNUNG` (Value: `'ABTN_SMART_KUBI'`): Job-specific variable passed as a task parameter.
-  * `cdate` (Value: `SYS_DATE("YYYYMMDD")`): Replaced by Airflow's dynamic execution date context.
-  * `MONATSID` (Value: Calculated dynamically based on date): Calculated at runtime via a Python helper task using Airflow's `logical_date` (`execution_date`). If the execution day is less than 15, the variable is set to the previous month's `YYYYMM` value; otherwise, it is set to the current month's `YYYYMM` value.
-  * **Output/Print Literal Rule**: Any logging statement outputting the dynamic reporting month must output the exact German text: `"Berichtsmonat:  "` followed by the value of `MONATSID`.
+The target orchestration must preserve the legacy execution order sequence. The following mapping details how each step from the legacy dependency graph is preserved or mapped in the target platform:
+
+1. **`DW.DWH_ABTN_SMART_KUBI.xml`** $\rightarrow$ Handled by the target Apache Airflow DAG (`dags/kubi/dw_dwh_abtn_smart_kubi.py`) which acts as the main orchestrator.
+2. **`d_abtn_x_smart_kubi.sql`** $\rightarrow$ Executed as a task in the target DAG via a BigQuery job operator (e.g., `BigQueryInsertJobOperator` or via Dataform compilation). This SQL logic is migrated separately in its own design pass.
+3. **`r_sqlscript`** $\rightarrow$ This KornShell utility wrapper is retired. Its responsibilities (establishing database connections, setting session contexts, logging, and error tracing) are handled natively by Cloud Composer/Airflow operators and BigQuery native execution logging.
+4. **`.dw_init`** $\rightarrow$ Retired. Environment initialization and variable definition are handled natively by Airflow environment variables, DAG `params`, or Airflow Variable lookups.
+5. **`f_alis_msgerr.ksh`** $\rightarrow$ Retired. Error messaging and alert mechanisms are mapped to Airflow's native `on_failure_callback` notifications (e.g., email or Slack operators).
+6. **`h_alis_sqlplus.ksh`** $\rightarrow$ Retired. Oracle SQL*Plus execution is replaced entirely by the BigQuery client libraries or native Airflow operators.
+
+---
+
+### Schedule & Variables — Must Be Retained
+
+The timing rules and variable flows from the legacy scheduler must be strictly preserved.
+
+#### Scheduler-Set Variables Mapping
+* **`DWH_JOB_KENNUNG`** $= \text{'ABTN_SMART_KUBI'}$
+  * **Airflow Target Implementation:** Passed as an Airflow DAG-level parameter (`params`) or injected as an environment variable in the execution context of the BigQuery/Python tasks.
+* **Date Calculations (`cdate`, `cmonth`, `cday`, `first`, `MONATSID`)**
+  * **Legacy Logic:**
+    ```shell
+    cdate = SYS_DATE("YYYYMMDD")
+    cmonth = SUBSTR(cdate, 1, 6)
+    cday = SUBSTR(cdate, 7, 2)
+    if cday < '15':
+        first = '01'
+        cmonth = cmonth + first
+        cmonth = SUB_DAYS(cmonth, 1)
+        cmonth = SUBSTR(cmonth, 1, 6)
+    MONATSID = cmonth
+    ```
+  * **Airflow Target Implementation:** Since SQL execution relies on `MONATSID`, this dynamic date calculation must be implemented within an Airflow Jinja template macro using the DAG's `logical_date` (execution date) to ensure idempotency. 
+  * **Calculation Logic:**
+    ```python
+    # Calculated dynamically at run-time in the Airflow DAG
+    def calculate_monatsid(logical_date):
+        if logical_date.day < 15:
+            # Shift back to the prior month
+            first_of_current = logical_date.replace(day=1)
+            previous_month = first_of_current - timedelta(days=1)
+            return previous_month.strftime("%Y%m")
+        return logical_date.strftime("%Y%m")
+    ```
+
+---
 
 ### Lineage
-* **Upstream / Sibling Invoking Entities**:
-  * `DW.DWH_ABTN_SMART_KUBI.xml` invokes `.DW_INIT` (environment setup), `r_sqlscript` (execution utility), and the core query script `d_abtn_x_smart_kubi.sql`.
-* **Legacy Infrastructure Resources**:
-  * Target host `dwhdwh1p` maps to the Google Cloud Composer / GKE execution environment.
-  * Package login `DW.UNIX.ISTNS` maps to a Google Cloud service account or a dedicated Airflow connection ID.
+
+#### Upstream Producers
+* **Host (`dwhdwh1p`)** $\rightarrow$ Replaced by the native GCP environment hosting Cloud Composer and BigQuery.
+* **Credentials/Login (`DW.UNIX.ISTNS`)** $\rightarrow$ Legacy UNIX login credentials are replaced by GCP IAM Service Accounts assigned to Composer worker nodes.
+
+#### Downstream Consumers
+* **`d_abtn_x_smart_kubi.sql` (job: `DW.DWH_ABTN_SMART_KUBI`)** $\rightarrow$ Cross-job hand-off. The SQL script receives the calculated `MONATSID` as a parameter and performs aggregations on target BigQuery datasets.
+* **`DW.HOLE_PFAD` and `DW.LESE_LOG`** $\rightarrow$ Identified as auxiliary utilities that do not contain core business transformation logic. They have been human-confirmed as **NO SOURCE NEEDED** and are retired in the target environment.
+
+---
 
 ### Cross-File Dependencies
-* **Target SQL Script Dependency**: The DAG execution depends on the target BigQuery SQL query derived from the sibling file `d_abtn_x_smart_kubi.sql`. This query aggregates data from `BL_D_TARIF`, `DWH$TA_F_D1_TWVV_TN`, and `DWH$VI_L_MAP_FA_TARIF` into `DWH$TA_T_SMART_KUBI`.
-* **Retired Utility Dependencies**:
-  * `DW.HOLE_PFAD` and `DW.LESE_LOG` are included by the legacy job but are human-confirmed as **NO SOURCE NEEDED** for the target migration.
+
+The SQL script `d_abtn_x_smart_kubi.sql` invoked by this job interacts with the following database resources:
+* **Tables Read:**
+  * `BL_D_TARIF` (Tariff details)
+  * `DWH$TA_F_D1_TWVV_TN` (Fact contract table)
+  * `DWH$VI_L_MAP_FA_TARIF` (Tariff mapping view)
+* **Tables Written:**
+  * `DWH$TA_T_SMART_KUBI` (Monats_ID, Kundennummer, Tarif_ID, Tarif_ID_Alt, VO_Kennung, Test_GP, Anzahl, Kennzahl_ID)
+
+These dependencies must be synchronized if the tables are being modified by concurrent workflows. Ensure downstream pipelines consuming `DWH$TA_T_SMART_KUBI` wait for this Airflow DAG to succeed.
+
+---
 
 ### Target File Plan
-* **Target File Path**: `dags/DW_DWH_ABTN_SMART_KUBI.py`
-  * **Language**: Python (Airflow DAG)
-  * **Source File**: `local/home/gurunathan_t/kubi/DW.DWH_ABTN_SMART_KUBI.xml`
+
+| Target File Path | Language | Source File | Purpose |
+| :--- | :--- | :--- | :--- |
+| `dags/kubi/dw_dwh_abtn_smart_kubi.py` | Python | `DW.DWH_ABTN_SMART_KUBI.xml` | Orchestrates the calculation of `MONATSID` and triggers the downstream BigQuery execution. |
+
+---
 
 ### Environment-Specific Values
-* **GLOBAL (Environment-Wide)**:
-  * `GCP_PROJECT`: Sourced via `Variable.get("GCP_PROJECT")` or `os.environ.get("GCP_PROJECT")`.
-  * `GCP_REGION`: Sourced via `Variable.get("GCP_REGION")` or `os.environ.get("GCP_REGION")`.
-  * `|DWHDWH1P|HOST`: Maps to the Airflow deployment cluster.
-  * `DW.UNIX.ISTNS`: Maps to the Airflow Connection ID or Composer Execution Service Account.
-* **JOB-SPECIFIC**:
-  * `DWH_JOB_KENNUNG` (Value: `'ABTN_SMART_KUBI'`): Inlined directly within the Airflow DAG configuration.
-  * `$HOME/aktuell/aufbereitung/tn/sql/d_abtn_x_smart_kubi.sql`: Maps to the target BigQuery SQL query asset ID or its GCS URI.
+
+The environment values extracted from the source configurations are mapped below as global infrastructure variables or job-specific configurations:
+
+| Legacy Source Value | Classification | Canonical Target Name | Resolution Mechanism |
+| :--- | :--- | :--- | :--- |
+| **GCP Project** | GLOBAL | `GCP_PROJECT` | Sourced via Airflow Variable `Variable.get("GCP_PROJECT")` or default environment configurations. |
+| **GCP Region** | GLOBAL | `GCP_REGION` | Sourced via Airflow Variable `Variable.get("GCP_REGION")`. |
+| **Target Dataset** | GLOBAL | `BQ_DATASET` | BigQuery destination dataset containing `DWH$TA_T_SMART_KUBI`, resolved via Airflow Variable. |
+| **`DWH_JOB_KENNUNG`** | JOB-SPECIFIC | `dwh_job_kennung` | Hardcoded as a job-specific parameter metadata value `'ABTN_SMART_KUBI'` in the DAG definition. |
+
+---
 
 ### File Disposition
+
 | Source File Path | Target File / Action | Purpose / Reason for Action |
 | :--- | :--- | :--- |
-| `local/home/gurunathan_t/kubi/DW.DWH_ABTN_SMART_KUBI.xml` | `dags/DW_DWH_ABTN_SMART_KUBI.py` | Migrated to an Airflow DAG to resolve dynamic reporting parameters and orchestrate the execution of the target BigQuery query. |
+| `local/home/gurunathan_t/kubi/DW.DWH_ABTN_SMART_KUBI.xml` | `dags/kubi/dw_dwh_abtn_smart_kubi.py` | Migrated UC4 UNIX job xml structure into an Apache Airflow DAG to orchestrate the pipeline run. |
 
-### Risks & Manual Steps
-* **SQL Sibling Dependency Coordination**: The SQL file `d_abtn_x_smart_kubi.sql` is not in this design pass's source scope and is compiled separately. The Airflow execution operator (currently configured as `EmptyOperator` in the draft) must be updated to a `BigQueryInsertJobOperator` once the companion SQL script migration is finalized.
-* **Dynamic Date Logic Alignment**: Ensure that the Python-implemented date logic for `calculate_monatsid` behaves identically to the legacy UC4 `SUB_DAYS` logic on month boundary transitions (especially when execution occurs exactly on the 15th day of a month).
+---
+
+### Risks & Manual Actions
+
+1. **UNMIGRATED UPSTREAM SQL DEPENDENCY:** The target Airflow DAG triggers the execution of `d_abtn_x_smart_kubi.sql` (mapped in a separate design group). The execution task in `dags/kubi/dw_dwh_abtn_smart_kubi.py` is currently defined with a placeholder (`EmptyOperator`). A developer must manually replace this placeholder with the appropriate `BigQueryInsertJobOperator` or Dataform compilation trigger once the SQL/Dataform migration pass is completed.
+2. **BUSINESS CALENDAR VALIDATION:** The dynamic reporting month calculation (`MONATSID`) is a business-critical function. Verify that the Python timezone settings and run-time parameters replicate the legacy server’s timezone precisely, ensuring that executions close to midnight on the 15th do not trigger a discrepancy in the reporting month identifier.
 
 ---
 
@@ -364,216 +451,192 @@ export DW_DIR_UTL_FILE  #neu in rel 3.0
 
 
 === CONVERSION VERDICT ===
-VERDICT: PYTHON
-REASON: The script contains conditional if-blocks to resolve the ORACLE_HOME path and sources external configuration files, which prevents it from being classified as a pure wrapper.
+VERDICT: NO_CONVERSION_REQUIRED
+REASON: The script is a pure environment initialization profile that only defines directory structures and configuration variables with no business logic.
 
 EVIDENCE
-- Business logic found: none (the script solely sets environmental variables and resolves paths)
+- Business logic found: None. The script is an environment initialization profile (.dw_init) used to set directory paths, remote host names, and locate ORACLE_HOME.
 - AWK: none
-- SQL-expressible: no
-- Non-SQL side effects: none observed
-- Against this verdict: The script only sets up variables and sources other scripts, making it a configuration initializer rather than business logic. Under a containerized or managed target execution model, this configuration would be better handled via environment/config maps, but the presence of conditional path-existence tests strictly requires programmatic logic (hence PYTHON).
+- SQL-expressible: No, this is purely system-level environment and path configuration.
+- Non-SQL side effects: None.
+- Against this verdict: The presence of a conditional 'if-else' block to dynamically find ORACLE_HOME might technically exceed simple variable assignments, but because it only sets environment variables, converting it to Python or SQL is not viable.
 
-=======================================================================================
-PART A — PYTHON DESIGN DOCUMENT
-=======================================================================================
-
-1. SCRIPT OVERVIEW
-   This script (`.dw_init`) is an environment initialization script. Its primary purpose is to define and export all standard directory paths, log directories, and import/export areas used by the Information Services data warehouse. Additionally, it dynamically resolves the `ORACLE_HOME` path based on system directory existence checks and sources global and local environment configuration scripts.
-
-2. INVOCATION CONTEXT
-   - Sourced directly by other KornShell scripts (via `. $HOME/.dw_init`) or run inside a shell session to initialize environment variables.
-   - UC4 Job context: Sourced dynamically during job execution on the UNIX agent.
-   - UC4 native includes: None referenced in this file.
-   - Environment files sourced:
-     - `. $HOME/.dw_global` — # REVIEW-STRUCT: environment file [.dw_global] not supplied — variables it sets are unknown; do not guess their names or values
-     - `. $HOME/.dw_lokal` — # REVIEW-STRUCT: environment file [.dw_lokal] not supplied — variables it sets are unknown; do not guess their names or values
-
-3. PARAMETERS / INPUTS
-   - `HOME` (Environment Variable): Used as the base path for locating directory roots and the `.dw_global`/`.dw_lokal` configuration scripts. Used in the script body.
-   - `ORACLE_HOME` (Environment Variable): Optionally read; if not set, resolved conditionally based on directory checks.
-   - `ORACLE_SID` (Environment Variable): Read to construct the `DW_DIR_UTL_FILE` path.
-
-4. EXTERNAL COMMANDS / PROGRAMS INVOKED
-   - None. (Shell built-in assignments, directory checks, and sourcing operations only).
-
-5. EMBEDDED SQL
-   - None.
-
-6. CONTROL FLOW
-   1. Set and export standard root and logging directories:
-      - `DW_DIR_ROOT` = `$HOME/aktuell`
-      - `DW_DIR_PROT` = `$HOME/daten/logfiles`
-      - `DW_DIR_CUBES` = `$HOME/daten/cubes`
-   2. Set and export individual application module import directories (e.g., `DW_DIR_IMP_D1`, `DW_DIR_IMP_BWA`, etc.).
-   3. Set customer host configuration variables (`DW_HOST_CUSTOMER`).
-   4. Conditionally resolve `ORACLE_HOME`:
-      - If `ORACLE_HOME` is empty:
-        - Check if `/appl/local/oracle/12.2.0.1.0` exists as a directory; if so, assign it.
-        - Else, check if `/appl/local/oracle/11.2.0` exists as a directory; if so, assign it.
-        - Else, print an error message indicating `ORACLE_HOME` could not be set.
-   5. Source the external configuration script `$HOME/.dw_global`.
-   6. Source the external configuration script `$HOME/.dw_lokal`.
-   7. Define and export `DW_DIR_UTL_FILE` as `/appl/local/oracle/admin/$ORACLE_SID/utl_file`.
-
-7. ERROR HANDLING & EXIT CODES
-   - If `ORACLE_HOME` cannot be resolved, a descriptive error message is printed to standard output:
-     `Fehler in .dw_init: Konnte ORACLE_HOME nicht setzen !`
-   - No exit code is returned because this is a sourced initialization script (exiting would terminate the parent shell session).
-
-8. OUTPUTS / SIDE EFFECTS
-   - Mutates the environment state of the active shell process by exporting dozens of path variables.
-
-9. BUSINESS SUMMARY
-   - Standardizes environment layouts and folder paths across all batch processes.
-   - Discovers Oracle installation paths dynamically across different system environments.
-   - Sources localized and global settings to support multi-environment configurations (e.g., Development, Test, Production).
-
-=== PSEUDOCODE ===
-
-```python
-import os
-import sys
-
-# Step 1: Get user home directory and establish base variables
-home_dir = os.environ.get("HOME", "")
-
-# Step 2: Set and export environmental directory configurations
-os.environ["DW_DIR_ROOT"] = os.path.join(home_dir, "aktuell")
-os.environ["DW_DIR_PROT"] = os.path.join(home_dir, "daten/logfiles")
-os.environ["DW_DIR_CUBES"] = os.path.join(home_dir, "daten/cubes")
-
-os.environ["DW_DIR_IMP_D1"] = os.path.join(home_dir, "daten/d1")
-os.environ["DW_DIR_IMP_BWA"] = os.path.join(home_dir, "daten/dpps/bwa")
-os.environ["DW_DIR_IMP_XTRA"] = os.path.join(home_dir, "daten/xtra")
-os.environ["DW_DIR_IMP_CTEL"] = os.path.join(home_dir, "daten/ctel")
-os.environ["DW_DIR_IMP_VO"] = os.path.join(home_dir, "daten/vo")
-os.environ["DW_DIR_IMP_RV"] = os.path.join(home_dir, "daten/rv")
-os.environ["DW_DIR_IMP_IF"] = os.path.join(home_dir, "daten/ees")
-os.environ["DW_DIR_IMP_NNV"] = os.path.join(home_dir, "daten/nnv")
-os.environ["DW_DIR_IMP_SIGMA"] = os.path.join(home_dir, "daten/gd/sigma")
-os.environ["DW_DIR_EXP_SIGMA"] = os.path.join(home_dir, "daten/gd/sigma/export")
-os.environ["DW_DIR_IMP_TRF"] = os.path.join(home_dir, "daten/trf")
-os.environ["DW_DIR_IMP_AUF"] = os.path.join(home_dir, "daten/sd/auf")
-os.environ["DW_DIR_IMP_GUT"] = os.path.join(home_dir, "daten/sd/gut")
-os.environ["DW_DIR_IMP_KDG"] = os.path.join(home_dir, "daten/sd/kdg")
-os.environ["DW_DIR_IMP_MP_KDG"] = os.path.join(home_dir, "daten/mp/kdg")
-os.environ["DW_DIR_IMP_MP_TS"] = os.path.join(home_dir, "daten/mp/ts")
-os.environ["DW_DIR_IMP_MP_ZM"] = os.path.join(home_dir, "daten/mp/zm")
-os.environ["DW_DIR_IMP_TS"] = os.path.join(home_dir, "daten/sd/ts")
-os.environ["DW_DIR_IMP_ZM"] = os.path.join(home_dir, "daten/sd/zm")
-os.environ["DW_DIR_EXP"] = os.path.join(home_dir, "daten/exporter")
-os.environ["DW_DIR_IMP_BPM"] = os.path.join(home_dir, "daten/bm")
-os.environ["DW_DIR_IMP_ZTS"] = os.path.join(home_dir, "daten/zts")
-os.environ["DW_DIR_IMP_VRS"] = os.path.join(home_dir, "daten/vrs")
-
-os.environ["DW_DIR_IMP_BRUNET"] = os.path.join(home_dir, "daten/brunet")
-os.environ["DW_DIR_IMP_DWH"] = os.path.join(home_dir, "daten/dwh")
-os.environ["DW_DIR_IMP_PLATO"] = os.path.join(home_dir, "daten/dwh/plato")
-
-os.environ["DW_DIR_IMP_CARMEN"] = os.path.join(home_dir, "daten/carmen")
-os.environ["DW_DIR_IMP_SAP"] = os.path.join(home_dir, "daten/sap")
-os.environ["DW_DIR_IMP_SR_RV"] = os.path.join(home_dir, "daten/sap/sr_rv_dpps")
-os.environ["DW_DIR_IMP_SAP_L"] = os.path.join(home_dir, "daten/sap/sap_l_gutgr")
-os.environ["DW_DIR_IMP_L_MAHNSTYP_IST"] = os.path.join(home_dir, "daten/sap/mahn")
-os.environ["DW_DIR_IMP_L_MAHNV_FI"] = os.path.join(home_dir, "daten/sap/mahn")
-os.environ["DW_DIR_IMP_L_MAHNV_IST"] = os.path.join(home_dir, "daten/sap/mahn")
-os.environ["DW_DIR_IMP_L_GUTGR"] = os.path.join(home_dir, "daten/sd/l_gutschr")
-os.environ["DW_DIR_IMP_L_LEIST"] = os.path.join(home_dir, "daten/sd/l_leist")
-os.environ["DW_DIR_IMP_L_PROD"] = os.path.join(home_dir, "daten/sd/l_prod")
-os.environ["DW_DIR_IMP_LKODE"] = os.path.join(home_dir, "daten/sd/lkode")
-
-os.environ["DW_DIR_IMP_SUBSE"] = os.path.join(home_dir, "daten/subse")
-
-os.environ["DW_DIR_SMS_PRG"] = os.path.join(home_dir, "aktuell/allgemein/is/util")
-os.environ["DW_DIR_SMS_ADR"] = os.path.join(home_dir, "daten/sms/adressen")
-os.environ["DW_DIR_SMS_TMP"] = os.path.join(home_dir, "daten/sms/tmp")
-
-os.environ["DW_DIR_IMP_DPPS"] = os.path.join(home_dir, "daten/dpps")
-os.environ["DW_DIR_IMP_PLANF2"] = os.path.join(home_dir, "daten/planf2")
-
-os.environ["DW_HOST_CUSTOMER"] = "dxcst3.bn.detemobil.de"
-
-# Step 3: Conditionally resolve ORACLE_HOME
-# # REVIEW: Target platform is confirmed as BigQuery. These Oracle directories and Oracle SID dependencies are likely obsolete in the target state.
-oracle_home = os.environ.get("ORACLE_HOME")
-if not oracle_home:
-    if os.path.isdir("/appl/local/oracle/12.2.0.1.0"):
-        os.environ["ORACLE_HOME"] = "/appl/local/oracle/12.2.0.1.0"
-    elif os.path.isdir("/appl/local/oracle/11.2.0"):
-        os.environ["ORACLE_HOME"] = "/appl/local/oracle/11.2.0"
-    else:
-        print("Fehler in .dw_init:", file=sys.stderr)
-        print("   Konnte ORACLE_HOME nicht setzen !", file=sys.stderr)
-
-# Step 4: Source external configurations
-# # REVIEW-STRUCT: environment file [.dw_global] not supplied — variables it sets are unknown; do not guess their names or values
-# # REVIEW-STRUCT: environment file [.dw_lokal] not supplied — variables it sets are unknown; do not guess their names or values
-
-# Step 5: Resolve DW_DIR_UTL_FILE path
-oracle_sid = os.environ.get("ORACLE_SID", "")
-os.environ["DW_DIR_UTL_FILE"] = f"/appl/local/oracle/admin/{oracle_sid}/utl_file"
-```
+ORCHESTRATION SUMMARY
+- Purpose: This script initializes the global environment variables, local directory paths, remote customer host, and Oracle environment paths for the Information Services data warehouse runtime.
+- Variables declared:
+  * DW_DIR_ROOT = $HOME/aktuell
+  * DW_DIR_PROT = $HOME/daten/logfiles
+  * DW_DIR_CUBES = $HOME/daten/cubes
+  * DW_DIR_IMP_D1 = $HOME/daten/d1
+  * DW_DIR_IMP_BWA = $HOME/daten/dpps/bwa
+  * DW_DIR_IMP_XTRA = $HOME/daten/xtra
+  * DW_DIR_IMP_CTEL = $HOME/daten/ctel
+  * DW_DIR_IMP_VO = $HOME/daten/vo
+  * DW_DIR_IMP_RV = $HOME/daten/rv
+  * DW_DIR_IMP_IF = $HOME/daten/ees
+  * DW_DIR_IMP_NNV = $HOME/daten/nnv
+  * DW_DIR_IMP_SIGMA = $HOME/daten/gd/sigma
+  * DW_DIR_EXP_SIGMA = $HOME/daten/gd/sigma/export
+  * DW_DIR_IMP_TRF = $HOME/daten/trf
+  * DW_DIR_IMP_AUF = $HOME/daten/sd/auf
+  * DW_DIR_IMP_GUT = $HOME/daten/sd/gut
+  * DW_DIR_IMP_KDG = $HOME/daten/sd/kdg
+  * DW_DIR_IMP_MP_KDG = $HOME/daten/mp/kdg
+  * DW_DIR_IMP_MP_TS = $HOME/daten/mp/ts
+  * DW_DIR_IMP_MP_ZM = $HOME/daten/mp/zm
+  * DW_DIR_IMP_TS = $HOME/daten/sd/ts
+  * DW_DIR_IMP_ZM = $HOME/daten/sd/zm
+  * DW_DIR_EXP = $HOME/daten/exporter
+  * DW_DIR_IMP_BPM = $HOME/daten/bm
+  * DW_DIR_IMP_ZTS = $HOME/daten/zts
+  * DW_DIR_IMP_VRS = $HOME/daten/vrs
+  * DW_DIR_IMP_BRUNET = $HOME/daten/brunet
+  * DW_DIR_IMP_DWH = $HOME/daten/dwh
+  * DW_DIR_IMP_PLATO = $HOME/daten/dwh/plato
+  * DW_DIR_IMP_CARMEN = $HOME/daten/carmen
+  * DW_DIR_IMP_SAP = $HOME/daten/sap
+  * DW_DIR_IMP_SR_RV = $HOME/daten/sap/sr_rv_dpps
+  * DW_DIR_IMP_SAP_L = $HOME/daten/sap/sap_l_gutgr (exported as DW_DIR_IMP_SAP_L)
+  * DW_DIR_IMP_L_MAHNSTYP_IST = $HOME/daten/sap/mahn
+  * DW_DIR_IMP_L_MAHNV_FI = $HOME/daten/sap/mahn
+  * DW_DIR_IMP_L_MAHNV_IST = $HOME/daten/sap/mahn
+  * DW_DIR_IMP_L_GUTGR = $HOME/daten/sd/l_gutschr
+  * DW_DIR_IMP_L_LEIST = $HOME/daten/sd/l_leist
+  * DW_DIR_IMP_L_PROD = $HOME/daten/sd/l_prod
+  * DW_DIR_IMP_LKODE = $HOME/daten/sd/lkode
+  * DW_DIR_IMP_SUBSE = $HOME/daten/subse
+  * DW_DIR_SMS_PRG = ${HOME}/aktuell/allgemein/is/util
+  * DW_DIR_SMS_ADR = ${HOME}/daten/sms/adressen
+  * DW_DIR_SMS_TMP = ${HOME}/daten/sms/tmp
+  * DW_DIR_IMP_DPPS = $HOME/daten/dpps
+  * DW_DIR_IMP_PLANF2 = $HOME/daten/planf2
+  * DW_HOST_CUSTOMER = dxcst3.bn.detemobil.de
+  * ORACLE_HOME = /appl/local/oracle/12.2.0.1.0 or /appl/local/oracle/11.2.0 (dynamically selected if not already set)
+  * DW_DIR_UTL_FILE = /appl/local/oracle/admin/$ORACLE_SID/utl_file
+- Environment files sourced:
+  * . $HOME/.dw_global
+  * . $HOME/.dw_lokal
+- Invokes:
+  * . $HOME/.dw_global
+  * . $HOME/.dw_lokal
+- Called by: unknown (Sourced dynamically by executing ETL scripts)
+- Exit-code behaviour: Does not exit; prints warning messages to stdout/stderr if ORACLE_HOME cannot be resolved.
+- Recommendation: Retain as-is. This script performs no business logic and requires no conversion.
 
 ### Execution order
-The execution order defined in the legacy system consists of 6 steps:
-1. `DW.DWH_ABTN_SMART_KUBI.xml` (UC4 execution definition)
-2. `d_abtn_x_smart_kubi.sql` (Main transformation SQL)
-3. `r_sqlscript` (Wrapper utility)
-4. `.dw_init` (Environment setup)
-5. `f_alis_msgerr.ksh` (Error messaging script)
-6. `h_alis_sqlplus.ksh` (SQL execution helper)
-
-In the target Cloud Composer orchestration, the execution sequence must be preserved. The converted environment setup script (`.dw_init.py`) will be executed or imported during DAG execution to establish configuration variables before dependent steps are invoked.
+Mapping of the 6-step legacy execution sequence to the target Cloud Composer (Airflow) DAG and BigQuery/Dataform architecture:
+* **Step 1: DW.DWH_ABTN_SMART_KUBI.xml** (UC4 job orchestration) -> Mapped to the main Airflow DAG definition (`dags/dw_dwh_abtn_smart_kubi.py`) which schedules and sequences the tasks.
+* **Step 2: d_abtn_x_smart_kubi.sql** (Main ETL/SQL logic loading `DWH$TA_T_SMART_KUBI`) -> Mapped to a Dataform SQLX workflow or a BigQuery execution task (`BigQueryInsertJobOperator`) within the Airflow DAG.
+* **Step 3: r_sqlscript** (KSH wrapper script) -> Obsolete. The wrapping, execution control, and logging functions are handled natively by the Airflow task execution framework.
+* **Step 4: .dw_init** (Environment initialization script) -> Mapped to a JSON configuration file (`.dw_init.json`) which defines GCS paths and runtime settings. These are loaded into Airflow Variables or DAG parameters at run-time, rather than running as an active task.
+* **Step 5: f_alis_msgerr.ksh** (Error logging utility) -> Obsolete. Error trapping, warning generation, and alerting are handled natively by Airflow task status handlers (`on_failure_callback`) and Google Cloud Logging.
+* **Step 6: h_alis_sqlplus.ksh** (SQL*Plus helper script) -> Obsolete. Database execution is handled natively using BigQuery's REST API/Airflow operators, removing the need for shell-based SQL execution clients.
 
 ### Schedule & variables
-The legacy scheduler defines the following variables that must be retained and made available to the migrated job. Since BigQuery itself does not manage orchestration variables, these will reach the Airflow DAG via Airflow Variables or DAG parameters and be resolved dynamically at runtime:
-* `DWH_JOB_KENNUNG` = `'ABTN_SMART_KUBI'`
-* `cdate` = `'SYS_DATE("YYYYMMDD")'` (Resolved via Airflow context/macro, e.g., `{{ ds_nodash }}`)
-* `cmonth` = `'SUBSTR(&cdate,1,6)'` (Resolved dynamically in Python from the execution date)
-* `cday` = `'SUBSTR(&cdate,7,2)'` (Resolved dynamically in Python from the execution date)
-* `first` = `'01'`
-* `cmonth` = `'&cmonth&first'` (String concatenation)
-* `cmonth` = `'SUB_DAYS(&cmonth,1)'` (Date subtraction logic)
-* `cmonth` = `'SUBSTR(&cmonth,1,6)'`
-* `MONATSID` = `'&cmonth'`
-
-These variables can be calculated in Python using Airflow's logical execution date and passed down to downstream operators.
+The timing and parameters set by the legacy scheduler (UC4) must be preserved using Airflow's native scheduling and macro functionality.
+* **Schedule**: The equivalent trigger/schedule will be defined in the Airflow DAG's `schedule_interval` (mapped from UC4 schedule definitions).
+* **Runtime Variables**:
+  * `DWH_JOB_KENNUNG` (JOB-SPECIFIC): Set to `'ABTN_SMART_KUBI'` in the DAG configuration or `params`.
+  * `cdate` (JOB-SPECIFIC): Captured dynamically in Airflow using the execution date macro `{{ ds_nodash }}` (format `YYYYMMDD`).
+  * `cmonth` (JOB-SPECIFIC): Extracted via `{{ ds_nodash[:6] }}`.
+  * `cday` (JOB-SPECIFIC): Extracted via `{{ ds_nodash[6:8] }}`.
+  * `first` (JOB-SPECIFIC): Standardized as `'01'`.
+  * `MONATSID` (JOB-SPECIFIC): Calculated dynamically to obtain the previous month's ID in `YYYYMM` format.
+    * **Legacy Calculation**: Sets `cmonth` to the first day of the current month, subtracts 1 day to get the last day of the prior month, and extracts the first 6 characters (`YYYYMM`).
+    * **Airflow Python Equivalent**:
+      ```python
+      execution_date = kwargs['execution_date']
+      first_day_current_month = execution_date.replace(day=1)
+      last_day_prior_month = first_day_current_month - datetime.timedelta(days=1)
+      MONATSID = last_day_prior_month.strftime('%Y%m')
+      ```
 
 ### Lineage
-* **Upstream Producers / Configurations**:
-  * `.dw_init` references external environment files:
-    * `UNRESOLVED:.DW_GLOBAL` (Lineage: USES_CONFIG) - Human-confirmed resolution: not needed for target execution.
-    * `UNRESOLVED:.DW_LOKAL` (Lineage: USES_CONFIG) - Human-confirmed resolution: not needed for target execution.
+* **Upstream Configuration Sourcing**:
+  * `.DW_GLOBAL`: USES_CONFIG dependency. Human-confirmed resolution: **NO SOURCE NEEDED** (global infrastructure settings). Its target equivalent is the global Airflow configuration environment.
+  * `.DW_LOKAL`: USES_CONFIG dependency. Human-confirmed resolution: **NO SOURCE NEEDED** (local environment-wide directory overrides). Its target equivalent is the environment-level variable config.
 
 ### Cross-file dependencies
-* `.dw_init` is an environment initialization script. It is sourced/loaded by other KornShell scripts in the `DW.DWH_ABTN_SMART_KUBI` workflow (such as `f_alis_msgerr.ksh` and `h_alis_sqlplus.ksh`) to initialize necessary environment configurations and directory paths prior to processing.
+* **Environment-to-Script Coupling**:
+  * Legacy: The `.dw_init` profile is sourced (`. $HOME/.dw_init`) by shell wrapper scripts (`r_sqlscript`, `h_alis_sqlplus.ksh`) prior to invoking Oracle SQL scripts.
+  * Target: This manual sourcing is replaced by Airflow task orchestration, where global environment values and dataset names are injected into BigQuery or Dataform runs as query parameters or compile-time variables, eliminating the need for runtime shell-sourcing.
 
 ### Target file plan
-* **Target File**: `local/home/gurunathan_t/kubi/.dw_init.py`
-  * **Language**: Python
-  * **Source File**: `local/home/gurunathan_t/kubi/.dw_init`
-  * **Purpose**: Converts path declarations, host configurations, and environmental setup to Python dictionary or environment assignments (`os.environ`).
+The legacy environment configuration is migrated to a structured JSON file to initialize the Cloud Composer Airflow Variables.
+* **File Path**: `.dw_init.json`
+  * **Language**: JSON
+  * **Source File**: `.dw_init`
+  * **Purpose**: Maps all active legacy directory pointers to Cloud Storage (GCS) equivalents and stores connection metadata.
 
 ### Environment-specific values
-The environmental parameters declared in the source are categorized below for the target state:
-
+Classification of all legacy-sourced parameters according to the target Google Cloud environment policy:
 1. **GLOBAL (Environment-Wide)**:
-   These values remain constant across all jobs in a given environment and will be sourced via environment variables or Airflow Variables at runtime.
-   * `GCS_BUCKET`: Represents the equivalent root storage bucket on GCP replacing the local `$HOME/daten` root directory structure. Sourced in Python via `os.environ.get("GCS_BUCKET")` or Airflow `Variable.get("GCS_BUCKET")`.
-   * `GCP_PROJECT`: Identifies the target BigQuery project. Sourced via `os.environ.get("GCP_PROJECT")` or Airflow `Variable.get("GCP_PROJECT")`.
+   * `DW_HOST_CUSTOMER` -> Identifies the remote customer connection host (`dxcst3.bn.detemobil.de`). Mapped to Airflow Connections.
+   * `GCS_BUCKET` -> Normalized canonical GCS bucket path mapping the legacy `$HOME` base directory structure:
+     * `DW_DIR_ROOT` -> `gs://GCS_BUCKET/aktuell`
+     * `DW_DIR_PROT` -> `gs://GCS_BUCKET/daten/logfiles`
+     * `DW_DIR_CUBES` -> `gs://GCS_BUCKET/daten/cubes`
+     * `DW_DIR_IMP_D1` -> `gs://GCS_BUCKET/daten/d1`
+     * `DW_DIR_IMP_BWA` -> `gs://GCS_BUCKET/daten/dpps/bwa`
+     * `DW_DIR_IMP_XTRA` -> `gs://GCS_BUCKET/daten/xtra`
+     * `DW_DIR_IMP_CTEL` -> `gs://GCS_BUCKET/daten/ctel`
+     * `DW_DIR_IMP_VO` -> `gs://GCS_BUCKET/daten/vo`
+     * `DW_DIR_IMP_RV` -> `gs://GCS_BUCKET/daten/rv`
+     * `DW_DIR_IMP_IF` -> `gs://GCS_BUCKET/daten/ees`
+     * `DW_DIR_IMP_NNV` -> `gs://GCS_BUCKET/daten/nnv`
+     * `DW_DIR_IMP_SIGMA` -> `gs://GCS_BUCKET/daten/gd/sigma`
+     * `DW_DIR_EXP_SIGMA` -> `gs://GCS_BUCKET/daten/gd/sigma/export`
+     * `DW_DIR_IMP_TRF` -> `gs://GCS_BUCKET/daten/trf`
+     * `DW_DIR_IMP_AUF` -> `gs://GCS_BUCKET/daten/sd/auf`
+     * `DW_DIR_IMP_GUT` -> `gs://GCS_BUCKET/daten/sd/gut`
+     * `DW_DIR_IMP_KDG` -> `gs://GCS_BUCKET/daten/sd/kdg`
+     * `DW_DIR_IMP_MP_KDG` -> `gs://GCS_BUCKET/daten/mp/kdg`
+     * `DW_DIR_IMP_MP_TS` -> `gs://GCS_BUCKET/daten/mp/ts`
+     * `DW_DIR_IMP_MP_ZM` -> `gs://GCS_BUCKET/daten/mp/zm`
+     * `DW_DIR_IMP_TS` -> `gs://GCS_BUCKET/daten/sd/ts`
+     * `DW_DIR_IMP_ZM` -> `gs://GCS_BUCKET/daten/sd/zm`
+     * `DW_DIR_EXP` -> `gs://GCS_BUCKET/daten/exporter`
+     * `DW_DIR_IMP_BPM` -> `gs://GCS_BUCKET/daten/bm`
+     * `DW_DIR_IMP_ZTS` -> `gs://GCS_BUCKET/daten/zts`
+     * `DW_DIR_IMP_VRS` -> `gs://GCS_BUCKET/daten/vrs`
+     * `DW_DIR_IMP_BRUNET` -> `gs://GCS_BUCKET/daten/brunet`
+     * `DW_DIR_IMP_DWH` -> `gs://GCS_BUCKET/daten/dwh`
+     * `DW_DIR_IMP_PLATO` -> `gs://GCS_BUCKET/daten/dwh/plato`
+     * `DW_DIR_IMP_CARMEN` -> `gs://GCS_BUCKET/daten/carmen`
+     * `DW_DIR_IMP_SAP` -> `gs://GCS_BUCKET/daten/sap`
+     * `DW_DIR_IMP_SR_RV` -> `gs://GCS_BUCKET/daten/sap/sr_rv_dpps`
+     * `DW_DIR_IMP_SAP_L` -> `gs://GCS_BUCKET/daten/sap/sap_l_gutgr`
+     * `DW_DIR_IMP_L_MAHNSTYP_IST` -> `gs://GCS_BUCKET/daten/sap/mahn`
+     * `DW_DIR_IMP_L_MAHNV_FI` -> `gs://GCS_BUCKET/daten/sap/mahn`
+     * `DW_DIR_IMP_L_MAHNV_IST` -> `gs://GCS_BUCKET/daten/sap/mahn`
+     * `DW_DIR_IMP_L_GUTGR` -> `gs://GCS_BUCKET/daten/sd/l_gutschr`
+     * `DW_DIR_IMP_L_LEIST` -> `gs://GCS_BUCKET/daten/sd/l_leist`
+     * `DW_DIR_IMP_L_PROD` -> `gs://GCS_BUCKET/daten/sd/l_prod`
+     * `DW_DIR_IMP_LKODE` -> `gs://GCS_BUCKET/daten/sd/lkode`
+     * `DW_DIR_IMP_SUBSE` -> `gs://GCS_BUCKET/daten/subse`
+     * `DW_DIR_SMS_PRG` -> `gs://GCS_BUCKET/aktuell/allgemein/is/util`
+     * `DW_DIR_SMS_ADR` -> `gs://GCS_BUCKET/daten/sms/adressen`
+     * `DW_DIR_SMS_TMP` -> `gs://GCS_BUCKET/daten/sms/tmp`
+     * `DW_DIR_IMP_DPPS` -> `gs://GCS_BUCKET/daten/dpps`
+     * `DW_DIR_IMP_PLANF2` -> `gs://GCS_BUCKET/daten/planf2`
+     * Sourced at runtime inside Python/Airflow DAG via: `from airflow.models import Variable; GCS_BUCKET = Variable.get("GCS_BUCKET")`
+   * `ORACLE_HOME` -> Obsolete legacy variable, no direct target equivalent.
+   * `DW_DIR_UTL_FILE` -> Legacy database utility path (`/appl/local/oracle/admin/$ORACLE_SID/utl_file`). Obsolete on BigQuery.
 
 2. **JOB-SPECIFIC**:
-   These values are particular to this script and can be hardcoded or passed via job-level configuration dictionaries:
-   * `DW_HOST_CUSTOMER` = `"dxcst3.bn.detemobil.de"`
-   * `DWH_JOB_KENNUNG` = `'ABTN_SMART_KUBI'`
-
-*Note: Legacy Oracle configurations (`ORACLE_HOME` path-checks and `DW_DIR_UTL_FILE` which depends on `ORACLE_SID`) are marked as obsolete since the target database is BigQuery, and no Oracle-specific storage directory is required.*
+   * `DWH_JOB_KENNUNG` -> Defined as `'ABTN_SMART_KUBI'` inside DAG parameters or Airflow task context.
+   * `MONATSID` -> Dynamically calculated at runtime using Airflow macro-derived Python values.
 
 ### File Disposition
+
 | Source File Path | Target File / Action | Purpose / Reason for Action |
 | :--- | :--- | :--- |
-| `local/home/gurunathan_t/kubi/.dw_init` | `local/home/gurunathan_t/kubi/.dw_init.py` | Migrated environment setup file. Converts KornShell environmental variable exports and path logic to Python `os.environ` assignments, matching the "python" target technology. |
+| `.dw_init` | `.dw_init.json` | Environment profile defining legacy directory paths and settings, converted to Airflow Variables JSON configuration to initialize GCS paths and connection variables in the Cloud Composer environment. |
+
+### Risks & Manual Actions
+* `SOURCE: NOT FOUND — .DW_GLOBAL — no candidate` (Note: This is human-reviewed and confirmed as **NO SOURCE NEEDED**, as global infrastructure parameters are managed by the environment configuration).
+* `SOURCE: NOT FOUND — .DW_LOKAL — no candidate` (Note: This is human-reviewed and confirmed as **NO SOURCE NEEDED**, as local parameter overrides are managed by environment-level Airflow Variables).
+* **Legacy Directory Dependency Verification**: Sourced data directories (e.g., `gs://GCS_BUCKET/daten/d1`, etc.) must exist in the target GCS bucket if they are still written to or read from by other processes.
 
 ---
 
@@ -686,83 +749,82 @@ SECTION 1 — DESIGN DOCUMENT
 
 Step 1: Understand the Script
 1.1 Identify the type of Oracle SQL object being converted:
-    - Procedural Script (PL/SQL Anonymous Block) containing a dynamic truncation step and a single-statement DML insertion block.
-
-1.2 Summarize the business logic and purpose of the script:
-    - The script performs an ETL/aggregation logic to load access-related metrics into the target table `DWH$TA_T_SMART_KUBI`.
-    - It takes input parameters for Month ID (`l_monats_id`) and Entry Tracking ID (`EintragsNr`).
-    - It clears the target table (`DWH$TA_T_SMART_KUBI`), processes active tariff mapping associations via a Common Table Expression (`temp`), and loads aggregated numeric metric records (`zugang`) associated with key performance indicators ('VVLREIN', 'VVLTWC2C', 'MIGP2CBF') from `DWH$TA_F_D1_TWVV_TN` for the requested month.
-
+    - PL/SQL Anonymous block with variable declarations, dynamic SQL, transaction management, exception block, and metadata/error logging procedures.
+1.2 Summarize the business logic and purpose:
+    - This is an ETL Aggregation script that loads key performance metrics into the target table `DWH$TA_T_SMART_KUBI` for a specific billing month partition (passed via script parameter `&1`). 
+    - It first truncates the target table.
+    - It maps incoming contracts, old and new tariff IDs, and verification statuses from contract-history and fact tables using conditional mapping rules (`DECODE`, `NVL`, `LTRIM`, `RTRIM`).
+    - It groups and aggregates transaction data, tracking rowcount results, and logging procedure metadata.
 1.3 List all entities referenced:
-    - Target Table: `dwh$ta_t_smart_kubi` (Columns: `monats_id`, `kundennummer`, `tarif_id`, `tarif_id_alt`, `vo_kennung`, `test_gp`, `anzahl`, `kennzahl_id`)
-    - Source Tables & Views:
-        - `dwh$vi_l_map_fa_tarif` (Alias: `t` / `T` - Columns: `tarif_id`, `dwh_tarif_id`, `gueltig_von`, `gueltig_bis`)
-        - `bl_d_tarif` (Alias: `tar` / `TAR` - Columns: `tarif_id`, `mp_geschaeftsfeld_id`)
-        - `dwh$ta_f_d1_twvv_tn` (Alias: `fact` - Columns: `gueltigkeitszeitpunkt`, `kennzahl_id`, `dwh_tarif_id_neu`, `dwh_tarif_id_alt`, `dwh_vertrag_id`, `vo_kenn_bearb`, `vo_kenn`, `zugang`)
-        - `dwh$ta_c_vertrag` (Alias: `d` - Columns: `t_mobile_kundennummer`, `test_gp`, `dwh_vertrag_id`, `gueltig_von`, `gueltig_bis`)
-    - External Script/Utility Calls:
-        - `dwpa_util_skript.runstatement` (Dynamic statement exec utility)
-        - `dwpa_meldung.fehler` (Custom Oracle error logging mechanism)
-        - `dwpa_globals.k_alis_err_unknown` (Oracle package constant)
+    - `DWH$TA_T_SMART_KUBI` (Target table)
+    - `DWH$VI_L_MAP_FA_TA_TARIF` (Source View/Table aliased as `T`)
+    - `BL_D_TARIF` (Source Table aliased as `TAR`)
+    - `DWH$TA_F_D1_TWVV_TN` (Source Fact table aliased as `fact`)
+    - `DWH$TA_C_VERTRAG` (Source Contract Dimension table aliased as `d`)
+    - `DWPA_UTIL_SKRIPT` (Oracle Utility Package used for dynamic SQL execution)
+    - `DWPA_MELDUNG` (Oracle custom error logging Package)
+    - `DWPA_GLOBALS` (Oracle package-level error constant provider)
 
 Step 2: Oracle-Specific Construct Detection and Resolution
 
 2.1 Data Type Conversions:
-    - `pls_integer` (v_anzahl_ds) → `INT64`
-    - `number` (l_monats_id, EintragsNr, ErrC, FehlerNr) → `INT64`
-    - `varchar2(300)` / `varchar2(512)` → `STRING`
-    - `DATE` (l_monats_date, fact.gueltigkeitszeitpunkt) → `DATE` (Note: Time resolution is not needed for target processing, but `fact.gueltigkeitszeitpunkt` holds date metadata that will be safely cast and compared using BigQuery `DATE` functions).
+    - `PLS_INTEGER` → Map to `INT64` in BigQuery.
+    - `NUMBER` → Map to `INT64` (for identifiers and months) or `NUMERIC` / `FLOAT64` where precision or floating values are involved.
+    - `VARCHAR2` → Map to `STRING` in BigQuery.
+    - `DATE` → Map to `DATE` (or `DATETIME` if time component is critical). The fields in the query represent calendar dates (e.g., `'4712-12-31'`), so BigQuery `DATE` type is chosen.
+    - Special Identifier Characters: The Oracle character `$` is invalid in BigQuery table names. It is resolved by replacing `$` with `_` (e.g., `DWH$TA_T_SMART_KUBI` → `dwh_ta_t_smart_kubi`).
 
 2.2 Implicit and Explicit Type Casting:
-    - Explicit cast is added for input parameter bindings and date comparisons to guarantee BigQuery type safety.
+    - Oracle variables and date functions implicitly cast numbers to dates. In BigQuery, these must be explicitly cast using `CAST()`, `PARSE_DATE()`, and `FORMAT_DATE()`.
+    - `TO_NUMBER('&1')` → `CAST(p_monats_id AS INT64)`
+    - `TO_DATE(l_monats_id, 'YYYYMM')` → `PARSE_DATE('%Y%m', CAST(l_monats_id AS STRING))`
 
 2.3 NULL Handling and Conditional Functions:
-    - `NVL(t_new.tarif_id, 0)` → `COALESCE(t_new.tarif_id, 0)`
-    - `NVL(t_old.tarif_id, 0)` → `COALESCE(t_old.tarif_id, 0)`
-    - `Decode(t_new.mp_geschaeftsfeld_id,2,'-1',d.t_mobile_kundennummer)` → `CASE WHEN t_new.mp_geschaeftsfeld_id = 2 THEN '-1' ELSE d.t_mobile_kundennummer END`
-    - `Decode(ltrim(rtrim(fact.vo_kenn_bearb)),NULL,fact.vo_kenn,'#',fact.vo_kenn,fact.vo_kenn_bearb)` → Evaluates the trimmed value and maps to conditional CASE expression:
-      ```sql
-      CASE
-        WHEN LTRIM(RTRIM(fact.vo_kenn_bearb)) IS NULL THEN fact.vo_kenn
-        WHEN LTRIM(RTRIM(fact.vo_kenn_bearb)) = '#' THEN fact.vo_kenn
-        ELSE fact.vo_kenn_bearb
-      END
-      ```
+    - `NVL(x, y)` → `COALESCE(x, y)`
+    - `DECODE(t_new.mp_geschaeftsfeld_id, 2, '-1', d.t_mobile_kundennummer)` → Resolved to standard CASE expression:
+      `CASE WHEN t_new.mp_geschaeftsfeld_id = 2 THEN '-1' ELSE d.t_mobile_kundennummer END`
+    - `DECODE(LTRIM(RTRIM(fact.vo_kenn_bearb)), NULL, fact.vo_kenn, '#', fact.vo_kenn, fact.vo_kenn_bearb)` → Resolved to:
+      `CASE WHEN TRIM(fact.vo_kenn_bearb) IS NULL OR TRIM(fact.vo_kenn_bearb) = '' THEN fact.vo_kenn WHEN TRIM(fact.vo_kenn_bearb) = '#' THEN fact.vo_kenn ELSE fact.vo_kenn_bearb END`
 
 2.4 String Functions:
-    - `LTRIM` / `RTRIM` → Natively supported.
-    - `TO_CHAR(v_anzahl_ds)` → `CAST(v_anzahl_ds AS STRING)`
+    - `LTRIM(RTRIM(x))` → Simplified to `TRIM(x)` in BigQuery.
+    - `TO_CHAR(v_anzahl_ds)` → `CAST(v_anzahl_ds AS STRING)`.
 
 2.5 Date and Timestamp Functions:
-    - `TO_DATE(l_monats_id, 'YYYYMM')` → `PARSE_DATE('%Y%m', CAST(l_monats_id AS STRING))`
-    - `ADD_MONTHS(..., 1)` → `DATE_ADD(..., INTERVAL 1 MONTH)`
-    - `To_date('4712-12-31', 'YYYY-MM-DD')` → `DATE '4712-12-31'`
-    - `to_char(fact.gueltigkeitszeitpunkt,'yyyymm')` → `FORMAT_DATE('%Y%m', DATE(fact.gueltigkeitszeitpunkt))`
-    - Date arithmetic comparisons: `l_monats_date > d.gueltig_von(+)` and `l_monats_date <= d.gueltig_bis(+)` are converted to standard `LEFT JOIN` filters comparing `DATE` types: `l_monats_date > CAST(d.gueltig_von AS DATE)` and `l_monats_date <= CAST(d.gueltig_bis AS DATE)`.
+    - `ADD_MONTHS(TO_DATE(l_monats_id, 'YYYYMM'), 1)` → Translated using BigQuery date addition:
+      `DATE_ADD(PARSE_DATE('%Y%m', CAST(l_monats_id AS STRING)), INTERVAL 1 MONTH)`
+    - `TO_DATE('4712-12-31', 'YYYY-MM-DD')` → Translated to `DATE '4712-12-31'`.
+    - `TO_CHAR(fact.gueltigkeitszeitpunkt, 'yyyymm')` → Translated to `FORMAT_DATE('%Y%m', fact.gueltigkeitszeitpunkt)` (assuming `gueltigkeitszeitpunkt` is mapped to BQ `DATE`).
 
-2.8 Set and Join Operations:
-    - Oracle proprietary join notation `(+)` is converted to ANSI-compliant `LEFT OUTER JOIN` expressions within the `FROM` block.
-    - The outer join constraints applied to date filters (`l_monats_date > d.gueltig_von(+)`) are integrated directly into the `LEFT JOIN ... ON` statement for the contract table `d` to preserve accurate join evaluation without reducing the result set.
+2.6-2.10:
+    - Optimizer hints: `/*+ Append */`, `/*+ parallel(t,4) */`, etc., are completely stripped since BigQuery handles execution planning, indexing, and clustering automatically.
 
-2.9 Row Limiting and Sampling:
-    - Partition-extended table syntax `partition(dwh$ta_f_d1_twvv_tn_&1)` is used to target physical partition boundaries. In BigQuery, this explicit partition target reference is unsupported and unnecessary; the partition filter is resolved natively by filtering the table's partitioned date column `fact.gueltigkeitszeitpunkt` in the `WHERE` clause.
+2.11 MERGE Statements:
+    - Not present in the source.
+
+2.12 INSERT / UPDATE / DELETE:
+    - Oracle's dynamic truncate `dwpa_util_skript.runstatement` → Migrated to direct `TRUNCATE TABLE dwh_ta_t_smart_kubi`.
+    - The insert utilizes standard BigQuery syntax: `INSERT INTO dwh_ta_t_smart_kubi (...) SELECT ...`
 
 2.13 DDL Constructs:
-    - Truncate logic called dynamically (`dwpa_util_skript.runstatement`) is replaced by a direct BigQuery SQL statement: `TRUNCATE TABLE dwh$ta_t_smart_kubi;`.
+    - Oracle table partitioned layout: `partition(dwh$ta_f_d1_twvv_tn_&1)` is dynamic partition-level scanning. In BigQuery, this is mapped directly to the base table `dwh_ta_f_d1_twvv_tn`, utilizing standard date/month-based column partitioning. Standard partition pruning will be triggered via the `WHERE` clause filter: `FORMAT_DATE('%Y%m', fact.gueltigkeitszeitpunkt) = CAST(l_monats_id AS STRING)`.
 
-2.14 PL/SQL Block Structure:
-    - Procedural block with exception handling maps to a BigQuery standard SQL scripting block (`BEGIN...EXCEPTION...END`).
-    - `SQL%ROWCOUNT` is resolved to `@@row_count`.
-    - Oracle `dbms_output.put_line` is translated to an informational query selecting the execution count.
-    - Custom package-dependent logic in exception logging (`dwpa_meldung.fehler`) is replaced with native exception variable routing.
+2.14 PL/SQL Scripting constructs:
+    - PL/SQL block is refactored into a BigQuery standard procedural script using `BEGIN ... EXCEPTION WHEN ERROR THEN ... END` for transaction safety.
+    - SQL%ROWCOUNT is mapped to the BigQuery system variable `@@row_count`.
+    - Exception block executes a rollback and inserts tracking metrics into a logging table or raises the system error message via scripting exception handlers.
 
 2.15 Unresolvable or Advisory Items:
-    - Oracle Hint statements (`/*+ Append */`, `/*+ parallel(...) */`, `/*+ full(...) */`, `/*+ use_hash(...) */`) are stripped entirely from the conversion script.
+    - Dynamic logging package `dwpa_meldung.fehler` cannot be executed natively inside BQ. It must be logged via standard table writes or handled by the orchestrator (e.g., Airflow or Python wrapper).
 
 Step 3: Conversion Strategy Summary
-3.1 The script is converted to a procedural BigQuery SQL scripting block using `DECLARE`, standard DDL/DML, and block exception control.
-3.2 Source table columns representing date/time are cast to BigQuery `DATE` or `DATETIME` formats to maintain precise temporal comparisons.
-3.3 Script arguments (`&1`, `&2`) are declared as block parameters.
+3.1 Overall Conversion Approach:
+    - The PL/SQL block is converted to a BigQuery Standard SQL Procedural Block (`DECLARE`, `SET`, `BEGIN/END`, `BEGIN TRANSACTION`, `COMMIT/ROLLBACK TRANSACTION`, `EXCEPTION`).
+3.2 Assumptions:
+    - Variables `&1` (Month ID) and `&2` (Entry/Run ID) are declared as script parameters at the very top of the migration script.
+    - All table names containing `$` are migrated to use underscore `_`.
+3.3 Flagged Items:
+    - Replacement of custom logging procedures (`dwpa_meldung.fehler`) with manual TODO block for human review.
 
 ═══════════════════════════════════════════
 MIGRATION DECISION AND REVIEW REPORTING
@@ -770,249 +832,276 @@ MIGRATION DECISION AND REVIEW REPORTING
 
 2.16 MIGRATION DECISION MATRIX
 
-| Oracle Source Construct | Selected Target | Rejected Alternatives | Evidence & Reason |
+| Source SQL Statement / Construct | Selected BigQuery Target | Rejected Alternatives | Evidence & Decision Justification |
 | :--- | :--- | :--- | :--- |
-| PL/SQL Block with Parameters | BigQuery Scripting Block (`BEGIN...END`) | BigQuery Stored Procedure, Python Orchestrator | Scripting block allows execution of the variables, table clearing, and sequential injection logic within the same script context. |
-| `dwpa_util_skript.runstatement(..., lv_str)` | Direct SQL `TRUNCATE TABLE` | Dynamic Execution (`EXECUTE IMMEDIATE`) | Truncating the table is static and does not need dynamic SQL compilation. Standard static SQL runs faster and is highly secure. |
-| Outer Joins using `(+)` | Native standard SQL `LEFT JOIN` | Inner Join / Cartesian Join | Custom Oracle (+) syntax is deprecated and unsupported in BigQuery; standard ANSI `LEFT JOIN` provides equivalent semantic coverage. |
-| Partition Extended Table Name (`partition(...)`) | Direct Base Table Access | Materialized View / Table Wildcard | In BigQuery, partitions are filtered automatically when using appropriate columns in standard `WHERE` clauses. Explicit partition target notation is unsupported. |
-| `dwpa_meldung.fehler` Logging | Scripting Exception handling | Python Wrapper | Custom Oracle logging packages do not exist. Errors are handled in standard SQL Exception handlers by raising descriptive errors. |
+| **Anonymous PL/SQL Block** | BigQuery SQL Procedural Scripting (`DECLARE`, `BEGIN`, `EXCEPTION`) | Python Wrapper | Script contains database-centric operations (Truncate and single Insert). BigQuery scripting is fully capable of handling local variable scopes, sequential execution, and exceptions. |
+| **dwpa_util_skript.runstatement** | Native BigQuery standard `TRUNCATE TABLE` statement | BigQuery Dynamic Execution (`EXECUTE IMMEDIATE`) | The statement passed is deterministic and constant. Dynamic SQL is not required. |
+| **Partition-targeted SELECT (`partition(...)`)** | Standard `SELECT` from base table with partitioning filters | Wildcard tables (`_TABLE_SUFFIX`) | Partition pruning on base table `dwh_ta_f_d1_twvv_tn` is highly efficient and avoids dynamic table construction issues. |
+| **Custom Package Logging (`dwpa_meldung.fehler`)** | Standard SQL Logging Table insert / standard scripting exception raise | SQL UDF | Scripting does not allow UDFs to execute write operations. Direct INSERT or standard `ERROR` raising is preferred. |
+| **Optimizer Hints** | Stripped entirely | BigQuery query options | BigQuery operates serverlessly and automatically parallelizes and optimizes scans. Hints are obsolete. |
 
 2.17 REQUIRED ARTIFACTS
 
-- BigQuery Scripting SQL Script: Incorporates Variable Declarations, Static `TRUNCATE` logic, optimized ANSI `LEFT JOIN` syntax query inside standard `INSERT INTO` logic, and explicit Exception catching.
+- **BigQuery SQL Script**: A single integrated multi-statement procedural file (`.sql`) containing:
+  - Declarations for input variables (bind variables converted to `DECLARE`).
+  - Safe transaction control framework (`BEGIN TRANSACTION`, `COMMIT TRANSACTION`, `ROLLBACK TRANSACTION`).
+  - Standard SQL DML statements (`TRUNCATE`, `INSERT INTO`).
+  - Structured exception block.
 
 2.18 DATA TYPE COMPATIBILITY TABLE
 
-| Oracle Source Type | Sample Variable/Column | BigQuery Target Type | Conversion Rule / Logic | Warnings / Imprecision |
-| :--- | :--- | :--- | :--- | :--- |
-| `PLS_INTEGER` | `v_anzahl_ds` | `INT64` | Native mapping | None. |
-| `NUMBER` | `l_monats_id` | `INT64` | `CAST(x AS INT64)` | If input format contains decimal, precision loss might occur; assuming integer representation (YYYYMM). |
-| `VARCHAR2(300)` | `lv_str` | `STRING` | Standard mapping | None. |
-| `DATE` | `l_monats_date` | `DATE` | `PARSE_DATE` and `DATE_ADD` operations | Oracle dates contain time. Handled strictly as DATE here as time elements are irrelevant for target tracking. |
-| `DATE` | `fact.gueltigkeitszeitpunkt`| `DATETIME` | `CAST(col AS DATETIME)` | Safely cast to temporal type for sub-day validation. |
+| Oracle Source Type | Target BigQuery Type | Conversion Rule / Logic | Risks / Warnings |
+| :--- | :--- | :--- | :--- |
+| `PLS_INTEGER` | `INT64` | Direct numeric conversion. | None. |
+| `NUMBER` (for IDs) | `INT64` | Maps to 64-bit integer. | Verify that ID values do not contain decimals. |
+| `VARCHAR2(300)` | `STRING` | Unicode character string. | No length constraints are enforced by BigQuery on the variable itself. |
+| `DATE` | `DATE` | Standard Gregorian calendar date. | Oracle `DATE` stores time. Verify if source fields contain non-midnight values. We assume only date values are present based on the code filters. |
 
 2.19 DESIGN REVIEW SUMMARY
 
-- Patterns/Objects Found: PL/SQL Anonymous block structure, conditional decodes, NVL logic, implicit partition usage, sequential dynamic DDL processing, Oracle outer joins.
-- Unsupported Functions/Constructs: `dwpa_util_skript`, `dwpa_globals`, `dwpa_meldung` packages, Oracle SQL hints, partition extension access syntax.
-- UDF Required: No.
-- Python Required: No.
-- Direct Dependencies: Target table `dwh$ta_t_smart_kubi` and source tables/views: `dwh$vi_l_map_fa_tarif`, `bl_d_tarif`, `dwh$ta_f_d1_twvv_tn`, `dwh$ta_c_vertrag`.
-- Warnings: Dynamic execution package logic converted to static truncation query. Oracle partition targets stripped.
+- **Patterns/Objects Found**: Custom package dependencies (`dwpa_util_skript`, `dwpa_meldung`), Dynamic Partition reference, Oracle Outer Join syntax `(+)`.
+- **Unsupported Functions**: Oracle dynamic utilities, explicit metadata tracking on rowcounts in transaction buffers.
+- **UDF Required**: No.
+- **Python Required**: No.
+- **Direct Dependencies**: Base tables `dwh_ta_f_d1_twvv_tn`, `dwh_ta_c_vertrag`, `bl_d_tarif`, `dwh_vi_l_map_fa_tarif`.
+- **Warnings**: Ensure dataset or catalog prefix is added to tables in final environment.
+- **Manual Intervention Items**: Integration of metadata metrics tracking to replace Oracle packages.
 
 OVERALL MIGRATION STRATEGY: Direct BigQuery SQL
-
-2.20 PACKAGE ANALYSIS
-Not applicable.
 
 2.21 ORACLE FUNCTION ANALYSIS TABLE
 
 | Oracle Function/Construct | Supported in BigQuery | BigQuery Equivalent / Alternative |
 | :--- | :--- | :--- |
-| `DECODE` | Direct-with-rewrite | `CASE WHEN...THEN...ELSE...END` expression |
-| `NVL` | Direct-with-rewrite | `COALESCE(x, y)` |
-| `LTRIM` / `RTRIM` | Direct | `LTRIM(RTRIM(x))` |
-| `TO_DATE` | Direct-with-rewrite | `PARSE_DATE('%Y-%m-%d', x)` or standard `DATE` literal formatting |
-| `TO_CHAR` | Direct-with-rewrite | `FORMAT_DATE` or `CAST(x AS STRING)` |
-| `ADD_MONTHS` | Direct-with-rewrite | `DATE_ADD(x, INTERVAL n MONTH)` |
-| `TO_NUMBER` | Direct-with-rewrite | `CAST(x AS INT64)` or `CAST(x AS NUMERIC)` |
-| `(+)` Join Notation | Direct-with-rewrite | Native ANSI `LEFT JOIN` declaration |
+| `TO_NUMBER` | Direct-with-rewrite | `CAST(expression AS INT64)` |
+| `ADD_MONTHS` | Direct-with-rewrite | `DATE_ADD(date, INTERVAL n MONTH)` |
+| `TO_DATE` | Direct-with-rewrite | `PARSE_DATE('%Y%m', str)` or standard `DATE 'YYYY-MM-DD'` literals |
+| `DECODE` | Direct-with-rewrite | Standard `CASE WHEN` logic |
+| `NVL` | Direct-with-rewrite | `COALESCE` |
+| `LTRIM` / `RTRIM` | Direct-with-rewrite | `TRIM` |
+| `TO_CHAR` | Direct-with-rewrite | `CAST(expression AS STRING)` or `FORMAT_DATE` for dates |
+| `(+)` Outer Join syntax | Direct-with-rewrite | Standard ANSI `LEFT OUTER JOIN` |
 | `SQL%ROWCOUNT` | Direct-with-rewrite | `@@row_count` system variable |
-| `DBMS_OUTPUT.PUT_LINE` | Direct-with-rewrite | Informational scripting message logging using SELECT |
-| Table Partition Extension | Direct-with-rewrite | Stripped target table parameter, filtered in query `WHERE` condition |
-| Oracle execution hints | Direct-with-rewrite | Strip hints completely from statement |
-
 
 ═══════════════════════════════════════════
 SECTION 2 — PSEUDOCODE
 ═══════════════════════════════════════════
 
-Step 4: Write Vendor-Neutral Pseudocode
+Step 4: Vendor-Neutral Pseudocode
 
 ```sql
--- Declare all variables at the beginning of the BigQuery Scripting Block
-DECLARE v_anzahl_ds INT64 DEFAULT 0;  -- converted from PLS_INTEGER
+-- Parameters passed down from orchestration to replace Oracle bind variables &1 and &2
+DECLARE p_monats_id INT64;
+DECLARE p_eintrags_nr INT64;
+
+-- Convert input parameters (Oracle substitution variables)
+SET p_monats_id = CAST('201509' AS INT64); -- converted from Oracle &1
+SET p_eintrags_nr = CAST('123456' AS INT64); -- converted from Oracle &2
+
+-- Declarations
+DECLARE v_anzahl_ds INT64 DEFAULT 0; -- converted from PLS_INTEGER
 DECLARE l_monats_id INT64;
 DECLARE EintragsNr INT64;
-DECLARE lv_str STRING;  -- converted from VARCHAR2(300)
-DECLARE l_monats_date DATE;  -- converted from Oracle DATE
+DECLARE lv_str STRING;
+DECLARE l_monats_date DATE;
 
--- Assign parameter values (to be substituted with migration session variables or procedure parameters)
-SET l_monats_id = CAST(@parameter_1 AS INT64);  -- converted from TO_NUMBER('&1')
-SET EintragsNr = CAST(@parameter_2 AS INT64);   -- converted from TO_NUMBER('&2')
+SET l_monats_id = p_monats_id;
+SET EintragsNr = p_eintrags_nr;
 
--- Calculate month offset date using safe BigQuery functions
-SET l_monats_date = DATE_ADD(PARSE_DATE('%Y%m', CAST(l_monats_id AS STRING)), INTERVAL 1 MONTH); 
--- converted from ADD_MONTHS(TO_DATE(l_monats_id, 'YYYYMM'), 1)
+-- Converted ADD_MONTHS(TO_DATE(l_monats_id, 'YYYYMM'), 1) with explicit type safety
+SET l_monats_date = DATE_ADD(PARSE_DATE('%Y%m', CAST(l_monats_id AS STRING)), INTERVAL 1 MONTH);
 
 BEGIN
-  -- Replaces dynamic runstatement truncate call
-  TRUNCATE TABLE dwh$ta_t_smart_kubi;
+  -- Wrap operations inside transaction blocks to replicate structural isolation
+  BEGIN TRANSACTION;
 
-  -- Insert Logic utilizing explicit CTE definition
-  INSERT INTO dwh$ta_t_smart_kubi 
+  -- Dynamic Truncate mapped to standard, direct DML execution
+  SET lv_str = 'Truncate table dwh_ta_t_smart_kubi'; 
+  TRUNCATE TABLE dwh_ta_t_smart_kubi;
+
+  -- Primary INSERT statement
+  -- Hints stripped entirely: /*+ Append */, /*+ parallel */, and /*+ use_hash */
+  INSERT INTO dwh_ta_t_smart_kubi
   ( 
-         monats_id, 
-         kundennummer, 
-         tarif_id, 
-         tarif_id_alt, 
-         vo_kennung, 
-         test_gp, 
-         anzahl, 
-         kennzahl_id 
+      monats_id, 
+      kundennummer, 
+      tarif_id, 
+      tarif_id_alt, 
+      vo_kennung, 
+      test_gp, 
+      anzahl, 
+      kennzahl_id 
   ) 
   WITH temp AS 
   ( 
-     SELECT
+      SELECT
           t.tarif_id,
           t.dwh_tarif_id,
           t.gueltig_von,
           t.gueltig_bis,
           tar.mp_geschaeftsfeld_id
-     FROM   dwh$vi_l_map_fa_tarif AS t
-     INNER JOIN bl_d_tarif AS tar
-       ON t.tarif_id = tar.tarif_id
-     WHERE  CAST(t.gueltig_bis AS DATE) = DATE '4712-12-31'  
-     -- converted from To_date('4712-12-31', 'YYYY-MM-DD')
+      FROM dwh_vi_l_map_fa_tarif AS t
+      INNER JOIN bl_d_tarif AS tar
+         ON t.tarif_id = tar.tarif_id
+      WHERE t.gueltig_bis = DATE '4712-12-31'  -- converted from TO_DATE('4712-12-31', 'YYYY-MM-DD')
   )
   SELECT 
-         l_monats_id AS monats_id,
-         CASE 
-           WHEN t_new.mp_geschaeftsfeld_id = 2 THEN '-1' 
-           ELSE d.t_mobile_kundennummer 
-         END AS kundennummer,  
-         -- converted from Decode(t_new.mp_geschaeftsfeld_id,2,'-1',d.t_mobile_kundennummer)
-         
-         COALESCE(t_new.tarif_id, 0) AS tarif_id,  
-         -- converted from Nvl(t_new.tarif_id,0)
-         
-         COALESCE(t_old.tarif_id, 0) AS tarif_id_alt,  
-         -- converted from Nvl(t_old.tarif_id,0)
-         
-         CASE 
-           WHEN LTRIM(RTRIM(fact.vo_kenn_bearb)) IS NULL THEN fact.vo_kenn 
-           WHEN LTRIM(RTRIM(fact.vo_kenn_bearb)) = '#' THEN fact.vo_kenn 
-           ELSE fact.vo_kenn_bearb 
-         END AS vo_kennung,  
-         -- converted from Decode(ltrim(rtrim(fact.vo_kenn_bearb)),NULL,fact.vo_kenn,'#',fact.vo_kenn,fact.vo_kenn_bearb)
-         
-         d.test_gp, 
-         SUM(fact.zugang) AS anzahl, 
-         fact.kennzahl_id 
-  FROM dwh$ta_f_d1_twvv_tn AS fact  -- stripped partition name partition(dwh$ta_f_d1_twvv_tn_&1)
-  LEFT JOIN temp AS t_new 
-    ON fact.dwh_tarif_id_neu = t_new.dwh_tarif_id  -- converted from (+) join
-  LEFT JOIN temp AS t_old 
-    ON fact.dwh_tarif_id_alt = t_old.dwh_tarif_id  -- converted from (+) join
-  LEFT JOIN dwh$ta_c_vertrag AS d 
-    ON fact.dwh_vertrag_id = d.dwh_vertrag_id  -- converted from (+) join
-    AND l_monats_date > CAST(d.gueltig_von AS DATE)  -- converted from (+) join & DATE type safety
-    AND l_monats_date <= CAST(d.gueltig_bis AS DATE)  -- converted from (+) join & DATE type safety
-  WHERE FORMAT_DATE('%Y%m', DATE(fact.gueltigkeitszeitpunkt)) = CAST(l_monats_id AS STRING)  
-  -- converted from to_char(fact.gueltigkeitszeitpunkt,'yyyymm')=to_char(l_monats_id)
+      l_monats_id AS monats_id,
+      -- converted from Decode(t_new.mp_geschaeftsfeld_id,2,'-1',d.t_mobile_kundennummer)
+      CASE 
+          WHEN t_new.mp_geschaeftsfeld_id = 2 THEN '-1' 
+          ELSE d.t_mobile_kundennummer 
+      END AS kundennummer,
+      COALESCE(t_new.tarif_id, 0) AS tarif_id,  -- converted from Nvl(t_new.tarif_id,0)
+      COALESCE(t_old.tarif_id, 0) AS tarif_id_alt,  -- converted from Nvl(t_old.tarif_id,0)
+      -- converted from Decode(ltrim(rtrim(fact.vo_kenn_bearb)),NULL,fact.vo_kenn,'#',fact.vo_kenn,fact.vo_kenn_bearb)
+      CASE 
+          WHEN TRIM(fact.vo_kenn_bearb) IS NULL OR TRIM(fact.vo_kenn_bearb) = '' THEN fact.vo_kenn 
+          WHEN TRIM(fact.vo_kenn_bearb) = '#' THEN fact.vo_kenn 
+          ELSE fact.vo_kenn_bearb 
+      END AS vo_kennung,
+      d.test_gp, 
+      SUM(fact.zugang) AS anzahl, 
+      fact.kennzahl_id 
+  FROM dwh_ta_f_d1_twvv_tn AS fact  -- partitioned mapping: explicit partition filter used in WHERE clause instead
+  LEFT OUTER JOIN temp AS t_new  -- converted from fact.dwh_tarif_id_neu = t_new.dwh_tarif_id (+)
+    ON fact.dwh_tarif_id_neu  = t_new.dwh_tarif_id 
+  LEFT OUTER JOIN temp AS t_old  -- converted from fact.dwh_tarif_id_alt = t_old.dwh_tarif_id (+)
+    ON fact.dwh_tarif_id_alt = t_old.dwh_tarif_id 
+  LEFT OUTER JOIN dwh_ta_c_vertrag AS d  -- converted from Oracle (+) outer join properties combined with join predicates
+    ON fact.dwh_vertrag_id = d.dwh_vertrag_id
+   AND l_monats_date > d.gueltig_von
+   AND l_monats_date <= d.gueltig_bis
+  WHERE FORMAT_DATE('%Y%m', fact.gueltigkeitszeitpunkt) = CAST(l_monats_id AS STRING) -- converted from to_char(fact.gueltigkeitszeitpunkt,'yyyymm')=to_char(l_monats_id)
     AND fact.kennzahl_id IN ('VVLREIN', 'VVLTWC2C', 'MIGP2CBF') 
   GROUP BY 
-         CASE 
-           WHEN t_new.mp_geschaeftsfeld_id = 2 THEN '-1' 
-           ELSE d.t_mobile_kundennummer 
-         END, 
-         COALESCE(t_new.tarif_id, 0), 
-         COALESCE(t_old.tarif_id, 0), 
-         CASE 
-           WHEN LTRIM(RTRIM(fact.vo_kenn_bearb)) IS NULL THEN fact.vo_kenn 
-           WHEN LTRIM(RTRIM(fact.vo_kenn_bearb)) = '#' THEN fact.vo_kenn 
-           ELSE fact.vo_kenn_bearb 
-         END, 
-         d.test_gp, 
-         fact.kennzahl_id;
+      CASE 
+          WHEN t_new.mp_geschaeftsfeld_id = 2 THEN '-1' 
+          ELSE d.t_mobile_kundennummer 
+      END, 
+      COALESCE(t_new.tarif_id, 0), 
+      COALESCE(t_old.tarif_id, 0), 
+      CASE 
+          WHEN TRIM(fact.vo_kenn_bearb) IS NULL OR TRIM(fact.vo_kenn_bearb) = '' THEN fact.vo_kenn 
+          WHEN TRIM(fact.vo_kenn_bearb) = '#' THEN fact.vo_kenn 
+          ELSE fact.vo_kenn_bearb 
+      END, 
+      d.test_gp, 
+      fact.kennzahl_id;
 
-  SET v_anzahl_ds = @@row_count;  -- converted from SQL%ROWCOUNT
-  
-  -- Informational log outputs replacing dbms_output.put_line
-  SELECT FORMAT('%d rows inserted in DWH$TA_T_SMART_KUBI', v_anzahl_ds) AS log_message;
+  SET v_anzahl_ds = @@row_count; -- converted from SQL%ROWCOUNT
+  COMMIT TRANSACTION;
+
+  -- Print logging output
+  SELECT FORMAT('%d rows inserted in dwh_ta_t_smart_kubi', v_anzahl_ds); -- converted from dbms_output.put_line
 
 EXCEPTION WHEN ERROR THEN
-  -- Exception management replacing custom Oracle logging systems
-  DECLARE error_message STRING;
-  SET error_message = @@error.message;
+  ROLLBACK TRANSACTION;
+  -- Logging and Exception Blocks
+  DECLARE ErrText STRING;
+  DECLARE ErrC STRING;
+  SET ErrText = @@error.message;
+  SET ErrC = @@error.code;
   
-  -- Record failure parameters / details for debugging
-  SELECT 
-    'F' AS severity,
-    EintragsNr AS entry_no,
-    error_message AS oracle_error_text;
-    
-  RAISE USING message = error_message;
+  -- TODO: Manual intervention needed to replace Oracle package-level logging.
+  -- Insert metadata records to tracking tables or throw to standard orchestration logs:
+  -- INSERT INTO control_table_log (eintrags_nr, error_code, error_msg, log_time) VALUES (EintragsNr, ErrC, ErrText, CURRENT_TIMESTAMP());
+  
+  ERROR(FORMAT('Error code: %s. Message: %s', ErrC, ErrText));
 END;
 ```
 
-FLAGGED ITEMS FOR HUMAN REVIEW:
-1. Target table partitioning strategies: In the source Oracle system, target insertions partition-selectively pointed to logical sub-components: `partition(dwh$ta_f_d1_twvv_tn_&1)`. In BigQuery, this partition extension reference is stripped and relies entirely on standard partition pruning in the `WHERE` clause. Ensure that the column `gueltigkeitszeitpunkt` is set as the partitioning column in the BigQuery destination target structure to achieve optimal cost-performance.
-2. Logging package dependencies: Custom packages `dwpa_util_skript` and `dwpa_meldung.fehler` are stripped. The target BigQuery SQL exception system catches runtime errors and raises standard execution block failure triggers. Re-evaluate if logging to a localized audit table is required for central telemetry.
+### FLAGGED ITEMS FOR HUMAN REVIEW
+1. **Oracle custom metadata packages**: `dwpa_util_skript` and `dwpa_meldung.fehler` are omitted. Standard SQL logs or target orchestration-level hooks must be written in BigQuery's surrounding pipeline to track running tasks and capture structural log outputs.
+2. **Special Characters in Identifiers**: All occurrences of the character `$` in table names (e.g. `dwh$ta_t_smart_kubi`) have been converted to underscore `_` (e.g. `dwh_ta_t_smart_kubi`) to comply with standard BigQuery naming standards. Ensure table schema objects are deployed with these matching names.
 
-### File Disposition
+### EXECUTION ORDER
+The legacy dependency graph defines a 6-step sequence. For this design pass, we are responsible only for step 2 (`d_abtn_x_smart_kubi.sql`). The other steps belong to separate orchestration or wrapper groups (UC4, KSH) and are owned by sibling design passes.
+1. `DW.DWH_ABTN_SMART_KUBI.xml` (UC4 orchestration, handled in a sibling design pass)
+2. `d_abtn_x_smart_kubi.sql` -> Maps to target file `kubi/d_abtn_x_smart_kubi.sql` (BigQuery SQL script task inside Cloud Composer)
+3. `r_sqlscript` (KSH wrapper, handled in a sibling design pass)
+4. `.dw_init` (Initialization script, handled in a sibling design pass)
+5. `f_alis_msgerr.ksh` (Logging/Error utility, handled in a sibling design pass)
+6. `h_alis_sqlplus.ksh` (SQL Execution helper, handled in a sibling design pass)
+
+---
+
+### SCHEDULE & VARIABLES
+The scheduler-set variables must be calculated dynamically within the target orchestrator (e.g., Cloud Composer/Airflow DAG) and passed to the BigQuery SQL script task at runtime as parameters.
+
+- **Scheduler-Set Variables:**
+  1. `DWH_JOB_KENNUNG` = `'ABTN_SMART_KUBI'` -> Standard identifier stored in Airflow environment configs or as a DAG runtime variable.
+  2. `cdate` = `'SYS_DATE("YYYYMMDD")'` -> Calculated via Airflow execution context (e.g., `{{ ds_nodash }}`).
+  3. `cmonth` = `'SUBSTR(&cdate,1,6)'` -> Parsed within the orchestrator using standard date/string operations.
+  4. `cday` = `'SUBSTR(&cdate,7,2)'` -> Parsed within the orchestrator to extract the calendar day.
+  5. `first` = `'01'` -> Constant value used to find the first day of the month.
+  6. `cmonth` = `'&cmonth&first'` -> Concatenated in the orchestrator to construct the date string (e.g., `YYYYMM01`).
+  7. `cmonth` = `'SUB_DAYS(&cmonth,1)'` -> Date arithmetic calculated in Python (subtracts 1 day to find the last day of the previous calendar month).
+  8. `cmonth` = `'SUBSTR(&cmonth,1,6)'` -> Extracted in Python to yield the previous month's ID in `YYYYMM` format.
+  9. `MONATSID` = `'&cmonth'` -> Final resolved parameter value, passed dynamically as parameter `p_monats_id` to the BigQuery SQL task.
+
+- **Variables Mapping Table:**
+
+| Scheduler Variable | Target Resolution Mechanism |
+| :--- | :--- |
+| `DWH_JOB_KENNUNG` | Airflow Variable: `Variable.get("DWH_JOB_KENNUNG", default_var="ABTN_SMART_KUBI")` |
+| `MONATSID` | Calculated dynamically via Python datetime arithmetic and passed as SQL query parameter `p_monats_id` |
+| `EintragsNr` | Generated run-tracking identifier passed as SQL query parameter `p_eintrags_nr` |
+
+---
+
+### LINEAGE
+- **Upstream Producers (Read Tables/Views):**
+  - `TABLE:BL_D_TARIF` (Dimension table containing core tariff references)
+  - `TABLE:DWH$VI_L_MAP_FA_TARIF` (Tariff dimension mapping view/table)
+  - `TABLE:DWH$TA_F_D1_TWVV_TN` (Source Fact table — specifically the partition corresponding to the reporting month)
+  - `TABLE:DWH$TA_T_SMART_KUBI` (Target table is read back, potentially for structural verification checks)
+- **Downstream Consumers (Write Tables):**
+  - `TABLE:DWH$TA_T_SMART_KUBI` (Target aggregation table loaded by this script)
+- **Lineage Parser Discrepancies:**
+  - `PACKAGE:T_NEW` and `PACKAGE:T_OLD` are listed in legacy lineage edges. However, source SQL inspection reveals these are actually local subquery aliases (`temp t_new` and `temp t_old`) and not database-level Oracle packages.
+  - `PACKAGE:DWPA_UTIL_SKRIPT` and `PACKAGE:DWPA_MELDUNG` represent legacy Oracle procedural packages. No direct equivalent exists on the target BigQuery SQL platform.
+
+---
+
+### CROSS-FILE DEPENDENCIES
+- **Shared Tables & Common Schemas:**
+  - `DWH$TA_F_D1_TWVV_TN`: Partitioned source fact table shared with other activation, migration, and contract analysis load pipelines.
+  - `DWH$VI_L_MAP_FA_TARIF`: Reference mapping view utilized broadly across the DWH domain for customer-tariff tracking.
+  - `BL_D_TARIF`: Shared master lookup table for Mp-Geschäftsfeld attributes.
+
+---
+
+### TARGET FILE PLAN
+- **Target File Relative Path:** `kubi/d_abtn_x_smart_kubi.sql`
+- **Language:** SQL (BigQuery Standard SQL Procedural Scripting)
+- **Source File:** `local/home/gurunathan_t/kubi/d_abtn_x_smart_kubi.sql`
+- **Purpose:** Executes the main truncate-and-insert pipeline to aggregate and load `dwh_ta_t_smart_kubi` table.
+
+---
+
+### ENVIRONMENT-SPECIFIC VALUES
+- **GLOBAL (Environment-Wide):**
+  - `GCP_PROJECT`: Standard Google Cloud Project ID hosting the target datasets. Retrieved at runtime via the environment: `os.environ.get("GCP_PROJECT")`.
+  - `BQ_DATASET`: Target BigQuery dataset containing the schema tables. Retrieved at runtime via orchestrator params.
+  - `BQ_LOCATION`: The physical execution region of the BQ dataset.
+- **JOB-SPECIFIC:**
+  - `p_monats_id`: Reporting month parameter (`YYYYMM`), computed in Python and passed as a script parameter.
+  - `p_eintrags_nr`: Running entry ID parameter, passed dynamically to track individual script executions.
+  - Normalized Table Identifiers (normalized to lowercase with underscores to remove the legacy `$` character):
+    - `dwh_ta_t_smart_kubi`
+    - `dwh_vi_l_map_fa_tarif`
+    - `dwh_ta_f_d1_twvv_tn`
+    - `dwh_ta_c_vertrag`
+    - `bl_d_tarif`
+
+---
+
+### FILE DISPOSITION TABLE
 
 | Source File Path | Target File / Action | Purpose / Reason for Action |
 | :--- | :--- | :--- |
-| `local/home/gurunathan_t/kubi/d_abtn_x_smart_kubi.sql` | `local/home/gurunathan_t/kubi/d_abtn_x_smart_kubi.sql` | PL/SQL block migrated to an optimized, scripting-based BigQuery SQL block incorporating native `TRUNCATE` and partition-aware `INSERT` logic. |
-
----
-
-### Execution order
-The target Cloud Composer orchestration task hierarchy must preserve the legacy execution order. The ordered steps map to their target components as follows:
-- **Step 1 (`DW.DWH_ABTN_SMART_KUBI.xml`)**: Maps to the Cloud Composer DAG controller (designed in a separate orchestration migration pass).
-- **Step 2 (`d_abtn_x_smart_kubi.sql`)**: Maps to `local/home/gurunathan_t/kubi/d_abtn_x_smart_kubi.sql` (the primary BigQuery SQL script designed in this pass).
-- **Step 3 (`r_sqlscript`)**: Maps to the Python wrapper task executing the BigQuery client call (designed in its own separate pass).
-- **Step 4 (`.dw_init`)**: Maps to the initialization step (designed in its own separate pass).
-- **Step 5 (`f_alis_msgerr.ksh`)**: Maps to the central error-handling operator (designed in its own separate pass).
-- **Step 6 (`h_alis_sqlplus.ksh`)**: Maps to the utility wrapper task within the runtime engine (designed in its own separate pass).
-
----
-
-### Schedule & variables
-- **Scheduling**: The schedule timing is inherited from the parent orchestrator `DW.DWH_ABTN_SMART_KUBI` and must be defined as an execution schedule in Cloud Composer.
-- **Scheduler-Set Variables**:
-  - `DWH_JOB_KENNUNG = 'ABTN_SMART_KUBI'`: Passed dynamically as a standard string parameter to the SQL scripting task.
-  - `cdate`: Calculated dynamically inside Cloud Composer using the execution date nodash syntax (`{{ ds_nodash }}`).
-  - `cmonth`: Extracted in Cloud Composer via date string formatting macros (`{{ execution_date.strftime('%Y%m') }}`).
-  - `cday`: Extracted in Cloud Composer via date string formatting macros (`{{ execution_date.strftime('%d') }}`).
-  - `first = '01'`: Configured as a static string parameter.
-  - `MONATSID`: Derived in Cloud Composer by subtracting 1 day from the first day of the current month and extracting the `YYYYMM` component (yielding the previous month's ID), then passed dynamically as the main parameter `@l_monats_id` to the BigQuery script.
-
----
-
-### Lineage
-- **Upstream Producers (Tables Read)**:
-  - `TABLE:DWH$TA_T_SMART_KUBI` (reads itself during self-referential execution blocks)
-  - `TABLE:DWH$TA_F_D1_TWVV_TN` (source fact table partition read)
-  - `TABLE:DWH$VI_L_MAP_FA_TARIF` (source tariff mapping table)
-  - `TABLE:BL_D_TARIF` (source business logic reference)
-- **Packages & Utilities Utilized**:
-  - `PACKAGE:DWPA_UTIL_SKRIPT` (legacy dynamic execution wrapper)
-  - `PACKAGE:T_NEW` (legacy mapping/type logic)
-  - `PACKAGE:T_OLD` (legacy mapping/type logic)
-  - `PACKAGE:DWPA_MELDUNG` (legacy Oracle message/error reporting package)
-- **Downstream Consumers (Tables Written)**:
-  - `TABLE:DWH$TA_T_SMART_KUBI`: Output target table loaded with fields: `MONATS_ID`, `KUNDENNUMMER`, `TARIF_ID`, `TARIF_ID_ALT`, `VO_KENNUNG`, `TEST_GP`, `ANZAHL`, `KENNZAHL_ID`.
-
----
-
-### Target file plan
-- **Target File Path**: `local/home/gurunathan_t/kubi/d_abtn_x_smart_kubi.sql`
-  - **Language**: SQL (BigQuery Dialect / Scripting)
-  - **Source File**: `local/home/gurunathan_t/kubi/d_abtn_x_smart_kubi.sql`
-
----
-
-### Environment-specific values
-- **GLOBAL Variables**:
-  - `GCP_PROJECT`: Identifies the target Google Cloud Project ID. Sourced at runtime via Cloud Composer variables.
-  - `BQ_DATASET`: Identifies the BigQuery dataset namespace. Sourced via Airflow variable configurations.
-- **JOB-SPECIFIC Variables**:
-  - `DWH_JOB_KENNUNG`: The specific job tracker identifier (`'ABTN_SMART_KUBI'`). Passed directly as a task-level configuration parameter.
-  - `EintragsNr`: Dynamic execution tracking session identifier. Injected at execution time by the Airflow task execution context.
-  - `l_monats_id`: Represents the execution month partition key (YYYYMM format). Passed to the SQL script as a query parameter (`@l_monats_id`) from the Cloud Composer DAG context.
+| `local/home/gurunathan_t/kubi/d_abtn_x_smart_kubi.sql` | `kubi/d_abtn_x_smart_kubi.sql` | Converts the Oracle PL/SQL anonymous block into a BigQuery standard SQL scripting task featuring safe explicit transactions, cast-based variable parameterization, ANSI left outer joins, and formatted standard outputs. |
 
 ---
 
@@ -1395,469 +1484,445 @@ EOF
 
 === CONVERSION VERDICT ===
 VERDICT: PYTHON
-REASON: The script is a reusable KornShell utility library for application error-handling and database status-logging containing complex functions, local temp file I/O, trap orchestration, and environment variables that cannot be expressed purely in BigQuery SQL.
+REASON: This is a utility library of shell functions for error handling, metadata logging, and batch execution tracking that invokes external database routines and performs shell-level variable manipulation and file operations.
 
 EVIDENCE
-- Business logic found: KSH custom logic. The entire script is a shell utility library ("Hilfsroutinen zum Fehlermangement") that manages job execution status, timing information, and error registration by orchestrating inputs and executing database logging calls via SQL*Plus.
+- Business logic found: KSH custom logic contains helper routines to format log filenames, handle traps/aborts, and perform tracking inserts/updates in the database via stored procedures.
 - AWK: none
-- SQL-expressible: No. While the underlying logging actions are database calls, the wrapper orchestrates local file creation (`/tmp/ErmittleNr_$$.lst`), trap signals, error codes (`$?`), and string/date formatting.
-- Non-SQL side effects: Temp file writing/deletion, standard error redirection, dynamic environment variable assignment via `eval`, and log file path construction using the local `date` command.
-- Against this verdict: A BigQuery SQL-only solution could represent the logging state tables, but it cannot reproduce the shell library structure, traps, variable evaluations, or log-file pathing required by legacy downstream callers.
+- SQL-expressible: Partly; database logging calls map to SQL, but shell-level orchestration (trap mechanisms, environment variable reads, dynamic file path assembly) requires Python.
+- Non-SQL side effects: Resolves filesystem log paths, creates/deletes temporary files (`/tmp/ErmittleNr_$$.lst`), and handles exit codes.
+- Against this verdict: One could implement the logging routines as individual BigQuery stored procedures, but since this is a library designed to be sourced by other shell jobs to control execution flow, it must be migrated to a Python module to remain callable by migrated Python jobs.
 
 =======================================================================================
 PART A — PYTHON DESIGN DOCUMENT
 =======================================================================================
 
-### 1. SCRIPT OVERVIEW
-The `f_alis_msgerr.ksh` script is a central KornShell utility library designed to standardize error management, status logging, and telemetry reporting across the "Information Services" system. It does not run as a standalone executable job; instead, it is sourced by other worker shell scripts to provide functions for trapping shell errors (`trap ... ERR`), registering execution slots, appending timing info, and updating job status (Success, Active, Aborted) in a database tracking schema. It connects to an Oracle database (provisional, migrating to BigQuery) using SQL*Plus to execute PL/SQL package procedures under the `BERT_MELDUNG` interface.
+=== DESIGN DOCUMENT STRUCTURE ===
 
-### 2. INVOCATION CONTEXT
-- **Sourced by**: Multiple legacy worker `.ksh` scripts within the system via `. f_alis_msgerr.ksh`.
-- **UC4 Context**: Typically called within Unix JOBS objects that launch the wrapper scripts.
-  - `# REVIEW-STRUCT: UC4 includes not directly referenced inside this library file, but calling jobs may include environment/infrastructure files.`
-- **Environment files sourced**: None directly sourced inside this library, but it expects the calling shell to have initialized:
-  - `DW_ORAUSER` (Oracle database connection credentials)
-  - `DW_DIR_ROOT` (Root directory for SQL utility scripts)
-  - `DW_DIR_PROT` (Target directory for writing protocol/log files)
+1. SCRIPT OVERVIEW
+   This script (`f_alis_msgerr.ksh`, originally `dwmsg.ksh`) acts as a centralized KornShell utility library for error management and metadata logging within the Information Services project. It is sourced by execution scripts that set up a shell `trap` to handle command failures. When triggered, it logs status changes (OK, Aborted), records job execution metadata, and logs application or system errors to a central database repository (`BERT_MELDUNG` packages) using Oracle (to be migrated to BigQuery).
 
-### 3. PARAMETERS / INPUTS
-Since this is a library of functions, parameters are passed as positional arguments to each respective function:
+2. INVOCATION CONTEXT
+   - Sourced directly (e.g., `. f_alis_msgerr.ksh`) by various parent batch processes/KSH scripts.
+   - Parent scripts are invoked via UC4 jobs (UNIX JOBS objects) under different schedules.
+   - Sourced environment files: None explicitly sourced inside this script; it expects environment variables like `DW_ORAUSER`, `DW_DIR_ROOT`, and `DW_DIR_PROT` to be set in the parent execution environment.
 
-| Function Name | Parameter | Source | Used? | Python Representation |
-| :--- | :--- | :--- | :--- | :--- |
-| **DWMSG_Fehlerbehandlung** | `$1` (DWMSG_EintragsNr) | Trap context / Caller | Yes | Function argument `eintrags_nr` |
-| **DWMSG_SetzeStatusOK** | `$1` (DWMSG_EintragsNr) | Caller | Yes | Function argument `eintrags_nr` |
-| **DWMSG_SetzeStatusAbbruch**| `$1` (DWMSG_EintragsNr) | Caller | Yes | Function argument `eintrags_nr` |
-| **DWMSG_ErmittleNr** | `$1` (VarName) | Caller | Yes | Function argument `var_name` (modifies state or returns value) |
-| **DWMSG_ErzeugeEintrag** | `$1` (EintragsNr), `$2` (JobKennung), `$3` (Programmname), `$4` (LogDatei) | Caller | Yes | Function arguments `eintrags_nr`, `job_kennung`, `programm_name`, `log_datei` |
-| **DWMSG_MeldeFehler** | `$1` (EintragsNr), `$2` (Typ), `$3` (FehlerNr), `$4` (Zusatz1), `$5` (Zusatz2) | Caller | Yes | Function arguments with default values for optionals |
-| **DWMSG_Logdateiname** | `$1` (VarName), `$2` (JobKennung), `$3` (EintragsNr) | Caller | Yes | Function arguments |
-| **DWMSG_SetzeStichtagInfo** | `$1` (EintragsNr), `$2` (Stichtag), `$3` (StichtagFmt) | Caller | Yes | Function arguments |
-| **DWMSG_AppendTimingInfos** | `$1` (EintragsNr), `$2` (InfoText), `$3` (DateFormat) | Caller | Yes | Function arguments |
+3. PARAMETERS / INPUTS
+   The utility functions process positional parameters as follows:
+   - `DWMSG_Fehlerbehandlung`: 
+     * `$1` (DWMSG_EintragsNr) - Central metadata entry ID (sourced from calling job, used in function). Surfaced in Python as function parameter `eintrags_nr`.
+   - `DWMSG_SetzeStatusOK`:
+     * `$1` (DWMSG_EintragsNr) - Metadata entry ID. Surfaced as function parameter `eintrags_nr`.
+   - `DWMSG_SetzeStatusAbbruch`:
+     * `$1` (DWMSG_EintragsNr) - Metadata entry ID. Surfaced as function parameter `eintrags_nr`.
+   - `DWMSG_ErmittleNr`:
+     * `$1` (VarName) - The name of the shell variable where the generated unique ID will be returned via dynamic evaluation (`eval`).
+     * Refactoring Note: Out-parameter `VarName` is replaced by returning the value directly from the Python function.
+   - `DWMSG_ErzeugeEintrag`:
+     * `$1` (DWMSG_EintragsNr) - Metadata entry ID.
+     * `$2` (JobKennung) - Identifier for the job.
+     * `$3` (Programmname) - Program or script name.
+     * `$4` (LogDatei) - Log file path.
+     * All are surfaced as native Python function parameters.
+   - `DWMSG_MeldeFehler`:
+     * `$1` (DWMSG_EintragsNr) - Metadata entry ID.
+     * `$2` (Typ) - Error severity type ('F', 'E', 'W').
+     * `$3` (FehlerNr) - Application error number.
+     * `$4` (Zusatz1) - Optional contextual info (e.g. filename).
+     * `$5` (Zusatz2) - Optional secondary contextual info.
+     * All are surfaced as native Python function parameters with defaults for optional ones.
+   - `DWMSG_Logdateiname`:
+     * `$1` (VarName) - Variable to assign the constructed path to via dynamic evaluation (`eval`).
+     * `$2` (JobKennung) - Job identifier.
+     * `$3` (DWMSG_EintragsNr) - Metadata entry ID.
+     * Refactoring Note: Out-parameter `VarName` is replaced by returning the constructed path string directly in Python.
+   - `DWMSG_SetzeStichtagInfo`:
+     * `$1` (DWMSG_EintragsNr) - Metadata entry ID.
+     * `$2` (DWMSG_Stichtag) - Reporting date string.
+     * `$3` (DWMSG_StichtagFmt) - Format of the reporting date.
+     * All are surfaced as native Python function parameters.
+   - `DWMSG_AppendTimingInfos`:
+     * `$1` (DWMSG_EintragsNr) - Metadata entry ID.
+     * `$2` (DWMSG_InfoText) - Timing text.
+     * `$3` (DWMSG_DateFormat) - Datetime formatting template.
+     * All are surfaced as native Python function parameters.
 
-**Environment Parameters (from "KSH DECLARED ENVIRONMENT PARAMETERS" convention):**
-- `DW_ORAUSER`: DB Connection credential string. Used for legacy SQL*Plus database connection. # REVIEW-STRUCT: connection parameters inferred from legacy environment. For BigQuery, this must transition to service account credentials or Google Cloud ADC.
-- `DW_DIR_ROOT`: Root path for utility SQL files.
-- `DW_DIR_PROT`: Target directory for protocol logs.
+4. EXTERNAL COMMANDS / PROGRAMS INVOKED
+   - `sqlplus`: Invoked dynamically across functions to execute packaged Oracle stored procedures.
+     * Exact command lines:
+       1. `sqlplus -s $DW_ORAUSER @$DW_DIR_ROOT/allgemein/is/util/sql/d_alis_spaufruf_p1.sql BERT_MELDUNG.SetzeStatusOk $DWMSG_EintragsNr`
+       2. `sqlplus $DW_ORAUSER @$DW_DIR_ROOT/allgemein/is/util/sql/d_alis_spaufruf_p1.sql BERT_MELDUNG.SetzeStatusAbbruch $DWMSG_EintragsNr`
+       3. `sqlplus -s $DW_ORAUSER @$DW_DIR_ROOT/allgemein/is/util/sql/d_al_is_ermittlenr.sql "$TempFile"`
+       4. `sqlplus -s $DW_ORAUSER @$DW_DIR_ROOT/allgemein/is/util/sql/d_alis_spaufruf_p4.sql BERT_MELDUNG.Erzeuge_Eintrag $DWMSG_EintragsNr $JobKennung $Programmname $LogDatei`
+       5. `sqlplus -s $DW_ORAUSER @$Dateipfad BERT_MELDUNG.Fehler $Typ $DWMSG_EintragsNr $FehlerNr \'$Zusatz1\' \'$Zusatz2\'`
+       6. `sqlplus -s $DW_ORAUSER <<EOF ...` (Heredocs executing `BERT_MELDUNG.SetzeZusatzInfos`)
+     * Target Platform Resolution: Since the target platform is confirmed as `BIGQUERY`, these `sqlplus` executions must not remain as external subprocess calls. Instead, they should become native BigQuery client (`google.cloud.bigquery`) calls, executing the corresponding BigQuery stored procedures (e.g., `CALL \`{{project_id}}.dataset.BERT_MELDUNG__SetzeStatusOk\`(...)`).
 
-### 4. EXTERNAL COMMANDS / PROGRAMS INVOKED
-- **sqlplus**: Used to execute PL/SQL package scripts (`d_alis_spaufruf_p1.sql`, `d_al_is_ermittlenr.sql`, etc.) and inline PL/SQL statements.
-  - *Verbatim commands*:
-    - `sqlplus -s $DW_ORAUSER @$DW_DIR_ROOT/allgemein/is/util/sql/d_alis_spaufruf_p1.sql BERT_MELDUNG.SetzeStatusOk $DWMSG_EintragsNr </dev/null`
-    - `sqlplus $DW_ORAUSER @$DW_DIR_ROOT/allgemein/is/util/sql/d_alis_spaufruf_p1.sql BERT_MELDUNG.SetzeStatusAbbruch $DWMSG_EintragsNr </dev/null`
-    - `sqlplus -s $DW_ORAUSER @$DW_DIR_ROOT/allgemein/is/util/sql/d_al_is_ermittlenr.sql "$TempFile" </dev/null`
-    - `sqlplus -s $DW_ORAUSER @$DW_DIR_ROOT/allgemein/is/util/sql/d_alis_spaufruf_p4.sql BERT_MELDUNG.Erzeuge_Eintrag $DWMSG_EintragsNr $JobKennung $Programmname $LogDatei </dev/null`
-    - `sqlplus -s $DW_ORAUSER @$Dateipfad BERT_MELDUNG.Fehler $Typ $DWMSG_EintragsNr $FehlerNr \'$Zusatz1\' \'$Zusatz2\' </dev/null`
-  - *BigQuery Migration Strategy*: These should be converted to native Python Google Cloud BigQuery client library calls (`google.cloud.bigquery`). The procedures (`BERT_MELDUNG.*`) must be recreated as BigQuery Stored Procedures inside a logging dataset, or direct inserts/updates to a BigQuery logging table.
-- **cat / tr**: `cat $TempFile | tr -d ' '`
-  - *Purpose*: Read local temporary ID file and strip whitespace.
-  - *Python equivalent*: Native file reading: `pathlib.Path(temp_file).read_text().replace(" ", "")`.
-- **rm**: `rm $TempFile`
-  - *Purpose*: Cleanup local temporary files.
-  - *Python equivalent*: `os.remove()` or `tempfile.NamedTemporaryFile` context manager.
-- **date**: `date '+%Y%m%d_%H%M'`
-  - *Purpose*: Formats system date/time for log file generation.
-  - *Python equivalent*: `datetime.datetime.now().strftime('%Y%m%d_%H%M')`.
+5. EMBEDDED SQL
+   - Procedures called via SQL wrapper scripts:
+     * Package: `BERT_MELDUNG`
+     * Target Tables: Assumed to be central metadata/log tables managed by the `BERT_MELDUNG` routines (e.g., a table named `BERT_MELDUNG` or similar tracking system logs).
+     * Statements / BigQuery equivalent calls:
+       1. `BERT_MELDUNG.SetzeStatusOk(DWMSG_EintragsNr)` -> `CALL \`{{project_id}}.dataset.BERT_MELDUNG__SetzeStatusOk\`(eintrags_nr)`
+       2. `BERT_MELDUNG.SetzeStatusAbbruch(DWMSG_EintragsNr)` -> `CALL \`{{project_id}}.dataset.BERT_MELDUNG__SetzeStatusAbbruch\`(eintrags_nr)`
+       3. `BERT_MELDUNG.Erzeuge_Eintrag(DWMSG_EintragsNr, JobKennung, Programmname, LogDatei)` -> `CALL \`{{project_id}}.dataset.BERT_MELDUNG__Erzeuge_Eintrag\`(eintrags_nr, job_kennung, programmname, log_datei)`
+       4. `BERT_MELDUNG.Fehler(Typ, DWMSG_EintragsNr, FehlerNr, Zusatz1, Zusatz2)` -> `CALL \`{{project_id}}.dataset.BERT_MELDUNG__Fehler\`(typ, eintrags_nr, fehler_nr, zusatz1, zusatz2)`
+     * Stored Procedure Inline Block (Stichtag):
+       ```sql
+       EXEC BERT_MELDUNG.SetzeZusatzInfos($DWMSG_EintragsNr, to_date('$DWMSG_Stichtag', '$DWMSG_StichtagFmt'));
+       ```
+       * Type: Anonymous PL/SQL block / stored-procedure call.
+       * BigQuery Translation:
+         `CALL \`{{project_id}}.dataset.BERT_MELDUNG__SetzeZusatzInfos\`(eintrags_nr, PARSE_DATE(bq_format_string, stichtag), NULL)`
+     * Stored Procedure Inline Block (Timing):
+       ```sql
+       EXEC BERT_MELDUNG.SetzeZusatzInfos($DWMSG_EintragsNr,null,'$DWMSG_InfoText'||' '||to_char(SYSDATE,'$DWMSG_DateFormat')||' ');
+       ```
+       * Type: Anonymous PL/SQL block / stored-procedure call.
+       * BigQuery Translation:
+         `CALL \`{{project_id}}.dataset.BERT_MELDUNG__SetzeZusatzInfos\`(eintrags_nr, NULL, CONCAT(info_text, ' ', FORMAT_DATETIME(bq_format_string, CURRENT_DATETIME()), ' '))`
 
-### 5. EMBEDDED SQL
-All DB operations interact with the `BERT_MELDUNG` package.
-- **SetzeStatusOk**:
-  ```sql
-  -- Executed via d_alis_spaufruf_p1.sql
-  EXEC BERT_MELDUNG.SetzeStatusOk(:1);
-  ```
-- **SetzeStatusAbbruch**:
-  ```sql
-  -- Executed via d_alis_spaufruf_p1.sql
-  EXEC BERT_MELDUNG.SetzeStatusAbbruch(:1);
-  ```
-- **ErmittleNr**:
-  - Fetches a unique ID (sequence) from the database and writes it to a temporary output file.
-- **ErzeugeEintrag**:
-  ```sql
-  -- Executed via d_alis_spaufruf_p4.sql
-  EXEC BERT_MELDUNG.Erzeuge_Eintrag(:1, :2, :3, :4);
-  ```
-- **MeldeFehler**:
-  ```sql
-  -- Executed via d_alis_spaufruf_p3/p4/p5.sql
-  EXEC BERT_MELDUNG.Fehler(:1, :2, :3, :4, :5);
-  ```
-- **SetzeStichtagInfo**:
-  ```sql
-  EXEC BERT_MELDUNG.SetzeZusatzInfos($DWMSG_EintragsNr, to_date('$DWMSG_Stichtag', '$DWMSG_StichtagFmt'));
-  commit;
-  ```
-- **AppendTimingInfos**:
-  ```sql
-  EXEC BERT_MELDUNG.SetzeZusatzInfos($DWMSG_EintragsNr,null,'$DWMSG_InfoText'||' '||to_char(SYSDATE,'$DWMSG_DateFormat')||' ');
-  commit;
-  ```
+6. CONTROL FLOW
+   Each function constitutes a standalone control flow unit:
+   - **DWMSG_Fehlerbehandlung**: Captures current `$FhlerNr` (`$?`), calls `DWMSG_MeldeFehler` with unexpected error code 10, and calls `DWMSG_SetzeStatusAbbruch`.
+   - **DWMSG_SetzeStatusOK**: Verifies `$DWMSG_EintragsNr` is not empty (exits with code 1 if empty), then calls database procedure `SetzeStatusOk`.
+   - **DWMSG_SetzeStatusAbbruch**: Verifies `$DWMSG_EintragsNr` is not empty (exits with code 1 if empty), then calls database procedure `SetzeStatusAbbruch`.
+   - **DWMSG_ErmittleNr**: Verifies `$VarName` is not empty, queries Oracle for a unique number via `d_al_is_ermittlenr.sql` to a temporary output file, reads the file, cleans white spaces, removes the file, and assigns the value to the variable name dynamically.
+   - **DWMSG_ErzeugeEintrag**: Verifies `$DWMSG_EintragsNr` is not empty, calls database procedure `Erzeuge_Eintrag`.
+   - **DWMSG_MeldeFehler**: Verifies `$DWMSG_EintragsNr`, determines optional parameters, matches the dynamic wrapper script path, and runs database procedure `Fehler`.
+   - **DWMSG_Logdateiname**: Assembles a date-stamped filename under directory `DW_DIR_PROT` and assigns it to `$VarName`.
+   - **DWMSG_SetzeStichtagInfo**: Validates parameters, executes SQL inline block calling `SetzeZusatzInfos` with parsed date.
+   - **DWMSG_AppendTimingInfos**: Validates parameters, executes SQL inline block calling `SetzeZusatzInfos` appending dynamic formatted timestamps.
 
-*Dialect*: Unambiguously Oracle SQL/PL-SQL (uses `EXEC`, package dot-notation, `to_date`, `to_char`, `SYSDATE` and `commit`).
-*BigQuery Translation Note*:
-- # REVIEW: PL/SQL package BERT_MELDUNG and associated helper scripts (d_alis_spaufruf_p1.sql, etc.) have no direct BigQuery equivalent. They must be re-implemented as BigQuery stored procedures or written as structured log inserts into a logging table (e.g., `{{project_id}}.logging_dataset.bert_meldung_table`).
-- `SYSDATE` -> `CURRENT_TIMESTAMP()`.
-- `to_date` / `to_char` -> `PARSE_DATE` / `FORMAT_TIMESTAMP`.
+7. ERROR HANDLING & EXIT CODES
+   - Missing required positional arguments in utility calls prints an error string ("Argh!, ...") to stderr and immediately issues an `exit 1` or `exit 2`.
+   - Database operations (PL/SQL execution) are managed by SQL*Plus. If the database execution fails, error codes must be captured and translated to Python exceptions.
+   - Success exits are implicit or explicit status 0.
+   - Translation to Python: Use `ValueError` or `RuntimeError` for parameter checking (or `sys.exit(code)` to maintain terminal execution termination behaviour if called by processes expecting exit codes). Database exceptions will raise `google.cloud.exceptions.GoogleCloudError`.
 
-### 6. CONTROL FLOW
-The script acts as a library containing several modular routines:
-1. **DWMSG_Fehlerbehandlung(eintrags_nr)**:
-   - Captures active shell error number (`$?`).
-   - Logs an unexpected fatal error (`kUnerwFehler = 10`) via `DWMSG_MeldeFehler`.
-   - Sets job status to aborted via `DWMSG_SetzeStatusAbbruch`.
-2. **DWMSG_SetzeStatusOK(eintrags_nr)**:
-   - Validates that `eintrags_nr` is provided (exits 1 if not).
-   - Calls Oracle/BigQuery to mark entry successful.
-3. **DWMSG_SetzeStatusAbbruch(eintrags_nr)**:
-   - Validates that `eintrags_nr` is provided (exits 1 if not).
-   - Calls Oracle/BigQuery to mark entry aborted.
-4. **DWMSG_ErmittleNr(var_name)**:
-   - Validates that target variable name is provided (exits 1 if not).
-   - Runs database call to acquire a unique log entry sequence ID.
-   - Captures the database output from a temporary file, sanitizes it, and returns/assigns it.
-5. **DWMSG_ErzeugeEintrag(eintrags_nr, job_kennung, programm_name, log_datei)**:
-   - Validates that `eintrags_nr` is provided (exits 1 if not).
-   - Calls Oracle/BigQuery to register an initial execution log row.
-6. **DWMSG_MeldeFehler(eintrags_nr, typ, fehler_nr, [zusatz1], [zusatz2])**:
-   - Validates that `eintrags_nr` is provided (exits 1 if not).
-   - Determines the number of optional parameters supplied (3, 4, or 5).
-   - Dispatches a database call utilizing the corresponding procedural utility SQL file.
-7. **DWMSG_Logdateiname(var_name, job_kennung, eintrags_nr)**:
-   - Compiles log path: `${DW_DIR_PROT}/${job_kennung}_${date}_${eintrags_nr}.log`.
-   - Returns/assigns log path.
-8. **DWMSG_SetzeStichtagInfo(eintrags_nr, stichtag, stichtag_fmt)**:
-   - Validates all 3 arguments (exits 1 or 2 on empty).
-   - Invokes PL/SQL block converting the date string via specified format and commits.
-9. **DWMSG_AppendTimingInfos(eintrags_nr, info_text, date_format)**:
-   - Validates arguments (exits 1 or 2 on empty).
-   - Executs PL/SQL appending standard timestamp logging strings to database column and commits.
+8. OUTPUTS / SIDE EFFECTS
+   - Central database tracking tables (updated via BigQuery stored procedure calls).
+   - Writes date-stamped log files to path configured in environment variable `DW_DIR_PROT`.
+   - Emits error messages to stdout/stderr.
 
-### 7. ERROR HANDLING & EXIT CODES
-- **Validation guards**: All functions use strict positional parameter validations. If empty, they write to standard output / error and call `exit 1` or `exit 2`.
-- **Database call failures**: In original shell scripts, SQL*Plus execution errors might propagate or be ignored depending on caller configurations.
-- **Python Mapping**:
-  - Missing parameters will raise standard Python `ValueError` or custom assertion errors to halt execution.
-  - SQL execution failures will raise standard `google.cloud.exceptions.GoogleCloudError` exceptions.
+9. BUSINESS SUMMARY
+   - Standardizes job lifecycle logging across the batch data warehousing architecture.
+   - Inserts metadata checkpoints at start, completion, and failure of jobs.
+   - Automatically traps shell failures, ensuring unexpected job crashes are immediately updated in the database logging layer and marked as "Aborted".
+   - Appends performance metrics and timing diagnostics to log entries for operations auditing.
 
-### 8. OUTPUTS / SIDE EFFECTS
-- **Database Writes**: Table inserts, updates, and status modifications managed by `BERT_MELDUNG` routines (migrating to BigQuery audit tables).
-- **Temporary Files**: Creation and cleanup of `/tmp/ErmittleNr_$$.lst` (handled dynamically in Python memory instead).
-- **Log Files**: Generates path definitions for log output files.
-
-### 9. BUSINESS SUMMARY
-- Serves as the global operations telemetry and audit tracker framework for Deutsche Telekom Information Services.
-- Registers unique tracking IDs for every automated data integration workflow execution.
-- Captures runtime metadata including execution program name, timing information, reporting dates (Stichtag), and target log paths.
-- Provides standard error trapping routines that log unexpected failures to DB tracking tables instantly.
-- Standardizes operational error codes (e.g. Code 10 for unexpected errors) and severity classification (Fatal, Error, Warning).
-
----
-
-### MANDATORY AUDIT CHECKLIST & RETENTION STATUS
-All legacy parameter-validation checks are preserved in the Python design and must be explicitly enforced:
-1. `DWMSG_SetzeStatusOK`: `if [ -z "$DWMSG_EintragsNr" ]` -> `ValueError("Argh!, keine EintragsNummer bei Aufruf von SetzeOkStatus angegeben")`
-2. `DWMSG_SetzeStatusAbbruch`: `if [ -z "$DWMSG_EintragsNr" ]` -> `ValueError("Argh!, keine EintragsNummer bei Aufruf von SetzeAbbruchStatus angegeben")`
-3. `DWMSG_ErmittleNr`: `if [ -z "$VarName" ]` -> `ValueError("Argh!, keinen Variablennamen bei ErmittleNr angegeben")`
-4. `DWMSG_ErzeugeEintrag`: `if [ -z "$DWMSG_EintragsNr" ]` -> `ValueError("Argh!, keine EintragsNummer bei Aufruf von ErzeugeEintrag angegeben")`
-5. `DWMSG_MeldeFehler`: `if [ -z "$DWMSG_EintragsNr" ]` -> `ValueError("Argh!, keine EintragsNummer bei Aufruf von MeldeFehler angegeben")`
-6. `DWMSG_SetzeStichtagInfo`:
-   - `if [ -z "$DWMSG_EintragsNr" ]` -> `ValueError("Argh!, keine EintragsNr bei Aufruf von SetzeZusatzInfos angegeben")`
-   - `if [ -z "$DWMSG_Stichtag" ]` -> `ValueError("Argh!, keinen Stichtag angegeben!")`
-   - `if [ -z "$DWMSG_StichtagFmt" ]` -> `ValueError("Argh!, Stichtagsangaben ohne Formatangaben können nicht verarbeitet werden!", exit_code=2)`
-7. `DWMSG_AppendTimingInfos`:
-   - `if [ -z "$DWMSG_EintragsNr" ]` -> `ValueError("Argh!, keine EintragsNr bei Aufruf von SetzeZusatzInfos angegeben")`
-   - `if [ -z "$DWMSG_DateFormat" ]` -> `ValueError("Argh!, Formatangabe erforderlich!", exit_code=2)`
-
-=======================================================================================
-PYTHON PSEUDOCODE OUTLINE
-=======================================================================================
+=== PSEUDOCODE STYLE ===
 
 ```python
+# Module: dwmsg.py
+# Re-usable utility library for BigQuery environment-based logging and execution tracking.
+
 import os
 import sys
 import datetime
-from google.cloud import bigquery # Target platform confirmed as BigQuery
+from google.cloud import bigquery
 
-# Global configuration paths mapped from legacy environment variables
-DW_DIR_ROOT = os.environ.get("DW_DIR_ROOT", "/default/path/root")
-DW_DIR_PROT = os.environ.get("DW_DIR_PROT", "/default/path/prot")
+# Helper: Retrieve BigQuery Client
+def get_bq_client():
+    # # REVIEW: target database platform confirmed as BIGQUERY; ensure credentials / project are configured in environment
+    return bigquery.Client()
 
-# REVIEW-STRUCT: BigQuery project and dataset configurations for logging tables must be verified
-BQ_LOG_DATASET = os.environ.get("BQ_LOG_DATASET", "your_project.logging_dataset")
-
-
-def _execute_bq_query(query: str, params: list = None):
-    """Helper function replacing Oracle SQL*Plus calls with BigQuery Client executions."""
-    # REVIEW-STRUCT: Ensure active GCP credentials/Service Account configurations are in place
-    client = bigquery.Client()
-    job_config = bigquery.QueryJobConfig(
-        query_parameters=params
-    )
-    query_job = client.query(query, job_config=job_config)
-    return query_job.result()
-
+# Helper: Translate Oracle Datetime Format to BigQuery format string
+def translate_oracle_format(fmt: str) -> str:
+    # Basic translation for common patterns. Extend as needed.
+    mapping = {
+        'YYYYMMDD_HH24MI': '%Y%m%d_%H%M',
+        'YYYYMMDD': '%Y%m%d',
+        'HH24:MI:SS': '%H:%M:%S',
+        'DD.MM.YYYY HH24:MI:SS': '%d.%m.%Y %H:%M:%S'
+    }
+    return mapping.get(fmt, fmt)
 
 # Step 1: DWMSG_Fehlerbehandlung
-def DWMSG_Fehlerbehandlung(eintrags_nr: str, last_exit_code: int):
+def dwmsg_fehlerbehandlung(eintrags_nr, last_error_code=None):
     """
-    Fehlerbehandlung wird NUR im Rahmenskript durchgeführt.
-    Handles active traps on unexpected script failures.
+    Error handling routine called when a shell trap catches a failure.
+    Sets the entry to Aborted and logs an unexpected error code 10.
     """
-    kUnerwFehler = 10
+    if last_error_code is None:
+        last_error_code = 1 # Default fallback error code
     
-    # Log the unexpected error to BigQuery
-    DWMSG_MeldeFehler(
-        eintrags_nr, 
-        "F", 
-        kUnerwFehler, 
-        zusatz1=f"ErrorCode ist: {last_exit_code}"
-    )
+    k_unerw_fehler = 10
+    
+    # Report standard unexpected failure
+    dwmsg_melde_fehler(eintrags_nr, 'F', k_unerw_fehler, f"ErrorCode ist: {last_error_code}")
     
     print("Fehler wurde von der Shell gemeldet, setze auf Abbruchstatus")
-    DWMSG_SetzeStatusAbbruch(eintrags_nr)
-
+    dwmsg_setze_status_abbruch(eintrags_nr)
 
 # Step 2: DWMSG_SetzeStatusOK
-def DWMSG_SetzeStatusOK(eintrags_nr: str):
-    """Sets execution logging record to Ok status."""
+def dwmsg_setze_status_ok(eintrags_nr):
+    """Sets status of the job execution metadata entry to Success (Ok)."""
+    # Guard check
     if not eintrags_nr:
         print("Argh!, keine EintragsNummer bei Aufruf von SetzeOkStatus angegeben", file=sys.stderr)
         sys.exit(1)
         
-    # REVIEW: BigQuery translation of legacy Oracle BERT_MELDUNG.SetzeStatusOk stored procedure call
-    query = f"""
-        CALL `{BQ_LOG_DATASET}.SetzeStatusOk`(@eintrags_nr)
-    """
-    params = [bigquery.ScalarQueryParameter("eintrags_nr", "STRING", eintrags_nr)]
-    _execute_bq_query(query, params)
-
+    client = get_bq_client()
+    # Call BigQuery stored procedure equivalent
+    # # REVIEW: project_id and dataset should be customized to your environment
+    query = f"CALL `{{project_id}}.dataset.BERT_MELDUNG__SetzeStatusOk`({int(eintrags_nr)})"
+    client.query(query).result()
 
 # Step 3: DWMSG_SetzeStatusAbbruch
-def DWMSG_SetzeStatusAbbruch(eintrags_nr: str):
-    """Sets execution logging record to Cancelled/Aborted status."""
+def dwmsg_setze_status_abbruch(eintrags_nr):
+    """Sets status of the job execution metadata entry to Aborted (Abbruch)."""
+    # Guard check
     if not eintrags_nr:
         print("Argh!, keine EintragsNummer bei Aufruf von SetzeAbbruchStatus angegeben", file=sys.stderr)
         sys.exit(1)
         
-    # REVIEW: BigQuery translation of legacy Oracle BERT_MELDUNG.SetzeStatusAbbruch stored procedure call
-    query = f"""
-        CALL `{BQ_LOG_DATASET}.SetzeStatusAbbruch`(@eintrags_nr)
-    """
-    params = [bigquery.ScalarQueryParameter("eintrags_nr", "STRING", eintrags_nr)]
-    _execute_bq_query(query, params)
-
+    client = get_bq_client()
+    # Call BigQuery stored procedure equivalent
+    query = f"CALL `{{project_id}}.dataset.BERT_MELDUNG__SetzeStatusAbbruch`({int(eintrags_nr)})"
+    client.query(query).result()
 
 # Step 4: DWMSG_ErmittleNr
-def DWMSG_ErmittleNr() -> str:
+def dwmsg_ermittle_nr():
     """
-    Generates and returns a unique log tracker sequence number from BigQuery.
-    Replaces legacy temp file writing / cat | tr pipeline.
+    Obtains a unique job entry ID from the sequence or ID generation logic.
+    Returns the generated integer.
     """
-    # NOTE: The parameter validation 'VarName' is replaced by Python return pattern.
-    # Original guard: if [ -z "$VarName" ] -> "Argh!, keinen Variablennamen bei ErmittleNr angegeben"
-    # To satisfy the mandatory audit rule while refactoring to clean return pattern:
-    # REVIEW: out-parameter validation "Argh!, keinen Variablennamen bei ErmittleNr angegeben" guarded a parameter this refactor removed — confirm no equivalent guard is needed for the return-based version.
-
-    # REVIEW: Replaces Oracle sequence retrieval or legacy procedure d_al_is_ermittlenr.sql
-    query = f"""
-        SELECT `{BQ_LOG_DATASET}.generate_unique_logging_id`() AS new_id
-    """
-    results = _execute_bq_query(query)
+    # # REVIEW: out-parameter validation "Argh!, keinen Variablennamen bei ErmittleNr angegeben" guarded a parameter this refactor removed — confirm no equivalent guard is needed for the return-based version.
+    
+    client = get_bq_client()
+    
+    # # REVIEW: BigQuery does not use sequences. Implementing entry ID generation via UUID or sequence-holder table is required.
+    # Below simulates fetching a unique integer or generating a hashed/integer sequence.
+    # We query the BigQuery stored procedure or generation query directly instead of writing to temp file.
+    query = "SELECT `{{project_id}}.dataset.generate_next_eintrags_nr`()"
+    query_job = client.query(query)
+    results = query_job.result()
+    
     for row in results:
-        new_id = str(row.new_id).strip()
-        return new_id
-        
-    raise RuntimeError("Failed to generate unique logging ID from BigQuery.")
-
+        eintrags_nr = row[0]
+        return str(eintrags_nr).strip()
+    
+    raise RuntimeError("Could not retrieve a unique entry number from BigQuery.")
 
 # Step 5: DWMSG_ErzeugeEintrag
-def DWMSG_ErzeugeEintrag(eintrags_nr: str, job_kennung: str, programm_name: str, log_datei: str):
-    """Registers the initial log execution entry."""
+def dwmsg_erzeuge_eintrag(eintrags_nr, job_kennung, programmname, log_datei):
+    """Creates a tracking entry in the metadata logging structure."""
+    # Guard check
     if not eintrags_nr:
         print("Argh!, keine EintragsNummer bei Aufruf von ErzeugeEintrag angegeben", file=sys.stderr)
         sys.exit(1)
         
-    # REVIEW: BigQuery translation of legacy Oracle BERT_MELDUNG.Erzeuge_Eintrag stored procedure call
-    query = f"""
-        CALL `{BQ_LOG_DATASET}.Erzeuge_Eintrag`(@eintrags_nr, @job_kennung, @programm_name, @log_datei)
+    client = get_bq_client()
+    query = """
+        CALL `{{project_id}}.dataset.BERT_MELDUNG__Erzeuge_Eintrag`(
+            @eintrags_nr, @job_kennung, @programmname, @log_datei
+        )
     """
-    params = [
-        bigquery.ScalarQueryParameter("eintrags_nr", "STRING", eintrags_nr),
-        bigquery.ScalarQueryParameter("job_kennung", "STRING", job_kennung),
-        bigquery.ScalarQueryParameter("programm_name", "STRING", programm_name),
-        bigquery.ScalarQueryParameter("log_datei", "STRING", log_datei),
-    ]
-    _execute_bq_query(query, params)
-
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("eintrags_nr", "INT64", int(eintrags_nr)),
+            bigquery.ScalarQueryParameter("job_kennung", "STRING", job_kennung),
+            bigquery.ScalarQueryParameter("programmname", "STRING", programmname),
+            bigquery.ScalarQueryParameter("log_datei", "STRING", log_datei)
+        ]
+    )
+    client.query(query, job_config=job_config).result()
 
 # Step 6: DWMSG_MeldeFehler
-def DWMSG_MeldeFehler(eintrags_nr: str, typ: str, fehler_nr: int, zusatz1: str = None, zusatz2: str = None):
-    """Dispatches warning, system, or application error reporting."""
+def dwmsg_melde_fehler(eintrags_nr, typ, fehler_nr, zusatz1=None, zusatz2=None):
+    """Logs an error entry against a tracking job ID."""
+    # Guard check
     if not eintrags_nr:
         print("Argh!, keine EintragsNummer bei Aufruf von MeldeFehler angegeben", file=sys.stderr)
         sys.exit(1)
         
-    # REVIEW: BigQuery translation of legacy Oracle BERT_MELDUNG.Fehler stored procedure call
-    query = f"""
-        CALL `{BQ_LOG_DATASET}.Fehler`(@typ, @eintrags_nr, @fehler_nr, @zusatz1, @zusatz2)
+    client = get_bq_client()
+    query = """
+        CALL `{{project_id}}.dataset.BERT_MELDUNG__Fehler`(
+            @typ, @eintrags_nr, @fehler_nr, @zusatz1, @zusatz2
+        )
     """
-    params = [
-        bigquery.ScalarQueryParameter("typ", "STRING", typ),
-        bigquery.ScalarQueryParameter("eintrags_nr", "STRING", eintrags_nr),
-        bigquery.ScalarQueryParameter("fehler_nr", "INT64", fehler_nr),
-        bigquery.ScalarQueryParameter("zusatz1", "STRING", zusatz1),
-        bigquery.ScalarQueryParameter("zusatz2", "STRING", zusatz2),
-    ]
-    _execute_bq_query(query, params)
-
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("typ", "STRING", typ),
+            bigquery.ScalarQueryParameter("eintrags_nr", "INT64", int(eintrags_nr)),
+            bigquery.ScalarQueryParameter("fehler_nr", "INT64", int(fehler_nr)),
+            bigquery.ScalarQueryParameter("zusatz1", "STRING", zusatz1 if zusatz1 is not None else ""),
+            bigquery.ScalarQueryParameter("zusatz2", "STRING", zusatz2 if zusatz2 is not None else "")
+        ]
+    )
+    client.query(query, job_config=job_config).result()
 
 # Step 7: DWMSG_Logdateiname
-def DWMSG_Logdateiname(job_kennung: str, eintrags_nr: str) -> str:
+def dwmsg_logdateiname(job_kennung, eintrags_nr):
     """
-    Assembles standard runtime target log path.
-    Replaces original variable passing by reference (eval VarName=Dateiname).
+    Assembles a standardized diagnostic log filename and returns it.
     """
-    date_str = datetime.datetime.now().strftime('%Y%m%d_%H%M')
-    filename = f"{job_kennung}_{date_str}_{eintrags_nr}.log"
-    full_path = os.path.join(DW_DIR_PROT, filename)
-    return full_path
-
+    # Refactored: out-parameter assigned dynamically in KSH is now natively returned.
+    dw_dir_prot = os.environ.get("DW_DIR_PROT", "/tmp")
+    now_str = datetime.datetime.now().strftime("%Y%m%d_%H%M")
+    filename = f"{dw_dir_prot}/{job_kennung}_{now_str}_{eintrags_nr}.log"
+    return filename
 
 # Step 8: DWMSG_SetzeStichtagInfo
-def DWMSG_SetzeStichtagInfo(eintrags_nr: str, stichtag: str, stichtag_fmt: str):
-    """Sets processing timestamp metadata for the logging record."""
+def dwmsg_setze_stichtag_info(eintrags_nr, stichtag, stichtag_fmt):
+    """Saves business reporting date (Stichtag) context in metadata record."""
+    # Guard checks
     if not eintrags_nr:
         print("Argh!, keine EintragsNr bei Aufruf von SetzeZusatzInfos angegeben", file=sys.stderr)
         sys.exit(1)
-        
     if not stichtag:
         print("Argh!, keinen Stichtag angegeben!", file=sys.stderr)
         sys.exit(1)
-        
     if not stichtag_fmt:
         print("Argh!, Stichtagsangaben ohne Formatangaben können nicht verarbeitet werden!", file=sys.stderr)
         sys.exit(2)
         
-    # Parse format masks and convert string parameter to Datetime
-    # REVIEW: Formatting must align between BigQuery PARSE_DATE rules and Oracle's TO_DATE syntax
+    client = get_bq_client()
+    
+    bq_fmt = translate_oracle_format(stichtag_fmt)
+    
+    # Perform parse and stored procedure call in BigQuery
     query = f"""
-        CALL `{BQ_LOG_DATASET}.SetzeZusatzInfos`(@eintrags_nr, PARSE_DATE(@stichtag_fmt, @stichtag), NULL)
+        CALL `{{project_id}}.dataset.BERT_MELDUNG__SetzeZusatzInfos`(
+            @eintrags_nr, 
+            PARSE_DATE(@bq_fmt, @stichtag),
+            NULL
+        )
     """
-    params = [
-        bigquery.ScalarQueryParameter("eintrags_nr", "STRING", eintrags_nr),
-        bigquery.ScalarQueryParameter("stichtag", "STRING", stichtag),
-        bigquery.ScalarQueryParameter("stichtag_fmt", "STRING", stichtag_fmt),
-    ]
-    _execute_bq_query(query, params)
-
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("eintrags_nr", "INT64", int(eintrags_nr)),
+            bigquery.ScalarQueryParameter("bq_fmt", "STRING", bq_fmt),
+            bigquery.ScalarQueryParameter("stichtag", "STRING", stichtag)
+        ]
+    )
+    client.query(query, job_config=job_config).result()
 
 # Step 9: DWMSG_AppendTimingInfos
-def DWMSG_AppendTimingInfos(eintrags_nr: str, info_text: str, date_format: str):
-    """Appends workflow metrics timing string to BQ logging tracking records."""
+def dwmsg_append_timing_infos(eintrags_nr, info_text, date_format):
+    """Appends timestamps and profiling remarks to metadata execution record."""
+    # Guard checks
     if not eintrags_nr:
         print("Argh!, keine EintragsNr bei Aufruf von SetzeZusatzInfos angegeben", file=sys.stderr)
         sys.exit(1)
-        
     if not date_format:
         print("Argh!, Formatangabe erforderlich!", file=sys.stderr)
         sys.exit(2)
         
-    # Replaces Oracle EXEC BERT_MELDUNG.SetzeZusatzInfos(..., to_char(SYSDATE, date_format))
-    query = f"""
-        DECLARE formatted_date STRING;
-        SET formatted_date = FORMAT_TIMESTAMP(@date_format, CURRENT_TIMESTAMP());
-        CALL `{BQ_LOG_DATASET}.SetzeZusatzInfos`(@eintrags_nr, NULL, CONCAT(@info_text, ' ', formatted_date, ' '))
+    client = get_bq_client()
+    bq_fmt = translate_oracle_format(date_format)
+    
+    # Calculate formatted datetime in python, then execute call
+    now_formatted = datetime.datetime.now().strftime(bq_fmt)
+    timing_str = f"{info_text} {now_formatted} "
+    
+    query = """
+        CALL `{{project_id}}.dataset.BERT_MELDUNG__SetzeZusatzInfos`(
+            @eintrags_nr, 
+            NULL,
+            @timing_str
+        )
     """
-    params = [
-        bigquery.ScalarQueryParameter("eintrags_nr", "STRING", eintrags_nr),
-        bigquery.ScalarQueryParameter("info_text", "STRING", info_text),
-        bigquery.ScalarQueryParameter("date_format", "STRING", date_format),
-    ]
-    _execute_bq_query(query, params)
+    job_config = bigquery.QueryJobConfig(
+        query_parameters=[
+            bigquery.ScalarQueryParameter("eintrags_nr", "INT64", int(eintrags_nr)),
+            bigquery.ScalarQueryParameter("timing_str", "STRING", timing_str)
+        ]
+    )
+    client.query(query, job_config=job_config).result()
 ```
+
+### Execution Order
+The execution sequence from the legacy system must be preserved in the target Cloud Composer (Airflow) DAG orchestration as follows:
+1. **DW.DWH_ABTN_SMART_KUBI.xml** (Legacy UC4 Orchestration) $\rightarrow$ Maps to the target Airflow DAG definition that schedules and orchestrates the tasks.
+2. **d_abtn_x_smart_kubi.sql** (Data Loading) $\rightarrow$ Maps to a Dataform execution task or a BigQuery execution task to aggregate and load data into the target table `DWH$TA_T_SMART_KUBI`.
+3. **r_sqlscript** (Execution Wrapper) $\rightarrow$ Maps to an Airflow operator (e.g., PythonOperator) executing SQL scripts via BigQuery.
+4. **.dw_init** (Environment Initialization) $\rightarrow$ Sourced or executed as a setup step within the Airflow task execution environment.
+5. **f_alis_msgerr.ksh** (Error Handling & Logging Library) $\rightarrow$ Maps to the target Python module (`f_alis_msgerr.py`) containing logging and metadata tracking functions.
+6. **h_alis_sqlplus.ksh** (Execution Helper) $\rightarrow$ Maps to custom Python helper functions for executing SQL queries on BigQuery.
+
+---
+
+### Schedule & Variables — Must Be Retained
+The target Cloud Composer (Airflow) DAG must dynamically calculate and inject the equivalent schedule variables at runtime. These scheduler-set variables will be made available via Airflow DAG context or `params`:
+
+* **DWH_JOB_KENNUNG** $\rightarrow$ Configured as a constant string `'ABTN_SMART_KUBI'`.
+* **cdate** $\rightarrow$ Evaluated at runtime from the DAG execution date using Airflow macros:
+  ```python
+  cdate = "{{ dag_run.logical_date.in_timezone('Europe/Berlin').strftime('%Y%m%d') }}"
+  ```
+* **cmonth** (initial step) $\rightarrow$ Calculated as the first 6 characters of `cdate`:
+  ```python
+  cmonth_init = cdate[:6]
+  ```
+* **cday** $\rightarrow$ Calculated as characters 7 and 8 of `cdate`:
+  ```python
+  cday = cdate[6:8]
+  ```
+* **first** $\rightarrow$ Standard string constant `'01'`.
+* **cmonth** (concatenated) $\rightarrow$ Concatenated as `cmonth_init + '01'`.
+* **cmonth** (subtracted) $\rightarrow$ Derived by converting the concatenated date to a datetime object, subtracting 1 day, and formatting back to `YYYYMM`:
+  ```python
+  from datetime import datetime, timedelta
+  temp_dt = datetime.strptime(cmonth_init + '01', '%Y%m%d')
+  subtracted_dt = temp_dt - timedelta(days=1)
+  cmonth_final = subtracted_dt.strftime('%Y%m')
+  ```
+* **MONATSID** $\rightarrow$ Equal to `cmonth_final` (calculated dynamically above).
+
+---
+
+### Lineage
+* **Downstream Consumers**:
+  * `PROCEDURE:SETZEZUSATZINFOS` $\rightarrow$ BigQuery Stored Procedure (originally Oracle PL/SQL stored procedure called within `BERT_MELDUNG` packages).
+
+---
+
+### Target File Plan
+* **Target File Path**: `f_alis_msgerr.py`
+  * **Language**: Python
+  * **Source File**: `f_alis_msgerr.ksh`
+
+---
+
+### Environment-Specific Values
+The environment variables from the source are classified below. They must be retrieved dynamically rather than hardcoded in the target code:
+
+#### GLOBAL (Environment-Wide)
+* **GCP_PROJECT** $\rightarrow$ Maps to the target Google Cloud project identifier. Source at runtime via `os.environ.get("GCP_PROJECT")` or Airflow variables.
+* **BQ_DATASET** $\rightarrow$ Maps to the metadata/logging dataset containing the migrated execution tracking tables and stored procedures. Source at runtime via `os.environ.get("BQ_DATASET")`.
+* **DW_DIR_ROOT** $\rightarrow$ The root directory of the application deployment on Cloud Composer. Source at runtime via `os.environ.get("DW_DIR_ROOT")`.
+* **DW_DIR_PROT** $\rightarrow$ The execution/diagnostic logs storage directory or Cloud Storage bucket path. Source at runtime via `os.environ.get("DW_DIR_PROT")`.
+
+#### JOB-SPECIFIC
+* **DWH_JOB_KENNUNG** $\rightarrow$ `'ABTN_SMART_KUBI'`. Configured as a job-specific parameter.
+
+---
 
 ### File Disposition
 
 | Source File Path | Target File / Action | Purpose / Reason for Action |
 | :--- | :--- | :--- |
-| `local/home/gurunathan_t/kubi/f_alis_msgerr.ksh` | `local/home/gurunathan_t/kubi/f_alis_msgerr.py` | Migrated to a Python utility library to preserve error handling, status-logging orchestration, date formatting, and telemetry functions. |
+| `f_alis_msgerr.ksh` | `f_alis_msgerr.py` | Migrates KSH logging and database-tracking utility library to an importable Python module, allowing migrated Airflow tasks to perform central execution logging and status auditing in BigQuery. |
 
 ---
 
-### Execution Order
+### Hard Rules & Output/Print Literal Constraints
+Any print, warning, error, or validation logging statements carried over from the original KSH source must preserve their literal German text exactly as written. Surrounding syntax must adapt to native Python logging or output streams without modifying the literal strings:
 
-The legacy execution order of the overall job group must be preserved by the orchestration tool (Google Cloud Composer / Airflow DAG). The library itself is not executed as a standalone task but is imported/sourced within the execution sequence. The mapping of the ordered legacy steps to target elements is as follows:
-
-1. `DW.DWH_ABTN_SMART_KUBI.xml` (Legacy UC4 scheduling object) maps to the Orchestration DAG in **Cloud Composer**.
-2. `d_abtn_x_smart_kubi.sql` (Oracle SQL processing) maps to target **BigQuery SQL** execution (orchestrated as a task in the Airflow DAG).
-3. `r_sqlscript` (Wrapper script executing SQL) maps to a converted Python operator script **`r_sqlscript.py`**.
-4. `.dw_init` (Environment initialization) maps to a pre-task runtime environment setup or **Composer runtime environment variables**.
-5. `f_alis_msgerr.ksh` (Utility library) maps to the Python module **`local/home/gurunathan_t/kubi/f_alis_msgerr.py`**, which is imported by active worker tasks.
-6. `h_alis_sqlplus.ksh` (SQL*Plus execution utility) maps to **`h_alis_sqlplus.py`**.
-
----
-
-### Schedule & Variables
-
-The migrated workflow must preserve the equivalent scheduling logic and variable evaluation behavior. The schedule-set variables supplied at runtime by the scheduler are processed as follows:
-
-#### Scheduler-Set Variables:
-- **`DWH_JOB_KENNUNG`** = `'ABTN_SMART_KUBI'`
-- **`cdate`** = `'SYS_DATE("YYYYMMDD")'`
-- **`cmonth`** = `'SUBSTR(&cdate,1,6)'`
-- **`cday`** = `'SUBSTR(&cdate,7,2)'`
-- **`first`** = `'01'`
-- **`cmonth`** = `'&cmonth&first'`
-- **`cmonth`** = `'SUB_DAYS(&cmonth,1)'`
-- **`cmonth`** = `'SUBSTR(&cmonth,1,6)'`
-- **`MONATSID`** = `'&cmonth'`
-
-#### Target Mechanism:
-These scheduler-set variables must be passed into the Cloud Composer environment at runtime using Airflow DAG `params` or template variables. The dynamic date transformations (such as retrieving the previous month's ID via `SUB_DAYS` and `SUBSTR`) should be natively calculated inside the Airflow DAG using the execution date (`{{ ds }}`) or standard Python `datetime` / `croniter` libraries. Specifically:
-- `DWH_JOB_KENNUNG` will be mapped to an Airflow Variable or task parameter.
-- `MONATSID` will be derived dynamically at DAG execution time using an Airflow PythonOperator task and passed downstream to the BigQuery processing tasks.
-
----
-
-### Lineage
-
-- **Upstream / Database Interactions**: 
-  - `f_alis_msgerr.ksh` has a CALLS_PROCEDURE lineage relationship with `PROCEDURE:SETZEZUSATZINFOS`. In the target architecture, no direct equivalent exists on the target platform for Oracle PL/SQL stored procedures; therefore, the execution of this procedure must be re-implemented as BigQuery stored procedure calls or written as structured log inserts into a logging table.
-
----
-
-### Cross-File Dependencies
-
-- **Sourced-by Relationships**: This library script is sourced by the SQL execution wrapper script (`r_sqlscript`) and SQL*Plus helper utility (`h_alis_sqlplus.ksh`) to initialize error trap signals and standard logging functions.
-- **SQL Utility Dependencies**: The script relies on the presence of generic SQL wrapper dispatcher files located in `allgemein/is/util/sql/` (such as `d_alis_spaufruf_p1.sql`, `d_al_is_ermittlenr.sql`, and `d_alis_spaufruf_p4.sql`). These legacy files coordinate calls to the Oracle PL/SQL database package `BERT_MELDUNG`.
-
----
-
-### Target File Plan
-
-| Target File Path | Target Language | Source File Path | Purpose / Description |
-| :--- | :--- | :--- | :--- |
-| `local/home/gurunathan_t/kubi/f_alis_msgerr.py` | Python | `local/home/gurunathan_t/kubi/f_alis_msgerr.ksh` | Contains the migrated error-trapping, warning registry, and database-logging helper functions. It is designed to be imported as a module by other Python-converted scripts in the job group. |
-
----
-
-### Environment-Specific Values
-
-The legacy shell library depends on several environment variables that must be translated into target platform mechanisms:
-
-1. **`DW_ORAUSER`** (GLOBAL)
-   - *Legacy Role*: DB execution user credentials for SQL*Plus database connections.
-   - *Target Mapping*: Maps to standard GCP authentication via Application Default Credentials (ADC) or a configured connection ID managed in Airflow Connection configurations.
-2. **`DW_DIR_ROOT`** (GLOBAL)
-   - *Legacy Role*: Root directory of the standard environment scripts and execution assets.
-   - *Target Mapping*: Mapped to standard workspace directory paths or the dbt/Dataform project root depending on task layout. Can be sourced via `os.environ.get("DW_DIR_ROOT")`.
-3. **`DW_DIR_PROT`** (GLOBAL)
-   - *Legacy Role*: Folder path designated for storing standard execution logs and protocol outputs.
-   - *Target Mapping*: Normalized to `GCS_BUCKET` pointing to a Cloud Storage bucket dedicated to workflow execution logs. Sourced using `os.environ.get("GCS_BUCKET")`.
-4. **`BERT_MELDUNG`** (GLOBAL)
-   - *Legacy Role*: Database schema/package name where status logging rows are processed.
-   - *Target Mapping*: Mapped to a target BigQuery dataset parameter `BQ_DATASET` representing the logging and monitoring project/dataset. Sourced at runtime via Airflow config or environment variables.
+* `echo "Ich bin im Fehlerhandler, fehler der DB melden..."` $\rightarrow$ Must remain character-for-character: `"Ich bin im Fehlerhandler, fehler der DB melden..."`
+* `echo "Fehler wurde von der Shell gemeldet, setze auf Abbruchstatus"` $\rightarrow$ Must remain character-for-character: `"Fehler wurde von der Shell gemeldet, setze auf Abbruchstatus"`
+* `echo "Argh!, keine EintragsNummer bei Aufruf von SetzeOkStatus angegeben"` $\rightarrow$ Must remain character-for-character: `"Argh!, keine EintragsNummer bei Aufruf von SetzeOkStatus angegeben"`
+* `echo "Argh!, keine EintragsNummer bei Aufruf von SetzeAbbruchStatus angegeben"` $\rightarrow$ Must remain character-for-character: `"Argh!, keine EintragsNummer bei Aufruf von SetzeAbbruchStatus angegeben"`
+* `echo "Argh!, keinen Variablennamen bei ErmittleNr angegeben"` $\rightarrow$ Must remain character-for-character: `"Argh!, keinen Variablennamen bei ErmittleNr angegeben"`
+* `echo "Argh!, keine EintragsNummer bei Aufruf von ErzeugeEintrag angegeben"` $\rightarrow$ Must remain character-for-character: `"Argh!, keine EintragsNummer bei Aufruf von ErzeugeEintrag angegeben"`
+* `echo "Argh!, keine EintragsNummer bei Aufruf von MeldeFehler angegeben"` $\rightarrow$ Must remain character-for-character: `"Argh!, keine EintragsNummer bei Aufruf von MeldeFehler angegeben"`
+* `echo "Argh!, keine EintragsNr bei Aufruf von SetzeZusatzInfos angegeben"` $\rightarrow$ Must remain character-for-character: `"Argh!, keine EintragsNr bei Aufruf von SetzeZusatzInfos angegeben"`
+* `echo "Argh!, keinen Stichtag angegeben!"` $\rightarrow$ Must remain character-for-character: `"Argh!, keinen Stichtag angegeben!"`
+* `echo "Argh!, Stichtagsangaben ohne Formatangaben können nicht verarbeitet werden!"` $\rightarrow$ Must remain character-for-character: `"Argh!, Stichtagsangaben ohne Formatangaben können nicht verarbeitet werden!"`
+* `echo "Argh!, Formatangabe erforderlich!"` $\rightarrow$ Must remain character-for-character: `"Argh!, Formatangabe erforderlich!"`
 
 ---
 
@@ -1943,229 +2008,236 @@ starteSQLSkript(){
 
 === CONVERSION VERDICT ===
 VERDICT: PYTHON
-REASON: This is a utility script defining a reusable helper function with argument validation, file checks, and error-reporting integration, which must be converted to Python to preserve its orchestration logic and interface.
+REASON: The script defines a reusable KornShell utility function with parameter validation, filesystem checks, and dynamic external database utility execution that must be converted to Python.
 
 EVIDENCE
-- Business logic found: KSH custom logic. Defines `starteSQLSkript`, a reusable function that validates execution arguments, checks SQL file readability, calls a custom error reporting command (`DWMSG_MeldeFehler`), and executes a SQL file.
+- Business logic found: KSH custom logic defining a reusable SQL*Plus wrapper function (`starteSQLSkript`) with input validation and file readability checks.
 - AWK: none
-- SQL-expressible: No. This is a shell orchestration/utility helper function that manages file checks and external process execution, which cannot be expressed in pure BigQuery SQL.
-- Non-SQL side effects: Local filesystem readability checks (`[ ! -r $p_Skript ]`), external error logging via `DWMSG_MeldeFehler`, and process invocation.
-- Against this verdict: None. It is a utility script, not a database transformation script.
+- SQL-expressible: no, it contains filesystem checks and dynamic execution of parameterised SQL scripts.
+- Non-SQL side effects: checks file existence/readability and launches SQL*Plus.
+- Against this verdict: none, because it is a generic utility library wrapper rather than a single database query/load job, making Python the only logical target.
 
 =======================================================================================
 PART A — PYTHON DESIGN DOCUMENT
 =======================================================================================
 
 1. SCRIPT OVERVIEW
-   This script is a KornShell utility library (`h_alis_sqlplus.ksh`) defining a reusable function `starteSQLSkript`. The function acts as a wrapper for executing SQL*Plus scripts, ensuring that mandatory parameters (error tracking ID and the SQL script path) are provided and that the SQL script file is readable on the filesystem before attempting execution. If any validations fail, it calls an external error-handling utility (`DWMSG_MeldeFehler`) and returns a specific failure code; otherwise, it executes the SQL script using `sqlplus` and returns its exit status.
+   This script (`h_alis_sqlplus.ksh`) is a KornShell utility library containing helper routines for invoking SQL*Plus. Its primary routine, `starteSQLSkript`, validates parameters, verifies that the target SQL script file is readable, and then safely executes it using SQL*Plus. In the modern GCP architecture with a confirmed target platform of BigQuery, this utility will serve as a foundational Python helper to execute converted BigQuery SQL files.
 
 2. INVOCATION CONTEXT
-   - **Caller**: This library script is designed to be sourced (using `. h_alis_sqlplus.ksh` or `source h_alis_sqlplus.ksh`) by other business logic scripts or UC4 Unix jobs to make the `starteSQLSkript` function available.
-   - **UC4 Includes**: None referenced in this file.
-   - **Environment files sourced**: None.
+   - Who calls this script: Sourced or imported by other database orchestration scripts. Its internal function `starteSQLSkript` is called with a Fehlereintragsnummer (error entry number), a script path, and arbitrary SQL parameters.
+   - UC4 native includes: None.
+   - Environment files sourced: None.
+   - External dependencies: Relies on `DWMSG_MeldeFehler` (an external error-reporting utility or function) and `sqlplus` (the Oracle client utility).
+     - # REVIEW-STRUCT: launcher [DWMSG_MeldeFehler] invoked — internal behaviour not available in this extraction; confirm logging, error propagation, and credential handling before finalizing the conversion
 
 3. PARAMETERS / INPUTS
    The function `starteSQLSkript` accepts the following parameters:
-   - `$1` (`p_Eintragsnr`): Error entry number used when invoking the error logger `DWMSG_MeldeFehler`. Required. Map to a Python function parameter `p_eintragsnr`.
-   - `$2` (`p_Skript`): Path of the SQL script to be executed. Required. Map to a Python function parameter `p_skript`.
-   - `$*` (remaining positional arguments after `shift 2`): Dynamic parameters passed through to the SQL execution engine. Map to `*args` in Python.
-   
-   Environment variables:
-   - `DW_ORAUSER` (os.environ): Database credentials/connection string used by SQL*Plus.
-   - `ModulName` / `Modul_Name`: Defined as `"alis_sqlplus"`.
-     *(# REVIEW: The script defines `ModulName` but references `Modul_Name` in its validation error message. This inconsistency is noted and handled in Python by using a single consistent variable.)*
-   - `ModulVersion` / `Modul_Version`: Defined as `"V1.1.3"`.
-     *(# REVIEW: The script defines `ModulVersion` but references `Modul_Version` in its validation error message. This inconsistency is noted and handled in Python.)*
+   - `$1` (`p_Eintragsnr`): Fehlereintragsnummer (Error Entry ID). Source: Function call argument. Used inside validation guards and passed to `DWMSG_MeldeFehler`. Surfaced in Python as a positional string argument.
+   - `$2` (`p_Skript`): Path of the SQL script to be executed. Source: Function call argument. Used in file check and execution. Surfaced in Python as a positional string/Path argument.
+   - `$*` (remaining arguments shifted via `shift 2`): Arbitrary parameter list passed down to the SQL script. Surfaced in Python as variable positional arguments (`*args`).
+   - `DW_ORAUSER` (environment variable): Oracle connection string credential. In a BigQuery execution context, this credential is obsolete and should be replaced by BigQuery Client credentials (via service accounts or default credentials).
 
 4. EXTERNAL COMMANDS / PROGRAMS INVOKED
-   - `DWMSG_MeldeFehler`:
-     - Verbatim command line: 
-       - `DWMSG_MeldeFehler $p_Eintragsnr E 196 "${Modul_Name} ${Modul_Version} starteSQLSkript"`
-       - `DWMSG_MeldeFehler $p_Eintragsnr E 201 $p_Skript`
-     - Purpose: Register errors in the central legacy reporting system.
-     - Mapping: Call via `subprocess.run(["DWMSG_MeldeFehler", ...])`.
-     - # REVIEW-STRUCT: launcher DWMSG_MeldeFehler invoked — internal behaviour not available in this extraction; confirm logging, error propagation, and credential handling before finalizing the conversion
-   - `sqlplus`:
-     - Verbatim command line: `sqlplus ${DW_ORAUSER} @$p_Skript $* </dev/null`
-     - Purpose: Oracle database client utility used to execute SQL scripts.
-     - Mapping: Since the target platform is confirmed as **BIGQUERY**, `sqlplus` is obsolete. The SQL scripts should be migrated to BigQuery Standard SQL and executed using the Python BigQuery Client library (`google.cloud.bigquery`). However, to maintain the dynamic execution architecture of this helper function, we will provision a Python function that can call the BigQuery Client to execute the contents of `p_skript` using the BigQuery Python SDK, fallback-wrapped as a subprocess call if legacy SQL*Plus is kept during a transition period.
-     - # REVIEW: target database platform is confirmed as BIGQUERY, but the utility wraps sqlplus (Oracle). The SQL script must be converted to BigQuery SQL and executed via the google-cloud-bigquery client.
+   - `sqlplus ${DW_ORAUSER} @$p_Skript $* </dev/null`
+     - Purpose: Invokes the Oracle SQL*Plus command-line interface with the credentials in `DW_ORAUSER`, passing the script path and its dynamic arguments, redirecting standard input from `/dev/null` to prevent interactive hangs.
+     - Target Transformation: Because the target platform is confirmed as BigQuery, this must become a Python execution utilizing the `google.cloud.bigquery` client. The SQL files passed into `p_Skript` must be migrated to BigQuery-compatible Standard SQL. The parameter passing (`$*`) should map to BigQuery Query Parameters (using `bigquery.ScalarQueryParameter` etc.) or simple template rendering depending on how the SQL scripts are rewritten.
 
 5. EMBEDDED SQL
-   There is no embedded SQL inside this wrapper script. It only invokes external SQL files dynamically.
+   There is no embedded SQL inside this wrapper script. The wrapper dynamically executes external `.sql` files specified by the caller via the `p_Skript` parameter.
 
 6. CONTROL FLOW
-   1. **Initialization**: Declare module metadata variables (`MODUL_NAME = "alis_sqlplus"`, `MODUL_VERSION = "V1.1.3"`).
-   2. **Define Function `starte_sql_skript`**:
-      - Accept `p_eintragsnr`, `p_skript`, and `*args`.
-      - **Parameter Validation**:
-        - Check if `p_eintragsnr` or `p_skript` is empty. If empty, invoke `DWMSG_MeldeFehler` with parameters `[p_eintragsnr, 'E', '196', f"{MODUL_NAME} {MODUL_VERSION} starteSQLSkript"]` and return `196`.
-      - **Readability Validation**:
-        - Check if the file `p_skript` exists and is readable. If not, invoke `DWMSG_MeldeFehler` with parameters `[p_eintragsnr, 'E', '201', p_skript]` and return `201`.
-      - **Log Execution**: Print details of the script path and arguments to stdout.
-      - **Execute Script**:
-        - Run SQL execution. Since the target database is BigQuery, read the contents of `p_skript`, perform parameter substitutions if any, and run via `bigquery.Client().query()`. If maintaining transitional Oracle compatibility, execute `sqlplus` using `subprocess.run()`.
-      - **Return Status**: Capture and return the return code of the execution.
+   1. Define module metadata variables: `ModulName="alis_sqlplus"`, `ModulVersion="V1.1.3"`.
+   2. Function `starteSQLSkript` lifecycle:
+      - Assign `$1` to `p_Eintragsnr` and `$2` to `p_Skript`.
+      - Shift positional parameters by 2 to capture the remaining arguments (`$*`).
+      - Guard 1: Validate that `p_Eintragsnr` and `p_Skript` are not null. If either is missing, call `DWMSG_MeldeFehler` with parameters: `$p_Eintragsnr`, `E`, `196`, and `"${Modul_Name} ${Modul_Version} starteSQLSkript"`. Return exit code `196`.
+      - Guard 2: Validate that the file `p_Skript` exists and is readable. If not, call `DWMSG_MeldeFehler` with parameters: `$p_Eintragsnr`, `E`, `201`, and `$p_Skript`. Return exit code `201`.
+      - Print execution configuration info to stdout:
+        - "Rufe SQL*PLUS auf mit folgenden Einstellungen"
+        - "Sql*Plus-Skript : $p_Skript"
+        - "Skript-Parameter: $*"
+      - Temporarily disable exit-on-error (`set +e`) to allow capturing of the utility's return code.
+      - Execute `sqlplus ${DW_ORAUSER} @$p_Skript $* </dev/null`.
+      - Capture the exit status in `errcode`.
+      - Re-enable exit-on-error (`set -e`).
+      - Return `errcode`.
 
 7. ERROR HANDLING & EXIT CODES
-   - Missing arguments returns `196`.
-   - File unreadable returns `201`.
-   - Execution failure propagates the exit code returned by the DB execution tool (e.g. `sqlplus` status code, or BigQuery Client exception translated to an error code).
-   - Python mapping: Wrap the execution block in `try...except` and return/propagate appropriate error codes to preserve the exit-code contract.
+   - Missing required inputs: Calls `DWMSG_MeldeFehler` and returns code `196`.
+   - File unreadable: Calls `DWMSG_MeldeFehler` and returns code `201`.
+   - SQL*Plus execution failure: Propagates the exit code (`$?`) returned by `sqlplus`.
+   - Python mapping:
+     - Wrap BigQuery executions in `try/except` blocks (handling `google.cloud.exceptions.GoogleCloudError`).
+     - Replicate error codes `196` and `201` explicitly when validations fail.
+     - Call the Python equivalent of `DWMSG_MeldeFehler` (or a standardized logging/error management framework) on failure.
 
 8. OUTPUTS / SIDE EFFECTS
-   - Standard output messaging describing script run configurations.
-   - Logs generated via external `DWMSG_MeldeFehler` utility on validation failure.
-   - Database operations executed inside the target BigQuery environment.
+   - Writes log info to standard output.
+   - Standard output / Standard error of the executed SQL scripts.
+   - DB modifications applied by the underlying SQL statements inside `p_Skript`.
 
 9. BUSINESS SUMMARY
-   - Standardizes error logging and validation for database scripts.
-   - Prevents database execution attempts when the target SQL file is missing or unreadable.
-   - Decouples SQL script execution details from calling orchestrators.
-   - Integrates database execution status directly back into the job-monitoring workflow.
+   - Standardizes the safe execution of SQL scripts.
+   - Prevents silent failures or hangs by verifying SQL script readability prior to execution.
+   - Formats and logs parameters passed to database scripts.
+   - Tracks error details using a centralized message registration mechanism (`DWMSG_MeldeFehler`).
+   - Integrates database-level exit code propagation into the shell orchestration layer.
 
----
-
-### PYTHON PSEUDOCODE
+=======================================================================================
+PYTHON PSEUDOCODE
+=======================================================================================
 
 ```python
 import os
 import sys
-import subprocess
-import pathlib
-# REVIEW: target database platform is confirmed as BIGQUERY.
-# If executing scripts natively in BigQuery, the google-cloud-bigquery library should be imported.
-# from google.cloud import bigquery
+from pathlib import Path
+from typing import List, Any
+# Import BigQuery client library (target platform confirmed: BIGQUERY)
+from google.cloud import bigquery
+from google.cloud.exceptions import GoogleCloudError
 
-# Step 1: Initialize module-level metadata variables
+# Module metadata variables
 MODUL_NAME = "alis_sqlplus"
 MODUL_VERSION = "V1.1.3"
 
-# Step 2: Define the central wrapper function
-def starte_sql_skript(p_eintragsnr: str, p_skript: str, *args) -> int:
+# Placeholder for external dependency DWMSG_MeldeFehler
+# # REVIEW-STRUCT: launcher [DWMSG_MeldeFehler] invoked — internal behaviour not available in this extraction
+def dwmsg_melde_fehler(eintrags_nr: str, msg_type: str, code: int, msg_text: str) -> None:
+    print(f"ERROR_LOG [{eintrags_nr}] Type: {msg_type}, Code: {code}, Message: {msg_text}", file=sys.stderr)
+
+def starte_sql_skript(p_eintragsnr: str, p_skript: str, *p_params: Any) -> int:
     """
-    Python equivalent of starteSQLSkript function.
-    Validates arguments and executes the specified SQL script.
-    """
+    Safely executes a SQL script file.
     
-    # Step 3: Audit & Validate mandatory parameters
-    # Original guard: if [ -z "$p_Eintragsnr" -o -z "$p_Skript" ]
+    Ported from KSH: starteSQLSkript()
+    """
+    # Step 1 & 2: Validate that required arguments are present
+    # KSH Guard: if [ -z "$p_Eintragsnr" -o -z "$p_Skript" ]
     if not p_eintragsnr or not p_skript:
-        # Call legacy error handler utility
-        # # REVIEW-STRUCT: launcher DWMSG_MeldeFehler invoked — internal behaviour not available in this extraction
-        subprocess.run([
-            "DWMSG_MeldeFehler", 
-            p_eintragsnr, 
-            "E", 
-            "196", 
-            f"{MODUL_NAME} {MODUL_VERSION} starteSQLSkript"
-        ], check=False)
+        # Replicates: DWMSG_MeldeFehler $p_Eintragsnr E 196 "${Modul_Name} ${Modul_Version} starteSQLSkript"
+        # Note: If p_eintragsnr was empty, we pass empty string
+        module_info = f"{MODUL_NAME} {MODUL_VERSION} starteSQLSkript"
+        dwmsg_melde_fehler(p_eintragsnr or "", "E", 196, module_info)
         return 196
 
-    # Step 4: Audit & Validate that the script file is readable
-    # Original guard: if [ ! -r $p_Skript ]
-    script_path = pathlib.Path(p_skript)
+    # Step 3: Check if the SQL script is readable
+    # KSH Guard: if [ ! -r $p_Skript ]
+    script_path = Path(p_skript)
     if not script_path.is_file() or not os.access(script_path, os.R_OK):
-        subprocess.run([
-            "DWMSG_MeldeFehler", 
-            p_eintragsnr, 
-            "E", 
-            "201", 
-            p_skript
-        ], check=False)
+        # Replicates: DWMSG_MeldeFehler $p_Eintragsnr E 201 $p_Skript
+        dwmsg_melde_fehler(p_eintragsnr, "E", 201, str(script_path))
         return 201
 
-    # Step 5: Log invocation details to stdout
+    # Step 4: Log invocation settings
+    # Replicates echo statements verbatim
     print("Rufe SQL*PLUS auf mit folgenden Einstellungen")
     print(f"Sql*Plus-Skript : {p_skript}")
-    print(f"Skript-Parameter: {' '.join(args)}")
+    print(f"Skript-Parameter: {' '.join(map(str, p_params))}")
 
-    # Step 6: Execute the SQL script
-    # Since TARGET_PLATFORM is BIGQUERY, the SQL execution should be routed to BigQuery.
-    # We provide the implementation pattern for BigQuery below.
-    errcode = 0
+    # Step 5: Execute the SQL target
+    # The original script invoked Oracle SQL*Plus. Because the target platform is confirmed 
+    # as BIGQUERY, we utilize the Google Cloud BigQuery client to run the migrated SQL file.
+    # Note: Any SQL script loaded here must be previously converted to BigQuery dialect.
     try:
-        # --- BIGQUERY NATIVE EXECUTION PATTERN ---
-        # client = bigquery.Client()
-        # with open(script_path, "r", encoding="utf-8") as f:
-        #     sql_query = f.read()
-        # # Note: Handle any positional parameter substitution (*args) in sql_query if needed
-        # query_job = client.query(sql_query)
-        # query_job.result() # Waits for query to complete
+        # Initialize the BigQuery client (uses default GCP credentials / service account)
+        client = bigquery.Client()
         
-        # --- TRANSITIONAL SQL*PLUS SUBPROCESS PATTERN ---
-        # If legacy oracle client is temporarily retained:
-        dw_orauser = os.environ.get("DW_ORAUSER", "")
-        # sqlplus ${DW_ORAUSER} @$p_Skript $* </dev/null
-        cmd = ["sqlplus", dw_orauser, f"@{p_skript}"] + list(args)
-        
-        # Running with stdin redirected to devnull to match original script's </dev/null
-        result = subprocess.run(
-            cmd, 
-            stdin=subprocess.DEVNULL, 
-            capture_output=False, 
-            check=False
-        )
-        errcode = result.returncode
-        
-    except Exception as e:
-        print(f"Execution failed: {str(e)}", file=sys.stderr)
-        errcode = 1  # Standard fallback error code
+        # Read the SQL query from the migrated script file
+        with open(script_path, "r", encoding="utf-8") as sql_file:
+            query_text = sql_file.read()
 
-    # Step 7: Return the resulting exit code
+        # # REVIEW: Determine parameter parameterisation strategy (query parameters vs. templating).
+        # Standard parameters pass-through implementation:
+        # For this pseudocode, we will log/execute with parameter replacement if applicable, or as standard text.
+        print(f"Executing Query in file '{p_skript}' via BigQuery Client...")
+        
+        # Run query job
+        # (Assuming variables in SQL might be mapped through positional parameters or format placeholders)
+        # For safety and generality, we query directly. If query parameters are needed, configure query_params.
+        query_job = client.query(query_text)
+        
+        # Wait for the query to finish execution
+        query_job.result()
+        
+        errcode = 0
+    except GoogleCloudError as gcp_err:
+        print(f"BigQuery execution failed: {gcp_err}", file=sys.stderr)
+        # If execution fails, we return a non-zero exit status.
+        errcode = gcp_err.code if hasattr(gcp_err, 'code') else 1
+    except Exception as err:
+        print(f"Execution failed: {err}", file=sys.stderr)
+        errcode = 1
+
+    # Step 6: Return exit status code
     return errcode
 ```
 
-# File Disposition
+### File Disposition
+
 | Source File Path | Target File / Action | Purpose / Reason for Action |
 | :--- | :--- | :--- |
-| `local/home/gurunathan_t/kubi/h_alis_sqlplus.ksh` | `local/home/gurunathan_t/kubi/h_alis_sqlplus.py` | Migrates KornShell SQL*Plus helper functions into reusable Python functions leveraging Python's `subprocess` (for transitional SQL*Plus executions) or Google Cloud BigQuery client APIs. |
+| `local/home/gurunathan_t/kubi/h_alis_sqlplus.ksh` | `local/home/gurunathan_t/kubi/h_alis_sqlplus.py` | Converted to a Python utility module maintaining validation logic and adapting execution to use Google Cloud BigQuery client library. |
 
-# Execution order
-The pre-collected legacy sequence of 6 steps must be preserved and mapped to equivalent target task orchestrations in the main Airflow DAG:
-1. **`DW.DWH_ABTN_SMART_KUBI.xml`** (UC4 orchestrator definition) -> Maps to the master Airflow DAG file orchestrating this job group.
-2. **`d_abtn_x_smart_kubi.sql`** (Main database logic) -> Maps to a Dataform SQLX pipeline or `BigQueryInsertJobOperator` task.
-3. **`r_sqlscript`** -> Maps to an Airflow operator calling the runner script.
-4. **`.dw_init`** -> Maps to an Airflow task setting up environment variables.
-5. **`f_alis_msgerr.ksh`** -> Maps to a task running the converted error reporting Python utility.
-6. **`h_alis_sqlplus.ksh`** (Utility function script) -> Sourced as a Python module (`h_alis_sqlplus.py`) that is imported and used in Python operators executing SQL tasks.
+***
 
-# Schedule & variables
-The target Airflow DAG must retain the schedules and execute with equivalent runtime variables. The scheduler-set variables for this job are mapped to dynamic Airflow parameters and templates:
-- **`DWH_JOB_KENNUNG`** (Value: `'ABTN_SMART_KUBI'`): Retained as a parameter passed to the operators.
-- **`cdate`** (Value: `SYS_DATE("YYYYMMDD")`): Replaced by Airflow execution date Jinja templates: `{{ ds_nodash }}`.
-- **`cmonth` / `cday` / `first` / `MONATSID`**: Modeled dynamically inside the Airflow environment using standard Python `datetime` calculations or Jinja macros:
-  - `cmonth` (First reference): `{{ execution_date.strftime('%Y%m') }}`
-  - `cday`: `{{ execution_date.strftime('%d') }}`
-  - `first`: `'01'`
-  - `cmonth` (Concatenation of `cmonth` + `first`): `{{ execution_date.strftime('%Y%m') }}01`
-  - `cmonth` (Subtracting 1 day from 1st of month): `{{ (execution_date.replace(day=1) - macros.timedelta(days=1)).strftime('%Y%m%d') }}`
-  - `cmonth` (Substring to 6 chars): `{{ (execution_date.replace(day=1) - macros.timedelta(days=1)).strftime('%Y%m') }}`
-  - **`MONATSID`** (Final assigned value): `{{ (execution_date.replace(day=1) - macros.timedelta(days=1)).strftime('%Y%m') }}`
+### Execution order
 
-# Lineage
-- **Upstream producers**: None found for this utility file.
-- **Downstream consumers**: None found for this utility file.
+The legacy orchestration sequence is structured as follows:
+1. `DW.DWH_ABTN_SMART_KUBI.xml` (UC4 orchestration wrapper)
+2. `d_abtn_x_smart_kubi.sql` (Main aggregation SQL executing on the database)
+3. `r_sqlscript` (Shell execution wrapper)
+4. `.dw_init` (Environment initialization)
+5. `f_alis_msgerr.ksh` (Error tracking and registration library)
+6. `h_alis_sqlplus.ksh` (SQL*Plus execution utility library)
 
-# Target file plan
-- **Target File Path**: `local/home/gurunathan_t/kubi/h_alis_sqlplus.py`
-  - **Language**: Python (3.11+)
-  - **Source File**: `local/home/gurunathan_t/kubi/h_alis_sqlplus.ksh`
-  - **Purpose**: A utility module that provides the python-native equivalent of `starteSQLSkript` including validation routines, logging of execution details, and safe database client task initialization.
+**Orchestration Mapping to Cloud Composer:**
+- The utility script `h_alis_sqlplus.ksh` (migrated to `h_alis_sqlplus.py`) is not executed as an independent standalone DAG task. Instead, it is a shared utility module imported and called by other Python tasks in the DAG (such as the task representing `r_sqlscript`) to safely load, validate, and execute BigQuery SQL queries (like `d_abtn_x_smart_kubi.sql`).
 
-# Environment-specific values
-1. **`DW_ORAUSER`** (Global Environment Value)
-   - **Legacy Role**: Oracle database credentials.
-   - **Target Classification**: GLOBAL
-   - **Target Sourcing**: Maps to the GCP project environment or standard Airflow Connection ID. Sourced via `os.environ.get("GCP_PROJECT")` or standard environment vars `BQ_DATASET`.
-2. **`ModulName` / `Modul_Name`** (Job-Specific Value)
-   - **Legacy Role**: Module name tracking.
-   - **Target Classification**: JOB-SPECIFIC
-   - **Target Sourcing**: Inline literal `'alis_sqlplus'` defined inside the module.
-3. **`ModulVersion` / `Modul_Version`** (Job-Specific Value)
-   - **Legacy Role**: Version tracking.
-   - **Target Classification**: JOB-SPECIFIC
-   - **Target Sourcing**: Inline literal `'V1.1.3'` defined inside the module.
+***
+
+### Schedule & variables
+
+The following legacy variables must be dynamically calculated and preserved during scheduling inside Cloud Composer (using Airflow context variables, macros, or python execution wrappers):
+
+- **`DWH_JOB_KENNUNG`** = `'ABTN_SMART_KUBI'`
+  - **Target Mapping:** Airflow task parameter or environment variable.
+- **`cdate`** = `SYS_DATE("YYYYMMDD")`
+  - **Target Mapping:** Computed dynamically using Airflow execution date/logical date, e.g. `{{ ds_nodash }}` or `logical_date.strftime('%Y%m%d')`.
+- **`cmonth`** = `SUBSTR(&cdate,1,6)`
+  - **Target Mapping:** Derived via slicing or string formatting: `logical_date.strftime('%Y%m')`.
+- **`cday`** = `SUBSTR(&cdate,7,2)`
+  - **Target Mapping:** Derived via slicing or string formatting: `logical_date.strftime('%d')`.
+- **`first`** = `'01'`
+  - **Target Mapping:** Constant string parameter.
+- **`cmonth`** = `&cmonth&first` (Concatenation to get first day of month)
+  - **Target Mapping:** Calculated dynamic string: `f"{cmonth}01"`.
+- **`cmonth`** = `SUB_DAYS(&cmonth,1)` (Subtract one day to get the last day of the previous month)
+  - **Target Mapping:** Computed using `timedelta(days=1)` subtraction in Python, or DAG execution macro.
+- **`cmonth`** = `SUBSTR(&cmonth,1,6)` (Extract Year and Month of previous month)
+  - **Target Mapping:** Formatted as Year-Month string.
+- **`MONATSID`** = `&cmonth`
+  - **Target Mapping:** Dynamic job run identifier passed as query parameter `@monats_id` to BigQuery.
+
+***
+
+### Target file plan
+
+- **Target File Path:** `local/home/gurunathan_t/kubi/h_alis_sqlplus.py`
+  - **Language:** Python
+  - **Source File:** `local/home/gurunathan_t/kubi/h_alis_sqlplus.ksh`
+  - **Target Role:** A Python utility library that encapsulates parameter validation (re-raising exit codes `196` and `201` as appropriate), prints the configuration info in the exact German literal text of the source, and uses the `google.cloud.bigquery` library to load and execute SQL files against BigQuery.
+
+***
+
+### Environment-specific values
+
+- **`GCP_PROJECT`** (GLOBAL):
+  - **Description:** The target Google Cloud Project where BigQuery queries are executed.
+  - **Target Sourcing:** Resolved at runtime using Python environment variable retrieval: `os.environ.get("GCP_PROJECT")` or Airflow variable configuration `Variable.get("GCP_PROJECT")`.
+- **`DW_ORAUSER`** (RETIRED):
+  - **Description:** Oracle user database credential string used for SQL*Plus connection.
+  - **Target Sourcing:** Obsolete under BigQuery IAM-based authentication. This environment variable is retired. The Python script will instantiate standard Google Application Default Credentials (ADC) or run under the identity of the Cloud Composer worker's service account.
 
 ---
 
@@ -2392,337 +2464,311 @@ echo "Die Abarbeitung des Rahmenskriptes ist ohne erkennbare Fehler beendet"
 
 === CONVERSION VERDICT ===
 VERDICT: PYTHON
-REASON: The script is an orchestration and utility wrapper that manages argument parsing, file path resolution, framework logging integration, and signal trapping.
+REASON: The script is a database orchestration utility that performs getopts argument parsing, relative filesystem path traversal, signal trapping, and dynamic database execution.
 
 EVIDENCE
-- Business logic found: KSH custom logic. The script parses command-line flags (-f, -i, -j, -v), resolves dynamic directory paths for SQL scripts, integrates with a custom metadata logging framework (DWMSG), and executes SQL wrappers.
+- Business logic found: KSH custom logic. The script processes command-line options (-f, -i, -j, -v), resolves the location of a SQL script across multiple directories, handles operational framework logging (DWMSG_* functions), and executes SQL via a launcher helper.
 - AWK: none
-- SQL-expressible: No. Managing file existence checks on the host system, trapping OS signals, and logging to dynamic filesystem paths are not expressible inside BigQuery SQL.
-- Non-SQL side effects: Resolves local/relative paths, manages framework log files, and intercepts OS signals.
-- Against this verdict: A dedicated orchestration tool (like Apache Airflow) could manage this pipeline directly, but reproducing this utility's precise routing and setup logic natively requires a Python wrapper.
+- SQL-expressible: No, this is an orchestration wrapper and utility runner with dynamic file-path resolution and framework-integrated logging, which is not expressible as pure BigQuery SQL.
+- Non-SQL side effects: Dynamic filesystem checks (`-f`), directory changes (`cd`), environment sourcing, custom exit code generation, and process trapping.
+- Against this verdict: If all SQL files executed by this wrapper were known and static, they could be compiled into individual BigQuery SQL jobs, but as a generic utility wrapper, a Python execution script is required to preserve its reusable routing and orchestration logic.
 
 =======================================================================================
 PART A — PYTHON DESIGN DOCUMENT
 =======================================================================================
 
-### 1. SCRIPT OVERVIEW
-This KornShell script (`r_sqlscript`) is a utility wrapper used to execute database SQL scripts within a larger data warehouse architecture. Its primary purpose is to locate a specified SQL file within standard directory layouts (`../sql`, `../mig`, or the current directory), establish a standardized logging context, configure error trapping, and initiate SQL execution via a helper utility (`starteSQLSkript`). With the confirmed migration target of **BigQuery**, this script acts as an orchestration and routing agent to dispatch and track SQL execution against BigQuery.
+1. SCRIPT OVERVIEW
+   The `r_sqlscript` shell script acts as a standardized wrapper utility used to execute external SQL scripts within a batch execution pipeline. It accepts a SQL filename, searches for the file dynamically across a priority list of directories (`../sql`, `../mig`, or the current directory), establishes framework-compliant error trapping, and executes the SQL using a database launcher. Since the target database platform is confirmed as BigQuery, this utility will be migrated into a Python runner that uses the BigQuery client library to read and run the resolved SQL files.
 
-### 2. INVOCATION CONTEXT
-*   **Caller:** Typically invoked by UC4/Automic UNIX jobs (JOBS_UNIX) or manually with arguments.
-*   **Sourced Environment Files:**
-    *   `. $HOME/aktuell/.dw_init`
-        *   `# REVIEW-STRUCT: environment file [.dw_init] not supplied — variables it sets are unknown; do not guess their names or values`
-    *   `. ${DW_DIR_ROOT}/allgemein/is/util/bin/f_alis_msgerr.ksh`
-        *   `# REVIEW-STRUCT: environment file [f_alis_msgerr.ksh] not supplied — variables/functions it sets are unknown`
-    *   `. ${DW_DIR_ROOT}/allgemein/is/util/bin/h_alis_sqlplus.ksh`
-        *   `# REVIEW-STRUCT: environment file [h_alis_sqlplus.ksh] not supplied — variables/functions it sets are unknown`
+2. INVOCATION CONTEXT
+   - Who calls this script: Called by generic UC4/Automic UNIX jobs using JOBS_UNIX. Typical invocation pattern: `r_sqlscript -f <sql_script_name> [-i <sql_parameters>] [-j <job_name>] [-v]`
+   - UC4 native includes: None referenced in the provided extraction.
+   - Environment files sourced:
+     - `. $HOME/aktuell/.dw_init`
+       # REVIEW-STRUCT: environment file .dw_init not supplied — variables it sets are unknown; do not guess their names or values
+     - `. ${DW_DIR_ROOT}/allgemein/is/util/bin/f_alis_msgerr.ksh`
+       # REVIEW-STRUCT: environment file f_alis_msgerr.ksh not supplied — variables/functions it sets are unknown; do not guess their names or values
+     - `. ${DW_DIR_ROOT}/allgemein/is/util/bin/h_alis_sqlplus.ksh`
+       # REVIEW-STRUCT: environment file h_alis_sqlplus.ksh not supplied — defines starteSQLSkript; behaviour unknown
 
-### 3. PARAMETERS / INPUTS
-*   **-f <sql_script_name>**
-    *   Source: Command-line parameter `p_sqlscript` (forced to lowercase via legacy `typeset -l`).
-    *   Used in script: Yes. Resolves path and forms the execution target.
-    *   Python Mapping: `argparse` argument or `sys.argv`.
-*   **-i <sql_parameters>**
-    *   Source: Command-line parameter `p_sqlpar`.
-    *   Used in script: Yes. Forwarded directly to the underlying SQL runner.
-    *   Python Mapping: `argparse` argument or `sys.argv`.
-*   **-j <job_id>**
-    *   Source: Command-line parameter `p_Job` (defaults to "DWH_KORR").
-    *   Used in script: Yes. Converted to uppercase `JobKennung` for logging registration.
-    *   Python Mapping: `argparse` argument or `sys.argv`.
-*   **-v**
-    *   Source: Command-line flag `p_Verbose`.
-    *   Used in script: Yes. If set to 1, prints the log file on exit.
-    *   Python Mapping: `argparse` action "store_true".
+3. PARAMETERS / INPUTS
+   - `p_sqlscript` (Option `-f` via getopts): The name or path of the SQL script to execute. Mandatory. Maps to `argparse` argument.
+   - `p_sqlpar` (Option `-i` via getopts): Optional parameters/arguments passed directly to the SQL script. Maps to `argparse` argument.
+   - `p_Verbose` (Option `-v` via getopts): Verbose flag (0 or 1). If 1, logs will be output to stderr/stdout on failure. Maps to `argparse` argument.
+   - `p_Job` (Option `-j` via getopts): Specific job identifier used for logging and tracking. Defaults to `DWH_KORR` if omitted. Maps to `argparse` argument.
+   - `DW_EintragsNr` (Global Environment Variable): Framework-specific entry/execution sequence number. Generated during execution and exported. Maps to an internal tracking state/variable.
 
-### 4. EXTERNAL COMMANDS / PROGRAMS INVOKED
-*   **`starteSQLSkript $DW_EintragsNr $l_DBskript $p_sqlpar $DW_EintragsNr`**
-    *   Purpose: An external framework script/function (defined in `h_alis_sqlplus.ksh`) that connects to the database and executes the resolved SQL script.
-    *   Python Mapping:
-        `# REVIEW-STRUCT: launcher [starteSQLSkript] invoked — internal behaviour not available in this extraction; confirm logging, error propagation, and credential handling before finalizing the conversion`
-        Since the confirmed target is BigQuery, this call must ultimately be adapted to launch BigQuery jobs (e.g., via `google-cloud-bigquery` Python client library or `bq query`).
-*   **Framework Logging Calls (`DWMSG_...`):**
-    *   `DWMSG_MeldeFehler`, `DWMSG_ErmittleNr`, `DWMSG_Logdateiname`, `DWMSG_ErzeugeEintrag`, `DWMSG_Fehlerbehandlung`, `DWMSG_SetzeStatusOK`
-    *   Purpose: Standard corporate logging/monitoring database registration.
-    *   Python Mapping: Must remain as external module calls, custom wrapper methods, or standard python logging equivalent matching the enterprise standard.
+   MANDATORY AUDIT STEP:
+   No functions containing internal parameter-validation guards of the form `if [ -z "$X" ]` followed by an exit exist in the source code (the only defined function is `usage()`, which contains no logic guards). No review comments for omitted parameter checks are required.
 
-### 5. EMBEDDED SQL
-There is no inline or static SQL defined inside this utility script. All execution targets are dynamic SQL scripts resolved via parameter `-f` and executed by the external runner `starteSQLSkript`.
+4. EXTERNAL COMMANDS / PROGRAMS INVOKED
+   - `dirname`: Native directory parsing command. Will be replaced by Python's `os.path.dirname` or `pathlib.Path`.
+   - `starteSQLSkript` (defined in sourced script `h_alis_sqlplus.ksh`):
+     - Verbatim command: `starteSQLSkript $DW_EintragsNr $l_DBskript $p_sqlpar $DW_EintragsNr >> $LogDatei 2>&1`
+     - Purpose: Dynamically executes the SQL file using the framework's database runner.
+     - Conversion: Since TARGET_PLATFORM is BIGQUERY, this launcher should be implemented as a native BigQuery Python client execution block (`google.cloud.bigquery.Client().query()`).
+     - # REVIEW-STRUCT: launcher starteSQLSkript invoked — internal behaviour not available in this extraction; confirm logging, error propagation, and credential handling before finalizing the conversion
 
-### 6. CONTROL FLOW
-1.  **Environment Setup:** Source `.dw_init`, `f_alis_msgerr.ksh`, and `h_alis_sqlplus.ksh`.
-2.  **Safety Configuration:** Set `set -e` (terminate immediately on error).
-3.  **Command-Line Parsing:** Parse flags using `getopts` loop (`-f`, `-i`, `-j`, `-v`, `-h`).
-4.  **Parameter Validation:**
-    *   If argument parsing encountered unknown/missing parameters, execute `DWMSG_MeldeFehler` with code, print `usage()`, and exit with `ErrNr`.
-5.  **Change Directory:** Change working directory to the directory where the wrapper script itself resides (`dirname $0`).
-6.  **Path Resolution (Relative/Absolute Lookup):**
-    *   Check if `p_sqlscript` has a directory path.
-    *   If relative to `.`, look up sequentially in `../sql/`, then `../mig/`, then local `.`.
-    *   Assign the resolved path to `l_DBskript`.
-7.  **File Existence Logic Check:**
-    *   `# REVIEW: legacy validation logic seems inverted or incomplete (checks if file exists, then sets unused/undefined ErrArg p_Kuerzel, but does not exit).`
-8.  **Job Identification:** Standardize `JobKennung` (to uppercase). Fall back to "DWH_KORR" if not specified.
-9.  **Logging Registration:**
-    *   Execute `DWMSG_ErmittleNr` to generate an execution sequence ID (`DW_EintragsNr`).
-    *   Determine the log file name using `DWMSG_Logdateiname`.
-    *   Create a log record using `DWMSG_ErzeugeEintrag`.
-10. **Trap Configuration:**
-    *   Establish `INT` (interrupt) and `ERR` (execution error) trap functions targeting `DWMSG_Fehlerbehandlung` to capture run failures.
-    *   If verbose is enabled, append log output printing to the trap actions.
-11. **Job Execution:**
-    *   Execute the SQL script by invoking `starteSQLSkript` with parsed options and redirect standard output/error to the log file.
-12. **Success Finalization:**
-    *   Set status to OK in framework via `DWMSG_SetzeStatusOK`.
-    *   Reset traps back to default behavior.
-    *   Print clean exit success message.
+5. EMBEDDED SQL
+   - No inline SQL statements are present in `r_sqlscript` itself. The SQL is loaded from the external path dynamically resolved at runtime.
 
-### 7. ERROR HANDLING & EXIT CODES
-*   **Shell Error Capture:** `set -e` triggers instant abort on unhandled statement failure.
-*   **Trap System:** `trap` catches `ERR` and `INT` to dump the log (if verbose) and run corporate cleanups via `DWMSG_Fehlerbehandlung`.
-*   **Argument Error Codes:**
-    *   `192`: Unknown parameter.
-    *   `193`: Missing parameter argument.
-    *   `198`: Parameter value unknown (triggered in legacy if the SQL file actually existed).
-*   **Python Translation:** Implement inside a `try/except` block catching `subprocess.CalledProcessError` or BigQuery API client exceptions, forwarding failures to standard error, executing equivalent cleanup handlers, and returning non-zero exit codes on failure.
+6. CONTROL FLOW
+   1. **Initialization & Sourcing**: Sours `.dw_init`, `f_alis_msgerr.ksh`, and `h_alis_sqlplus.ksh` (represented in Python as importing equivalent wrapper modules or logging wrappers).
+   2. **Parameter Parsing**: Parses arguments `-f`, `-i`, `-j`, `-v`, and `-h` using standard argument parsing (`argparse`).
+   3. **Input Validation**:
+      - If required parameters are missing or invalid options are supplied, registers the error via `DWMSG_MeldeFehler` and exits.
+   4. **Path Resolution**:
+      - Changes execution context to the script's directory.
+      - If the directory of the target SQL file is `.`, searches sequentially for:
+        1. `../sql/<sql_filename>`
+        2. `../mig/<sql_filename>`
+        3. `./<sql_filename>`
+      - Otherwise, defaults to the literal input path.
+   5. **File Existence Validation**:
+      - Checks if the resolved path is a file. If it exists, the script executes:
+        `ErrNr=198`
+        `ErrArg="$p_Kuerzel"`
+        # REVIEW: legacy script logic sets ErrNr=198 when the SQL script file EXISTS, and references undefined variable p_Kuerzel. Verify if this check is inverted or obsolete.
+   6. **Job Identification**: Sets `JobKennung` to `p_Job` (uppercase) if provided, otherwise defaults to `DWH_KORR`.
+   7. **Logging Setup**:
+      - Calls framework function `DWMSG_ErmittleNr` to generate `DW_EintragsNr`.
+      - Calls `DWMSG_Logdateiname` to define `LogDatei`.
+      - Logs execution start using `DWMSG_ErzeugeEintrag` and redirects output to `LogDatei`.
+   8. **Trap Setup**: Configures system traps to trigger `DWMSG_Fehlerbehandlung` upon receiving SIGINT (`INT`) or encountering shell runtime errors (`ERR`).
+   9. **SQL Execution**: Invokes `starteSQLSkript` with resolved parameters and routes standard outputs to `LogDatei`.
+   10. **Success Cleanup**: Sets status to OK via `DWMSG_SetzeStatusOK`, clears signal handlers, and exits with code 0.
 
-### 8. OUTPUTS / SIDE EFFECTS
-*   **Log Files:** Writes and appends framework and execution outputs to `$LogDatei`.
-*   **Database Changes:** Side effects occur inside the targets executed by `starteSQLSkript` on BigQuery.
+7. ERROR HANDLING & EXIT CODES
+   - KornShell detects errors using `set -e` and trap handlers on `ERR` and `INT`.
+   - Native error framework outputs and registration are conducted via `DWMSG_MeldeFehler` and `DWMSG_Fehlerbehandlung`.
+   - In Python, this must be structured using standard try/except blocks wrapping the entire execution. Failures in database queries (via `google.cloud.bigquery`) or missing files will raise standard Python exceptions (`FileNotFoundError`, `GoogleCloudError`), which will trigger equivalent logging calls and execute with non-zero exit codes.
 
-### 9. BUSINESS SUMMARY
-*   Serves as a generic launcher utility to invoke target SQL scripts.
-*   Resolves execution target paths across multiple fallback directories (`../sql`, `../mig`, `.`) to support flexible deployments.
-*   Registers program executions and results in the central DWH logging database.
-*   Implements standardized signal capturing and logging conventions for easy production support and debugging.
+8. OUTPUTS / SIDE EFFECTS
+   - Writes all stdout/stderr logs into the dynamic `$LogDatei` path.
+   - Performs database alterations as defined inside the dynamically executed SQL target scripts.
 
----
+9. BUSINESS SUMMARY
+   - Establishes a unified, safe runtime interface for database updates within the UC4 scheduler.
+   - Provides decoupled, configuration-free execution by dynamically locating SQL files across relative directories (`../sql`, `../mig`).
+   - Ensures rigorous enterprise operational tracking by integrating directly with log managers and monitoring tools (`DWMSG_*`).
+   - Standardizes error recovery and failure transparency across different database interaction scopes.
 
-### 10. PSEUDOCODE (Python Style)
+=======================================================================================
+PYTHON PSEUDOCODE
+=======================================================================================
 
 ```python
-#!/usr/bin/env python3
+# Step 1: Import modern equivalents of system and database libraries
 import sys
 import os
 import argparse
 import subprocess
-import shutil
+from pathlib import Path
+from google.cloud import bigquery
 
-# REVIEW-STRUCT: environment file [.dw_init] not supplied — variables it sets are unknown; do not guess their names or values
-# REVIEW-STRUCT: environment file [f_alis_msgerr.ksh] not supplied — variables/functions it sets are unknown
-# REVIEW-STRUCT: environment file [h_alis_sqlplus.ksh] not supplied — variables/functions it sets are unknown
+# REVIEW-STRUCT: environment file .dw_init not supplied — variables it sets are unknown; do not guess their names or values
+# REVIEW-STRUCT: environment file f_alis_msgerr.ksh not supplied — variables/functions it sets are unknown; do not guess their names or values
+# REVIEW-STRUCT: environment file h_alis_sqlplus.ksh not supplied — defines starteSQLSkript; behaviour unknown
 
-# Step 1: Framework Stub functions representing sourced behavior
-def dwmsg_melde_fehler(eintrags_nr, severity, err_nr, err_arg):
-    # Dummy representation of DWMSG_MeldeFehler
-    print(f"Error logged: {severity} {err_nr} {err_arg}", file=sys.stderr)
+# Mocking DWMSG framework logging methods that would map to external modules or enterprise API calls
+def DW_MSG_MeldeFehler(eintrags_nr, severity, err_nr, err_arg):
+    print(f"Error registered: {severity} {err_nr} {err_arg}", file=sys.stderr)
 
-def dwmsg_ermittle_nr():
-    # Dummy representation of DWMSG_ErmittleNr (Returns execution ID)
+def DWMSG_ErmittleNr():
+    # In legacy, this retrieves a unique run ID from a sequence or database
     return 12345
 
-def dwmsg_logdateiname(job_kennung, eintrags_nr):
-    # Dummy representation of DWMSG_Logdateiname
+def DWMSG_Logdateiname(job_kennung, eintrags_nr):
     return f"/tmp/log_{job_kennung}_{eintrags_nr}.log"
 
-def dwmsg_erzeuge_eintrag(eintrags_nr, job_kennung, script_desc, log_file):
-    # Dummy representation of DWMSG_ErzeugeEintrag
-    pass
+def DWMSG_ErzeugeEintrag(eintrags_nr, job_kennung, script_run, log_file):
+    print(f"Log entry created: {job_kennung} - {script_run} -> {log_file}")
 
-def dwmsg_fehlerbehandlung(eintrags_nr):
-    # Dummy representation of DWMSG_Fehlerbehandlung
-    pass
+def DW_MSG_Fehlerbehandlung(eintrags_nr, log_file, verbose):
+    print(f"Running error recovery for ID {eintrags_nr}", file=sys.stderr)
+    if verbose == 1:
+        if os.path.exists(log_file):
+            with open(log_file, 'r') as f:
+                print(f.read(), file=sys.stderr)
 
-def dwmsg_setze_status_ok(eintrags_nr):
-    # Dummy representation of DWMSG_SetzeStatusOK
-    pass
-
-# REVIEW-STRUCT: launcher [starteSQLSkript] invoked — internal behaviour not available in this extraction; confirm logging, error propagation, and credential handling before finalizing the conversion
-def starte_sql_skript(eintrags_nr, db_skript, sql_par, log_file):
-    # This must execute the SQL script using the google-cloud-bigquery client library
-    # because the confirmed target platform is BIGQUERY.
-    pass
-
-def usage():
-    print("""
-   Programm: Ausführung Script r_sqlscript
-   Version: 5.0.0
-   Aufruf: r_sqlscript.py Parameter
-
-   Das als Parameter -f  übergebene SQL-Script wird ausgeführt.
-   ...
-   Parameter:
-       -f     hier wird der Name des SQL-Scripts angegeben
-       -i     mögliche Parameter für das SQL-Script 
-       -j     Jobkennung (default DWH_KORR)
-       -h     zeigt diese Seite an
-       -v     verbose (zeigt bei Fehler sofort die Logdatei an)
-""")
+def DWMSG_SetzeStatusOK(eintrags_nr):
+    print(f"Status set to OK for run {eintrags_nr}")
 
 def main():
-    # Step 2: Initialize default variables
-    p_verbose = False
-    p_sqlscript = None
-    p_sqlpar = ""
-    p_job = "DWH_KORR"
-    err_nr = 0
-    err_arg = ""
-
-    # Step 3: Parse Arguments
-    parser = argparse.ArgumentParser(add_help=False)
-    parser.add_argument('-f', dest='f_script')
-    parser.add_argument('-i', dest='i_param')
-    parser.add_argument('-j', dest='j_job')
-    parser.add_argument('-v', action='store_true', dest='verbose')
-    parser.add_argument('-h', action='store_true', dest='help')
-
+    # Step 2: Parse command-line parameters
+    parser = argparse.ArgumentParser(description="Ausführung Script r_sqlscript equivalent")
+    parser.add_argument("-f", dest="p_sqlscript", required=True, help="SQL-Script Name")
+    parser.add_argument("-i", dest="p_sqlpar", default="", help="SQL Parameter")
+    parser.add_argument("-j", dest="p_Job", default="DWH_KORR", help="Jobkennung")
+    parser.add_argument("-v", dest="p_Verbose", action="store_true", help="Verbose")
+    
+    # Handle parsing errors
     try:
-        args, unknown = parser.parse_known_args()
-    except Exception as e:
-        # Map unknown argument handling
-        dwmsg_melde_fehler(0, "E", 192, str(e))
-        usage()
+        args = parser.parse_args()
+    except SystemExit:
+        DW_MSG_MeldeFehler(0, "E", 192, "Invalid arguments")
         sys.exit(192)
 
-    if args.help:
-        usage()
-        sys.exit(0)
+    p_sqlscript = args.p_sqlscript
+    p_sqlpar = args.p_sqlpar
+    p_Job = args.p_Job
+    p_Verbose = 1 if args.p_Verbose else 0
 
-    if not args.f_script:
-        # Required argument missing
-        dwmsg_melde_fehler(0, "E", 193, "-f")
-        usage()
-        sys.exit(193)
-
-    p_sqlscript = args.f_script.lower() # typeset -l equivalent
-    if args.i_param:
-        p_sqlpar = args.i_param
-    if args.j_job:
-        p_job = args.j_job
-    p_verbose = args.verbose
-
-    # Step 4: Resolve directory path logic
-    script_dir = os.path.dirname(os.path.realpath(__file__))
+    # Step 3: Change directory to script's location and resolve SQL script path
+    script_dir = Path(__file__).resolve().parent
     os.chdir(script_dir)
 
-    l_db_skript = p_sqlscript
-    if os.path.dirname(p_sqlscript) in ['.', '']:
-        test_path_sql = os.path.join("..", "sql", p_sqlscript)
-        test_path_mig = os.path.join("..", "mig", p_sqlscript)
-        
-        if os.path.isfile(test_path_sql):
-            l_db_skript = test_path_sql
-        elif os.path.isfile(test_path_mig):
-            l_db_skript = test_path_mig
+    sql_path = Path(p_sqlscript)
+    l_DBskript = None
+
+    if sql_path.parent == Path('.'):
+        # Search priority: ../sql, then ../mig, then current directory
+        opt1 = script_dir.parent / "sql" / p_sqlscript
+        opt2 = script_dir.parent / "mig" / p_sqlscript
+        opt3 = script_dir / p_sqlscript
+
+        if opt1.is_file():
+            l_DBskript = opt1
+        elif opt2.is_file():
+            l_DBskript = opt2
         else:
-            l_db_skript = p_sqlscript
+            l_DBskript = opt3
+    else:
+        l_DBskript = sql_path
 
-    # Step 5: File Validation (Legacy logic preservation)
-    # REVIEW: legacy validation logic seems inverted or incomplete (checks if file exists, then sets unused/undefined ErrArg p_Kuerzel, but does not exit).
-    if os.path.isfile(l_db_skript):
+    # Step 4: Replicate legacy file existence checks and edge behavior
+    # REVIEW: legacy script logic sets ErrNr=198 when the SQL script file EXISTS, and references undefined variable p_Kuerzel. Verify if this check is inverted or obsolete.
+    if l_DBskript.is_file():
+        # Representing legacy behavior verbatim
         err_nr = 198
-        err_arg = ""  # p_Kuerzel was undefined in legacy ksh
+        p_Kuerzel = "" # Undefined in legacy script, initialized here to prevent runtime crash
+        DW_MSG_MeldeFehler(0, "E", err_nr, p_Kuerzel)
+        # In legacy, this block sets ErrNr but does not exit immediately, continuing execution.
 
-    # Step 6: Logging registration
-    job_kennung = p_job.upper() # typeset -u JobKennung
-    dw_eintrags_nr = dwmsg_ermittle_nr()
-    log_datei = dwmsg_logdateiname(job_kennung, dw_eintrags_nr)
-    
-    dwmsg_erzeuge_eintrag(dw_eintrags_nr, job_kennung, f"r_sqlscript_{l_db_skript}", log_datei)
+    # Step 5: Format Job Kennung
+    JobKennung = p_Job.upper()
 
     print("----------------- Parameter -----------------")
-    print(f"Jobkennung     : {job_kennung}")
-    print(f"DB-Skript      : {l_db_skript}")
+    print(f"Jobkennung     : {JobKennung}")
+    print(f"DB-Skript      : {l_DBskript}")
     print("---------------------------------------------")
 
-    # Step 7: Execute with Trap equivalents
+    # Step 6: Initialize Logging Framework Parameters
+    DW_EintragsNr = DWMSG_ErmittleNr()
+    LogDatei = DWMSG_Logdateiname(JobKennung, DW_EintragsNr)
+    DWMSG_ErzeugeEintrag(DW_EintragsNr, JobKennung, f"r_sqlscript_{l_DBskript}", LogDatei)
+
+    # Step 7: Core Job Block with exception handling (Python equivalent to trap INT ERR)
     try:
         print("----------------- Job -----------------------")
-        print(f"Job-Nr    : '{dw_eintrags_nr}'")
-        print(f"Logdatei  : '{log_datei}'")
+        print(f"Job-Nr    : '{DW_EintragsNr}'")
+        print(f"Logdatei  : '{LogDatei}'")
         print("---------------------------------------------")
 
-        # Execute target SQL against BigQuery via helper
-        starte_sql_skript(dw_eintrags_nr, l_db_skript, p_sqlpar, log_datei)
+        # Step 8: Execute SQL Script (Representing the legacy starteSQLSkript)
+        # REVIEW-STRUCT: launcher starteSQLSkript is resolved to native google.cloud.bigquery client calls since target platform is BIGQUERY
+        if not l_DBskript.exists():
+            raise FileNotFoundError(f"SQL file not found: {l_DBskript}")
+        
+        with open(l_DBskript, 'r') as sql_file:
+            query_text = sql_file.read()
 
-        # Step 8: Finalize OK status
-        dwmsg_setze_status_ok(dw_eintrags_nr)
-        print("Die Abarbeitung des Rahmenskriptes ist ohne erkennbare Fehler beendet")
-        sys.exit(0)
+        # Instantiate BigQuery Client
+        client = bigquery.Client()
+        
+        # Format parameters if any are passed. Since the wrapper passes raw strings, 
+        # actual deployment should configure QueryJobConfig parameterized values if needed.
+        query_config = bigquery.QueryJobConfig()
+        
+        print(f"Executing Query: {l_DBskript} on BigQuery")
+        query_job = client.query(query_text, job_config=query_config)
+        query_job.result() # Wait for job completion. Will raise exception on SQL failure.
 
-    except (Exception, KeyboardInterrupt) as err:
-        # Step 9: Catch failures and emulate TRAP behavior
-        dwmsg_fehlerbehandlung(dw_eintrags_nr)
-        print("!OSFEHLER / FEHLER gemeldet!", file=sys.stderr)
-        if p_verbose:
-            # Dump log contents to console if verbose flag is set
-            if os.path.exists(log_datei):
-                with open(log_datei, 'r') as f:
-                    print(f.read(), file=sys.stderr)
+    except Exception as e:
+        # Error handling path equivalent to trap_err / trap_os
+        print(f"!OSFEHLER / !FEHLER gemeldet!: {str(e)}", file=sys.stderr)
+        DW_MSG_Fehlerbehandlung(DW_EintragsNr, LogDatei, p_Verbose)
         sys.exit(1)
+
+    # Step 9: Post-execution success procedures
+    DWMSG_SetzeStatusOK(DW_EintragsNr)
+    print("Die Abarbeitung des Rahmenskriptes ist ohne erkennbare Fehler beendet")
 
 if __name__ == "__main__":
     main()
 ```
 
-### Execution order
-The target orchestration (Apache Airflow / Cloud Composer DAG) must preserve the execution sequence established in the legacy dependency graph:
-1. **`DW.DWH_ABTN_SMART_KUBI.xml`** maps to the Airflow DAG container itself.
-2. **`d_abtn_x_smart_kubi.sql`** maps to a BigQuery execution task within the DAG.
-3. **`r_sqlscript`** maps to a Python execution operator (or standard Python run task) executing the migrated `r_sqlscript.py` script.
-4. **`.dw_init`** is represented by environmental and DAG variables.
-5. **`f_alis_msgerr.ksh`** and **`h_alis_sqlplus.ksh`** are migrated as shared library modules or helper classes imported by the Python script to handle standard logging and SQL execution operations on BigQuery.
-
-### Schedule & variables
-The migrated Python script and Cloud Composer DAG must receive and resolve the following variables through native mechanisms (such as Airflow DAG `params` or standard Python `argparse`/environment variables):
-*   **`DWH_JOB_KENNUNG`** = `'ABTN_SMART_KUBI'`
-*   **`cdate`** = `'SYS_DATE("YYYYMMDD")'`: Sourced dynamically at runtime using Airflow template variables (e.g., `{{ ds_nodash }}`) or Python's `datetime.date.today().strftime('%Y%m%d')`.
-*   **`cmonth`** = `'SUBSTR(&cdate,1,6)'`: Derived dynamically by parsing the first six characters of `cdate`.
-*   **`cday`** = `'SUBSTR(&cdate,7,2)'`: Derived dynamically by parsing the last two characters of `cdate`.
-*   **`first`** = `'01'`: Re-initialized literal constant.
-*   **`cmonth`** = `'&cmonth&first'`: Dynamically concatenated date string.
-*   **`cmonth`** = `'SUB_DAYS(&cmonth,1)'`: Date subtraction operation performed dynamically using Python's `datetime` package.
-*   **`cmonth`** = `'SUBSTR(&cmonth,1,6)'`: Extracted previous month code in `YYYYMM` format.
-*   **`MONATSID`** = `'&cmonth'`: Standard reporting month ID used as the dynamic query parameter.
-
-### Lineage
-The script interacts with the following components as defined in the legacy lineages:
-*   **Upstream Configuration:** Sourced from `.dw_init` (uses configuration).
-*   **Downstream / Invoked Helpers:**
-    *   `f_alis_msgerr.ksh` (invoked helper script)
-    *   `h_alis_sqlplus.ksh` (invoked SQL runner utility)
-
-### Cross-file dependencies
-*   **`local/home/gurunathan_t/kubi/r_sqlscript`** relies on `.dw_init` to retrieve global environment variables (e.g., `DW_DIR_ROOT`).
-*   The script depends on the error-reporting routines defined in `f_alis_msgerr.ksh` (`DWMSG_MeldeFehler`, `DWMSG_Fehlerbehandlung`, etc.) and the SQL script launcher functions in `h_alis_sqlplus.ksh` (`starteSQLSkript`) to complete its processing lifecycle.
-
-### Target file plan
-*   **Target File Path:** `local/home/gurunathan_t/kubi/r_sqlscript.py`
-    *   **Language:** Python 3
-    *   **Source File:** `local/home/gurunathan_t/kubi/r_sqlscript`
-
-### Environment-specific values
-Classified based on their target operational roles:
-
-1. **GLOBAL**
-   *   **`GCP_PROJECT`**: The target BigQuery project. Sourced at runtime via `os.environ.get("GCP_PROJECT")` or Airflow's `Variable.get("GCP_PROJECT")`.
-   *   **`GCS_BUCKET`**: The environment-wide storage bucket for logs and artifacts. Sourced via `os.environ.get("GCS_BUCKET")`.
-   *   **`DW_DIR_ROOT`**: Sourced via standard environment variable read `os.environ.get("DW_DIR_ROOT")` or consolidated config.
-
-2. **JOB-SPECIFIC**
-   *   **`JobKennung` / `DWH_JOB_KENNUNG`**: Assigned to `'ABTN_SMART_KUBI'` or passed via the `-j` command-line argument. Included in the python configuration dictionary.
-   *   **`l_db_skript`**: The target SQL script resolved via lookup paths. Parsed from input arguments.
-   *   **`DW_EintragsNr`**: The dynamic tracking execution ID generated at runtime.
-
 ### File Disposition
+
 | Source File Path | Target File / Action | Purpose / Reason for Action |
 | :--- | :--- | :--- |
-| `local/home/gurunathan_t/kubi/r_sqlscript` | `local/home/gurunathan_t/kubi/r_sqlscript.py` | Converted to Python to manage argument parsing, relative directory resolution, execution ID generation, logging database registration, and BigQuery execution orchestration. |
+| `local/home/gurunathan_t/kubi/r_sqlscript` | `local/home/gurunathan_t/kubi/r_sqlscript.py` | Converts the KSH utility wrapper to a Python runner that dynamically resolves, parameters, and executes external SQL scripts against BigQuery, maintaining framework logging and signal trapping equivalents. |
 
-### HARD RULES
-*   The original Ab Initio, shell scripts, and SQL code logic are not duplicated.
-*   Only the required `ksh_design_python` tool was called.
-*   No other files (e.g. `f_alis_msgerr.ksh`, `h_alis_sqlplus.ksh`) have been planned, designed, or listed in the File Disposition Table since they belong to different design runs.
-*   No alternative target library or implementation strategy has been evaluated.
-*   Original German print messages, if any, must be retained verbatim in the final code execution outputs.
+---
+
+### Execution Order
+The target orchestration (e.g., Cloud Composer / Airflow) must preserve the 6-step execution sequence from the legacy dependency graph:
+1. **DW.DWH_ABTN_SMART_KUBI.xml** -> Mapped to the parent Airflow DAG definition and scheduling.
+2. **d_abtn_x_smart_kubi.sql** -> The target SQL query executed by the workflow runner.
+3. **r_sqlscript** -> Mapped to the execution task invoking the migrated Python script (`local/home/gurunathan_t/kubi/r_sqlscript.py`).
+4. **.dw_init** -> Sourced configurations mapped to Airflow Variables or environment variables.
+5. **f_alis_msgerr.ksh** -> Core error-logging framework routines mapped to Python standard logging or custom hooks.
+6. **h_alis_sqlplus.ksh** -> SQL*Plus launcher routines replaced natively by the Python Google Cloud BigQuery client library.
+
+---
+
+### Schedule & Variables
+The variables generated by the scheduler (UC4) must be dynamically computed in the target environment (e.g., using Apache Airflow dynamic context / Jinja macros) and supplied as inputs or environment parameters to the Python job task:
+
+*   **DWH_JOB_KENNUNG**: `'ABTN_SMART_KUBI'` (Static job identification string).
+*   **cdate**: Dynamic date representation in `YYYYMMDD` format. Calculated in Airflow using `{{ ds_nodash }}` or current execution date context.
+*   **cmonth**: Extracted from `cdate` (first 6 characters, e.g., `YYYYMM`).
+*   **cday**: Extracted from `cdate` (last 2 characters, e.g., `DD`).
+*   **first**: Static string value `'01'`.
+*   **cmonth (Intermediate manipulation)**: Initialized as `YYYYMM` + `01`, then decremented by 1 day (subtracting 1 day using date manipulation logic to resolve the previous month's ending date).
+*   **cmonth (Final value)**: Extracted from the decremented date (first 6 characters, representing the prior month in `YYYYMM` format).
+*   **MONATSID**: Set to the resolved value of `cmonth` (prior month `YYYYMM` string).
+
+These variables must be passed to the migrated script using Airflow's environment mappings or task execution `params`.
+
+---
+
+### Lineage
+Based on legacy code structures, the script interfaces with the following dependencies:
+*   **Upstream Sourced Framework Modules**:
+    *   `FILE:f_alis_msgerr.ksh` (provides logging/monitoring error handlers: `DWMSG_MeldeFehler`, `DWMSG_ErmittleNr`, `DWMSG_Logdateiname`, `DWMSG_ErzeugeEintrag`, `DWMSG_Fehlerbehandlung`, `DWMSG_SetzeStatusOK`).
+    *   `FILE:h_alis_sqlplus.ksh` (provides launcher execution routines: `starteSQLSkript`).
+    *   `FILE:.dw_init` (establishes standard base path and system configurations).
+
+---
+
+### Cross-File Dependencies
+*   **Shared SQL execution schema**: The script requires access to external `.sql` scripts located in the runtime search paths (such as `../sql/` or `../mig/` relative to the script execution path).
+*   **Shared framework tracking**: The legacy system uses operational status tracking via environment procedures. The migrated script maps these actions to global cloud-compatible monitoring (e.g., Cloud Logging or central metadata tracking).
+
+---
+
+### Target File Plan
+*   **Target File Path**: `local/home/gurunathan_t/kubi/r_sqlscript.py`
+    *   **Language**: Python
+    *   **Source File**: `local/home/gurunathan_t/kubi/r_sqlscript`
+
+---
+
+### Environment-Specific Values
+
+#### GLOBAL (Environment-Wide Configuration)
+*   **GCP_PROJECT**: The target BigQuery Google Cloud Project ID.
+    *   *Sourcing Method*: Sourced via environment variable `os.environ.get("GCP_PROJECT")` or Cloud Composer execution configs.
+*   **DW_DIR_ROOT**: The legacy root path containing shared logging libraries.
+    *   *Sourcing Method*: Map to repository root folder or local environment paths where utility scripts are packaged, retrieved via `os.environ.get("DW_DIR_ROOT")`.
+*   **HOME**: Legacy home directory context.
+    *   *Sourcing Method*: Standard OS variable `os.environ.get("HOME")` or local directory workspace structures.
+
+#### JOB-SPECIFIC (Job Runtime Parameters)
+*   **JobKennung**: The specific monitoring name for execution logs (defaults to `'DWH_KORR'` if not provided via parameter `-j`).
+    *   *Sourcing Method*: Passed as an execution argument (`-j` / `--job`) and parsed via `argparse`.
+*   **l_DBskript**: The dynamically resolved filepath of the target `.sql` query to execute.
+    *   *Sourcing Method*: Resolved dynamically within the execution directory using relative path probing (`../sql`, `../mig`).
+*   **p_sqlpar**: Argument string passed directly to the executed SQL script.
+    *   *Sourcing Method*: Passed as an execution argument (`-i` / `--input`) and parsed via `argparse`.
