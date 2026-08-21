@@ -1,0 +1,1 @@
+ERROR: migration notes skipped for DW.DWH_DUMMY_ABSD_PLATO_TARIFE — build phase failed or produced no output.
