@@ -1,42 +1,54 @@
+-- ===================================================================
+-- Datei:  d_all_types.sql
+-- Datum:  28.08.2026
+-- Autor:  DataStreak Discovery Engine Showcase
+-- ===================================================================
+--
+-- Zweck:
+--   Refresh der ALL_TYPES-Zwischentabelle aus der Rohdatentabelle,
+--   Teil der Showcase-Kette (SQL-Schritt des ALL_TYPES_MASTER Jobs).
+----------------------------------------------------------------------
+
+SELECT 'tabelle von vorherigem lauf loeschen' AS log_message;
+
+-- Emulating WHENEVER SQLERROR CONTINUE for the initial truncate step
 BEGIN
-  -- Log progress of truncate step
-  SELECT 'tabelle von vorherigem lauf loeschen' AS execution_step;
+  EXECUTE IMMEDIATE FORMAT("""
+    TRUNCATE TABLE `%s.%s.sof$ta_all_types`
+  """, @GCP_PROJECT, @BQ_DATASET);
+EXCEPTION WHEN ERROR THEN
+  -- Error is intentionally caught and swallowed, execution proceeds
+  -- (Equivalent to WHENEVER SQLERROR CONTINUE)
+  SELECT 'Truncate failed or table not found, proceeding anyway.' AS log_message;
+END;
 
-  -- Clear staging target table
-  EXECUTE IMMEDIATE CONCAT('TRUNCATE TABLE `', @gcp_project, '.', @bq_dataset, '.sof$ta_all_types`');
+SELECT 'zieltabelle befuellen' AS log_message;
 
-  -- Log progress of insert step
-  SELECT 'zieltabelle befuellen' AS execution_step;
+-- Emulating WHENEVER SQLERROR EXIT FAILURE with a transaction block
+BEGIN
+  BEGIN TRANSACTION;
 
-  -- Populating the target staging table with qualified raw data
-  EXECUTE IMMEDIATE CONCAT(
-    'INSERT INTO `', @gcp_project, '.', @bq_dataset, '.sof$ta_all_types` (',
-    '  all_types_id,',
-    '  source_system,',
-    '  processed_at',
-    ') ',
-    'SELECT ',
-    '  r.all_types_id, ',
-    '  r.source_system, ',
-    '  CURRENT_DATETIME() ',
-    'FROM ',
-    '  `', @gcp_project, '.', @bq_dataset, '.cds$ta_all_types_raw` AS r ',
-    'WHERE ',
-    '  r.status = \'READY\''
-  );
+  EXECUTE IMMEDIATE FORMAT("""
+    INSERT INTO `%s.%s.sof$ta_all_types` (
+      all_types_id,
+      source_system,
+      processed_at
+    )
+    SELECT
+      r.all_types_id,
+      r.source_system,
+      CURRENT_DATETIME()
+    FROM
+      `%s.%s.cds$ta_all_types_raw` AS r
+    WHERE
+      r.status = 'READY'
+  """, @GCP_PROJECT, @BQ_DATASET, @GCP_PROJECT, @BQ_DATASET);
 
-  -- Log successful completion
-  SELECT 'Verarbeitung fehlerfrei beendet.' AS execution_status;
+  COMMIT TRANSACTION;
+
+  SELECT 'Verarbeitung fehlerfrei beendet.' AS log_message;
 
 EXCEPTION WHEN ERROR THEN
-  -- Implements equivalent of WHENEVER SQLERROR EXIT FAILURE
-  SELECT 
-    CONCAT(
-      'Script Execution Failed. Error: ', @@error.message, 
-      ' | Code: ', CAST(@@error.code AS STRING), 
-      ' | Statement: ', @@error.statement_text
-    ) AS error_diagnostic;
-  
-  -- Re-throw exception to guarantee the process fails the orchestrator run
-  RAISE USING MESSAGE = CONCAT('ALL_TYPES_MASTER Job Step Failed: ', @@error.message);
+  ROLLBACK TRANSACTION;
+  ERROR(FORMAT('Migration Transaction aborted with error: %s', @@error.message));
 END;
