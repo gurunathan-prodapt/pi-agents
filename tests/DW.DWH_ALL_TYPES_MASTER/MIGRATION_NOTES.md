@@ -1,134 +1,145 @@
 # Migration Notes: DW.DWH_ALL_TYPES_MASTER
 
-These migration notes detail the transition of the legacy UC4 job `DW.DWH_ALL_TYPES_MASTER` and its associated scripts (KSH, AWK, Oracle SQL) to Google Cloud Platform (GCP) using Apache Airflow (Cloud Composer), Dataproc Serverless (PySpark), and Google BigQuery.
+This document details the migration of the legacy UC4/Automic workload `DW.DWH_ALL_TYPES_MASTER` to Google Cloud Platform (GCP). 
 
 ---
 
 ## 1. Summary
 
-The legacy UC4 job `DW.DWH_ALL_TYPES_MASTER` has been migrated from an on-premises Unix/Oracle environment to **Google Cloud Platform (GCP)**. 
+The legacy workload `DW.DWH_ALL_TYPES_MASTER` is a showcase workflow that orchestrates an Ab Initio graph, an Oracle SQL database refresh, and a Korn Shell (KSH) script containing AWK post-processing logic. 
 
-This job is a showcase pipeline that combines Ab Initio graph execution, environment initialization, custom AWK data validation/transformation, and Oracle SQL database operations. In the target architecture:
-*   **Orchestration** is handled by **Apache Airflow (Cloud Composer)**.
-*   **Data Processing and Shell Logic** are executed via **Python 3** running on **Google Cloud Dataproc**.
-*   **Database Operations** are executed natively in **Google BigQuery** using BigQuery Scripting.
+This workload has been fully migrated from its on-premises Unix/Oracle/Ab Initio environment to a modern, cloud-native architecture on **Google Cloud Platform (GCP)**.
+
+### Target Architecture Mapping
+* **Orchestration**: UC4 scheduling and job definitions are migrated to an **Apache Airflow DAG** hosted on **Google Cloud Composer**.
+* **Ab Initio Graph**: The legacy `all_types_graph` is migrated to a **PySpark application** executed on **Google Cloud Dataproc Serverless**.
+* **Database Operations**: Oracle SQL*Plus scripts are migrated to native **BigQuery SQL** utilizing BigQuery Scripting for procedural control.
+* **Shell & AWK Processing**: The KSH wrapper and AWK transformation scripts are migrated to **Python 3 scripts** executed within the Cloud Composer environment.
 
 ---
 
 ## 2. Generated Artifacts
 
-The migration process generated the following artifacts, preserving the original directory structure where applicable:
+The migration process generated the following files, each playing a specific role in the target environment:
 
-| Generated File Path | Target Language / Format | Role / Description |
+| Target File Path | Language / Tech | Role / Description |
 | :--- | :--- | :--- |
-| `DWH_ALL_TYPES_JOB/dw_dwh_all_types_master.py` | Python (Airflow DAG) | The master orchestrator DAG that defines the sequential execution chain, task dependencies, and environment configurations. |
-| `dw_init.py` | Python 3 | Replaces the legacy `.dw_init` shell script. Dynamically maps legacy local directory paths to Google Cloud Storage (GCS) bucket paths. |
-| `isall/aufbereitung/awk/k_all_types_transform.py` | Python 3 | Replaces `k_all_types_transform.awk`. Validates that each record has exactly 12 fields, prepends `"D;"` to valid records, and raises process-level exit codes (`exit 2`) on failure. |
-| `isall/aufbereitung/bin/r_all_types_master.py` | Python 3 | Replaces `r_all_types_master.ksh`. Acts as a checkpoint logging harness to maintain legacy log formats and operational audit trails. |
-| `isall/aufbereitung/sql/d_all_types.sql` | BigQuery SQL (Scripting) | Replaces the Oracle SQL script. Implements table truncation, conditional record insertion, transaction control, and error handling. |
+| `DWH_ALL_TYPES_JOB/dw_dwh_all_types_master.py` | Python (Airflow DAG) | The master orchestration DAG. Defines the execution sequence, task dependencies, and environment variables. |
+| `isall/aufbereitung/bin/r_all_types_master.py` | Python 3 | Replaces the legacy KSH wrapper (`r_all_types_master.ksh`). Coordinates the BigQuery SQL execution and invokes the AWK-replacement Python script. |
+| `isall/aufbereitung/awk/k_all_types_transform.py` | Python 3 | Replaces the legacy AWK script (`k_all_types_transform.awk`). Performs streaming, line-by-line validation and formatting of the exported CSV data. |
+| `isall/aufbereitung/sql/d_all_types.sql` | BigQuery SQL | Replaces the legacy Oracle SQL script (`d_all_types.sql`). Performs a truncate-and-load operation on the target staging table. |
+| `.dw_init` | *Retired* | **No conversion required.** Legacy environment initialization script. Its variables and paths have been mapped directly to Airflow Variables and GCP environment configurations. |
 
 ---
 
 ## 3. Key Design Decisions
 
-### Decoupled Orchestration (Airflow-Native Flow)
-*   **Decision:** The legacy KSH script (`r_all_types_master.ksh`) originally invoked SQL\*Plus and AWK as subprocesses. In the migrated architecture, these steps have been decoupled into independent Airflow tasks (`BigQueryInsertJobOperator` and `DataprocSubmitJobOperator`).
-*   **Reasoning:** Decoupling these steps provides granular task-level retries, clear logging boundaries in the Airflow UI, and eliminates the need to maintain heavy client binaries (like SQL\*Plus or AWK) inside the execution container.
-*   **Trade-off:** The Python script `r_all_types_master.py` now serves solely as a checkpoint logging harness to preserve legacy log outputs, while the actual execution control is delegated to Airflow.
+### 3.1. AWK to Python Conversion for Strict Control Flow
+The legacy AWK script (`k_all_types_transform.awk`) validates that every record in the export file contains exactly 12 fields. If a malformed record is encountered, it must immediately halt processing and return a process-level exit code of `2` (`exit 2`). 
+* **Decision**: Migrated to a standalone Python script (`k_all_types_transform.py`) utilizing a custom `AwkContext` class to mimic AWK's streaming behavior.
+* **Trade-off**: While BigQuery can load CSVs directly, it cannot conditionally abort a load mid-stream with a custom OS-level exit code based on row-level validation. Using Python ensures strict compatibility with legacy error-handling and orchestration requirements.
 
-### AWK to Python Conversion
-*   **Decision:** Converted `k_all_types_transform.awk` into a standalone Python script (`k_all_types_transform.py`) rather than attempting to model the logic in BigQuery SQL.
-*   **Reasoning:** The AWK script acts as a strict data-quality gate. If a row fails validation (field count $\neq$ 12), it must immediately abort the pipeline with exit code `2`. BigQuery SQL is a set-based query engine and cannot raise custom OS-level exit codes mid-stream to fail an external orchestrator. Python preserves this exact procedural control flow.
+### 3.2. KSH to Python Conversion for Native API Integration
+The legacy wrapper `r_all_types_master.ksh` executed SQL*Plus and AWK via shell subprocesses.
+* **Decision**: Converted the wrapper to Python (`r_all_types_master.py`). This allows the script to use the native `google-cloud-bigquery` client library to execute SQL scripts, improving error handling, logging, and security (IAM-based authentication) over raw shell execution.
 
-### BigQuery Scripting for Transaction Control
-*   **Decision:** Wrapped the BigQuery SQL statements in `d_all_types.sql` inside a scripting block (`BEGIN...EXCEPTION`) using explicit transactions (`BEGIN TRANSACTION`, `COMMIT`, `ROLLBACK`).
-*   **Reasoning:** This replicates the Oracle SQL\*Plus error handling directives:
-    *   `WHENEVER SQLERROR CONTINUE` for the `TRUNCATE` step is emulated by wrapping the truncate statement in an isolated exception block that swallows errors.
-    *   `WHENEVER SQLERROR EXIT FAILURE ROLLBACK` for the `INSERT` step is emulated by wrapping the insert in a transaction block that rolls back and raises an explicit `ERROR()` on failure.
+### 3.3. Emulating SQL*Plus Directives in BigQuery Scripting
+The legacy SQL script used SQL*Plus directives like `WHENEVER SQLERROR CONTINUE` for the `TRUNCATE` step (allowing the script to proceed even if the table did not exist) and `WHENEVER SQLERROR EXIT FAILURE` for the `INSERT` step.
+* **Decision**: Implemented BigQuery Scripting block structures (`BEGIN ... EXCEPTION ... END`). The `TRUNCATE` statement is wrapped in a nested block that catches and ignores errors, while the `INSERT` statement is wrapped in a block that raises an exception on failure, preserving the exact operational behavior.
 
-### Environment Path Abstraction
-*   **Decision:** Modified the environment initialization logic (`dw_init.py`) to dynamically prefix paths with `gs://{GCS_BUCKET}` if the `GCS_BUCKET` environment variable is present, falling back to local paths otherwise.
-*   **Reasoning:** This allows the same initialization module to support both local containerized testing and cloud-native execution on GCS.
+### 3.4. Retirement of `.dw_init`
+The legacy `.dw_init` script set up local directory paths and Oracle environment variables.
+* **Decision**: Retired the file. Hardcoded local paths (e.g., `/vobs/dw_source/daten/...`) are replaced by dynamic GCS bucket paths and Airflow environment variables, ensuring portability across Dev, Test, and Prod environments.
 
 ---
 
 ## 4. Manual Steps Before Go-Live
 
-Before deploying the migrated pipeline to production, the following manual setup steps must be completed:
+Before activating the migrated workflow in production, the following setup steps must be completed:
 
-### 1. Schema and Table Creation
-Ensure the target BigQuery tables exist in your target dataset:
-*   **Source Raw Table:** `cds$ta_all_types_raw`
-*   **Target Staging Table:** `sof$ta_all_types`
+### 4.1. BigQuery Schema and Dataset Creation
+Ensure the target dataset and tables exist in BigQuery:
+1. Create the dataset defined in your Airflow variables (e.g., `dwh_all_types`).
+2. Create the raw staging table `cds$ta_all_types_raw` and the target table `sof$ta_all_types` with schemas matching the legacy Oracle definitions.
 
-### 2. IAM Permissions
-The service account running the Cloud Composer DAG and Dataproc Serverless workloads must be granted the following IAM roles:
-*   `roles/bigquery.dataEditor` and `roles/bigquery.jobUser` on the target BigQuery datasets.
-*   `roles/storage.objectAdmin` on the GCS bucket hosting the scripts and data.
-*   `roles/dataproc.worker` to execute PySpark and Python tasks on Dataproc.
+### 4.2. IAM Permissions
+The Google Cloud Service Account running the Cloud Composer environment must be granted the following IAM roles:
+* **BigQuery**: `roles/bigquery.jobUser` and `roles/bigquery.dataEditor` (on the target dataset).
+* **Dataproc**: `roles/dataproc.editor` (to submit Serverless PySpark jobs).
+* **Cloud Storage**: `roles/storage.objectAdmin` (on the Composer and data buckets).
 
-### 3. Airflow Variables Configuration
-Configure the following Airflow Variables in the Cloud Composer environment:
+### 4.3. Airflow Variables Configuration
+The following Airflow Variables must be configured in the Cloud Composer UI (`Admin -> Variables`):
+* `GCP_PROJECT`: The GCP Project ID hosting the resources.
+* `GCP_REGION`: The GCP region for Dataproc and Composer (e.g., `europe-west3`).
+* `GCP_CLUSTER_NAME`: The name of the Dataproc cluster (if using a shared cluster).
+* `GCS_BUCKET`: The GCS bucket name used for staging scripts and data (e.g., `my-dwh-migration-bucket`).
+* `BQ_DATASET`: The target BigQuery dataset name.
 
-```json
-{
-  "GCP_PROJECT": "your-gcp-project-id",
-  "GCP_REGION": "your-gcp-region",
-  "DATAPROC_CLUSTER": "your-dataproc-cluster-name",
-  "GCS_BUCKET": "your-gcs-bucket-name",
-  "ALL_TYPES_DIR_EXP_UTL": "your-export-utility-gcs-path"
-}
-```
+### 4.4. Code Deployment to GCS
+1. Upload the migrated PySpark script `all_types_graph.py` (migrated from the Ab Initio graph) to:
+   `gs://{GCS_BUCKET}/pyspark_scripts/all_types_graph.py`
+2. Upload the Python and SQL scripts to the Cloud Composer DAGs bucket:
+   * `dags/dw_dwh_all_types_master.py` $\rightarrow$ `/dags/`
+   * `isall/aufbereitung/bin/r_all_types_master.py` $\rightarrow$ `/dags/isall/aufbereitung/bin/`
+   * `isall/aufbereitung/awk/k_all_types_transform.py` $\rightarrow$ `/dags/isall/aufbereitung/awk/`
+   * `isall/aufbereitung/sql/d_all_types.sql` $\rightarrow$ `/dags/isall/aufbereitung/sql/`
 
-### 4. Code Deployment
-Upload the generated files to your Cloud Composer GCS bucket:
-*   DAG file (`dw_dwh_all_types_master.py`) $\rightarrow$ `gs://{COMPOSER_BUCKET}/dags/`
-*   SQL script (`d_all_types.sql`) $\rightarrow$ `gs://{COMPOSER_BUCKET}/dags/isall/aufbereitung/sql/`
-*   Python scripts (`dw_init.py`, `k_all_types_transform.py`, `r_all_types_master.py`) $\rightarrow$ `gs://{GCS_BUCKET}/isall/aufbereitung/...` (matching the paths defined in the DAG).
+### 4.5. Scheduling
+The DAG is currently configured with `schedule=None` (manual or external trigger), matching the legacy UC4 configuration. If this job needs to be scheduled, update the `schedule` parameter in `dw_dwh_all_types_master.py` (e.g., `schedule="0 2 * * *"` for daily at 2:00 AM).
 
 ---
 
 ## 5. Known Gaps & Unresolved References
 
-*   **Unresolved Environment Files:** The legacy `.dw_init` script sourced `.dw_global` and `.dw_lokal`. These files were not supplied in the migration bundle and were marked as "no source needed" during human review. If these files contained critical environment variables used by downstream tasks, those variables must be manually added to the Airflow Variables configuration.
-*   **Upstream PySpark Script:** The DAG task `all_types_master_graph` references `gs://{GCS_BUCKET}/pyspark_scripts/all_types_master.py` (the migrated Ab Initio graph). Ensure this script has been successfully deployed as part of the upstream migration (PR #883 / PR #884).
+* **Upstream PySpark Script (`all_types_graph.py`)**: This script represents the core Ab Initio graph logic. It must be fully tested and deployed to GCS before running this master DAG.
+* **Legacy DB User (`DW_ORAUSER`)**: The environment variable `DW_ORAUSER` is passed to the Python script as a dummy value (`dummy_user`) to maintain interface compatibility. BigQuery uses IAM-based authentication, so this variable is not used for database connections. Ensure no downstream legacy scripts rely on this variable for actual database authentication.
 
 ---
 
 ## 6. Validation
 
-To validate the migrated pipeline, perform the following steps:
+To validate the migration, perform the following tests:
 
-### How to Run the Tests
-1.  Locate the DAG `dw_dwh_all_types_master` in the Airflow Web UI.
-2.  Trigger the DAG manually by clicking **Trigger DAG**.
-3.  Monitor the execution of the four sequential tasks:
-    `all_types_master_graph` $\rightarrow$ `r_all_types_master` $\rightarrow$ `k_all_types_transform` $\rightarrow$ `d_all_types`.
+### 6.1. Unit Test: AWK-to-Python Validation
+Run the Python validation script locally or in a Cloud Shell environment with test data:
+```bash
+# Test with a valid 12-field record
+echo "1;2;3;4;5;6;7;8;9;10;11;12" | python3 isall/aufbereitung/awk/k_all_types_transform.py -
+# Expected Output: D;1;2;3;4;5;6;7;8;9;10;11;12
+# Expected Exit Code: 0
 
-### What "Passing" Means
-The migration is considered successful and passing when:
-1.  **`all_types_master_graph`** completes successfully, generating the raw export file in GCS.
-2.  **`r_all_types_master`** completes with status `SUCCESS` and writes the checkpoint log headers to the daily log file in GCS.
-3.  **`k_all_types_transform`** processes the input CSV, verifies that every row contains exactly 12 fields, prepends `"D;"` to each row, and writes the output to `all_types_export.out` with exit code `0`.
-4.  **`d_all_types`** executes successfully in BigQuery:
-    *   The table `sof$ta_all_types` is truncated.
-    *   Records with `status = 'READY'` are successfully copied from `cds$ta_all_types_raw` to `sof$ta_all_types` with the current timestamp.
-    *   The transaction commits successfully.
+# Test with an invalid record (11 fields)
+echo "1;2;3;4;5;6;7;8;9;10;11" | python3 isall/aufbereitung/awk/k_all_types_transform.py -
+# Expected Output: Error: Incorrect nos of Fields 
+# Expected Exit Code: 2
+```
+
+### 6.2. Integration Test: End-to-End DAG Run
+1. Populate the BigQuery raw table `cds$ta_all_types_raw` with sample records where `status = 'READY'`.
+2. Place a sample CSV file containing 12-field records at `/home/airflow/gcs/dags/isall/data/all_types_export.csv` (simulating the output of the PySpark job).
+3. Trigger the DAG `dw_dwh_all_types_master` manually from the Airflow UI.
+4. Verify that:
+   * The `all_types_graph` task completes successfully.
+   * The `task_r_all_types_master` task completes successfully.
+   * The file `/home/airflow/gcs/dags/isall/data/all_types_export.out` is created and contains the prefixed records (`D;...`).
+   * The BigQuery table `sof$ta_all_types` is populated with the records from `cds$ta_all_types_raw`, and `processed_at` contains the current timestamp.
+   * A log file is generated at `/home/airflow/gcs/dags/isall/protokoll/all_types_master_{DDMMYYYY}.log`.
 
 ---
 
 ## 7. Rollback Procedure
 
-In the event of a failure or unexpected behavior during go-live, execute the following rollback steps:
+In the event of a critical failure during go-live, follow these steps to roll back to the legacy environment:
 
-1.  **Pause the Airflow DAG:**
-    Go to the Airflow UI and toggle the switch for `dw_dwh_all_types_master` to **Off** (Paused) to prevent any further automated or manual executions.
-2.  **Database Rollback:**
-    If the database migration needs to be reverted, run the following BigQuery command to restore the target table to its state prior to the run (or truncate it if it was empty):
-    ```sql
-    TRUNCATE TABLE `your-gcp-project-id.your-dataset-id.sof$ta_all_types`;
-    ```
-3.  **Remove Generated Artifacts:**
-    Delete or archive the deployed DAG and Python scripts from the GCS buckets to ensure they are not executed accidentally.
-4.  **Re-enable Legacy Scheduling:**
-    If applicable, reactivate the legacy UC4 job `DW.DWH_ALL_TYPES_MASTER` in the on-premises environment to resume legacy operations.
+1. **Pause the Airflow DAG**:
+   Go to the Cloud Composer Airflow UI and toggle the switch to pause `dw_dwh_all_types_master`.
+2. **Clean Up Target Tables**:
+   If necessary, truncate the BigQuery target table to prevent partial data loads:
+   ```sql
+   TRUNCATE TABLE `your_project.your_dataset.sof$ta_all_types`;
+   ```
+3. **Re-enable Legacy Workload**:
+   Re-activate the `DW.DWH_ALL_TYPES_MASTER` job in the UC4/Automic scheduler.
+4. **Verify Legacy Execution**:
+   Monitor the legacy UC4 execution logs to ensure the job runs and processes data successfully.
