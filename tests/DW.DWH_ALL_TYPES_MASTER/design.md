@@ -18,40 +18,40 @@ operational_notes=
   (none — every referenced object was supplied in this bundle)
 
 
-# UC4 Workload Migration Assessment & Technical Design Document
+# UC4/Automic Migration Design Document: DW.DWH_ALL_TYPES_MASTER
+
+This design document outlines the migration metadata, structural translation patterns, and Airflow DAG target definitions for the UC4 object `DW.DWH_ALL_TYPES_MASTER` extracted from the source system.
+
+---
 
 ## 1. Overview
-This migration document details the transition design for the UC4 object `DW.DWH_ALL_TYPES_MASTER` to Apache Airflow. This is a standalone Unix job designed as a showcase job combining Ab Initio, Oracle SQL, KSH, and AWK components into a single execution flow. The UC4 extraction classifies this job's primary launcher type as an Ab Initio graph (`r_ai_start`), with an additional secondary KSH shell script execution contained within its script body. 
-
-Since no parent Jobplan (`JOBP`) or Schedule (`JSCH` / `EVNT_TIME`) objects were supplied in this extraction, this workflow is defined as externally triggered (source unknown from this extraction alone).
+The workload consists of a single Unix-based UC4 job (`DW.DWH_ALL_TYPES_MASTER`) acting as a showcase workflow that combines Ab Initio graph components and an auxiliary Korn Shell (KSH) script. The job sets an environment metadata variable `DWH_JOB_KENNUNG` to `'ALL_TYPES_MASTER'`, launches an Ab Initio graph named `all_types_graph` via the `r_ai_start` utility, and then executes a downstream preparation script `r_all_types_master.ksh`. In the target environment, this job is migrated into an Apache Airflow DAG where the Ab Initio execution maps to a PySpark application executed on Google Cloud Dataproc.
 
 ---
 
 ## 2. UC4 Object Inventory
 | Object Name | Object Type | Active Flag | Title/Description |
 | :--- | :--- | :--- | :--- |
-| `DW.DWH_ALL_TYPES_MASTER` | JOBS_UNIX | 1 (Active) | Showcase job combining Ab Initio, Oracle SQL, KSH and AWK components in a single chain |
+| `DW.DWH_ALL_TYPES_MASTER` | JOBS_UNIX | 1 | Showcase job combining Ab Initio, Oracle SQL, KSH and AWK components in a single chain |
 
 ---
 
 ## 3. Scheduling
-* **Schedule Rule:** No `EVNT_TIME` or schedule trigger object is present in this extraction bundle.
-* **Trigger Analysis:** This workflow has no calendar-based schedule of its own. It is marked as **externally triggered** (source unknown from this extraction alone).
-* **Airflow Schedule Property:** `schedule=None`
+* **Calendar Schedule**: No `EVNT_TIME` or schedule metadata objects are present in this extraction.
+* **Trigger Mechanics**: No parent `JOBP` workflow or activation `SCRI` objects were supplied. This object is marked as **externally triggered / source unknown** from this extraction alone.
+* **Airflow Schedule Property**: `schedule=None` (manual or external orchestration trigger).
 
 ---
 
 ## 4. Airflow DAG Properties
-Since this is a standalone JOBS_UNIX object without a parent JOBP, a wrapper DAG is designed to represent and schedule this job's execution chain.
-
 | Property | Value |
 | :--- | :--- |
 | **dag_id** | `dw_dwh_all_types_master` |
 | **schedule** | `None` |
-| **start_date** | `datetime(2023, 1, 1)` (placeholder) |
+| **start_date** | `datetime(2023, 1, 1)` |
 | **catchup** | `False` |
 | **max_active_runs** | `1` |
-| **is_paused_upon_creation** | `False` (Active=1 -> `is_paused_upon_creation=False`) |
+| **is_paused_upon_creation** | `False` *(Active flag in source = 1)* |
 | **default_args** | `{'owner': 'airflow', 'retries': 1, 'retry_delay': timedelta(minutes=5)}` |
 
 ---
@@ -59,173 +59,210 @@ Since this is a standalone JOBS_UNIX object without a parent JOBP, a wrapper DAG
 ## 5. Task Inventory
 | Task ID | Source Object | Operator | Target Script/DAG | Launch Parameters | Retries | Retry Delay | Earliest Start Time | Calendar Constraint | Fire-and-Forget | on_failure_callback | Notes |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| `all_types_master_graph` | `DW.DWH_ALL_TYPES_MASTER` | `DataprocSubmitJobOperator` | `gs://YOUR_BUCKET_NAME/pyspark_scripts/all_types_master.py` | `project_id`, `region`, `cluster_name` placeholders | 1 | 5 min | None | None | `False` | None | Mapped from primary Ab Initio launcher type. **CRITICAL:** See Developer Notes regarding secondary KSH script execution. |
+| `all_types_graph` | `DW.DWH_ALL_TYPES_MASTER` | `DataprocSubmitJobOperator` | `gs://YOUR_BUCKET_NAME/pyspark_scripts/all_types_graph.py` | `project_id`, `region`, `cluster_name` placeholders | 1 | 5m | N/A | None | N/A | None | # REVIEW: The source script body contains a secondary KSH command execution: `$HOME/aktuell/aufbereitung/bin/r_all_types_master.ksh`. Confirm if its business logic must be merged into the PySpark job or split out. |
 
 ---
 
 ## 6. Task Dependency Map
-Since this migration currently models a single standalone job, the DAG execution chain contains a single root task:
+Since this migration wraps a standalone `JOBS_UNIX` object supplied without an enclosing parent workflow, the resulting DAG contains a single workload execution block:
 
-```python
-all_types_master_graph
+```
+all_types_graph
 ```
 
 ---
 
 ## 7. Sync / Concurrency Analysis
-No `sync_rows` or resource lock definitions were provided in this extraction.
-* **Airflow Mapping:** Native concurrency constraint `max_active_runs=1` is configured at the DAG level to prevent concurrent execution overlaps.
+No `sync_rows` or resource lock declarations were detected in the object export metadata.
+
+| UC4 Sync Else value | lock_kind | Airflow mapping |
+| :--- | :--- | :--- |
+| N/A | N/A | None |
 
 ---
 
 ## 8. Error Handling and Retry Strategy
-* **Default Settings:** Retries are set to `1` with a `5-minute` delay, matching basic UC4 operational defaults.
-* **Failure Alerts:** No custom callback objects (such as `DW.CALL_STANDARD`) were defined in this extraction. Default Airflow task alerting mechanism should apply.
+* **Retry Strategy**: The default task-level configuration of 1 retry with a 5-minute cooldown is mapped via `default_args`. No special UC4 post-conditions or custom event triggers were present.
+* **Execution Flow**: Standard `ALL_SUCCESS` trigger rules apply.
 
 ---
 
 ## 9. Parameter and Variable Mapping
 | UC4 Parameter | Value/Source | Airflow Equivalent |
 | :--- | :--- | :--- |
-| `&DWH_JOB_KENNUNG` | `'ALL_TYPES_MASTER'` | Airflow Task `arguments` / environment variable |
-| `job_type` | `'all_types'` | Task metadata parameter |
-| `key` | `'all_types_graph'` | Task metadata parameter |
+| `&DWH_JOB_KENNUNG` | `'ALL_TYPES_MASTER'` | Passed as an environment variable or job argument: `--job_kennung=ALL_TYPES_MASTER` |
+| `all_types` | `launcher_details['job_type']` | Passed as PySpark job argument: `--job_type=all_types` |
+| `all_types_graph` | `launcher_details['key']` | Maps directly to the target Python script execution payload |
 
 ---
 
 ## 10. Developer Notes
-* **GCP Infrastructure Placeholders:** The developer must replace `YOUR_BUCKET_NAME`, `YOUR_PROJECT_ID`, `YOUR_REGION`, and `YOUR_CLUSTER_NAME` with target environment deployment variables.
-* **#REVIEW-STRUCT: Secondary KSH Invocation:** The UC4 script body contains a secondary command execution following the primary Ab Initio start script: `$HOME/aktuell/aufbereitung/bin/r_all_types_master.ksh`. Because this job is deterministically classified as an Ab Initio graph wrapper, the automatic translation maps it to a PySpark Dataproc task. The developer must manually investigate this KSH file to determine whether:
-  1. Its logic is already incorporated into the target Spark/PySpark logic.
-  2. It needs to be broken out into a separate downstream task (e.g., via `BashOperator` or `SSHOperator`).
+* **#REVIEW-STRUCT:** This JOBS_UNIX object was supplied standalone without an parent `JOBP` workflow or calendar definition. The workflow has been structured as a standalone wrapper DAG.
+* **#REVIEW:** The source shell script execution block contains an explicit KSH call downstream of the Ab Initio execution: `$HOME/aktuell/aufbereitung/bin/r_all_types_master.ksh`. The developer must analyze this shell script to determine if its data logic is being migrated to PySpark, or if a separate `BashOperator` or `SSHOperator` is required immediately downstream of the `all_types_graph` task.
+* **GCP Infrastructure Placeholders:** Ensure that `YOUR_BUCKET_NAME`, `YOUR_PROJECT_ID`, `YOUR_REGION`, and `YOUR_CLUSTER_NAME` are populated via Airflow Variables or environment configurations before deployment.
 
 ---
 
-# PSEUDOCODE OUTLINE
+# Migration Target Code Outline (Pseudocode)
 
 ```python
-── Imports ──────────────────────────────────────────────
+# ── Imports ──────────────────────────────────────────────
 from datetime import datetime, timedelta
 from airflow import DAG
 from airflow.providers.google.cloud.operators.dataproc import DataprocSubmitJobOperator
 
-── GCP Configuration ────────────────────────────────────
-# GCP Infrastructure Environment Variables
+# ── GCP Configuration ────────────────────────────────────
+# # REVIEW: Configure target GCP environment placeholders
 GCP_PROJECT_ID = "YOUR_PROJECT_ID"
 GCP_REGION = "YOUR_REGION"
 GCP_CLUSTER_NAME = "YOUR_CLUSTER_NAME"
 GCS_BUCKET = "YOUR_BUCKET_NAME"
 
-── Default Args ─────────────────────────────────────────
+# ── Default Args ─────────────────────────────────────────
 default_args = {
-    'owner': 'airflow',
-    'depends_on_past': False,
-    'retries': 1,
-    'retry_delay': timedelta(minutes=5),
+    "owner": "airflow",
+    "depends_on_past": False,
+    "retries": 1,
+    "retry_delay": timedelta(minutes=5),
 }
 
-── on_failure_callback stubs ─────────────────────────────
-# No custom error handling callbacks defined in extraction.
-
-── DAG Definition ───────────────────────────────────────
-dag = DAG(
-    dag_id='dw_dwh_all_types_master',
+# ── DAG Definition ───────────────────────────────────────
+# # REVIEW-STRUCT: Standalone JOBS_UNIX representation
+with DAG(
+    dag_id="dw_dwh_all_types_master",
     default_args=default_args,
-    description='Showcase job combining Ab Initio, Oracle SQL, KSH and AWK components',
-    schedule_interval=None,
+    description="Showcase job combining Ab Initio, Oracle SQL, KSH and AWK components in a single chain",
     start_date=datetime(2023, 1, 1),
+    schedule_interval=None,
     catchup=False,
     max_active_runs=1,
-)
+) as dag:
 
-── Task: all_types_master_graph ─────────────────────────
-# REVIEW-STRUCT: Mapped from Ab Initio launcher. 
-# Developers must verify if '$HOME/aktuell/aufbereitung/bin/r_all_types_master.ksh' 
-# script logic has been migrated into the PySpark job or requires an independent task step.
-
-pyspark_job = {
-    "reference": {"project_id": GCP_PROJECT_ID},
-    "placement": {"cluster_name": GCP_CLUSTER_NAME},
-    "pyspark_job": {
-        "main_python_file_uri": f"gs://{GCS_BUCKET}/pyspark_scripts/all_types_master.py",
-        "args": [
-            "--job_kennung", "ALL_TYPES_MASTER",
-            "--job_type", "all_types",
-            "--key", "all_types_graph"
-        ]
+    # ── Task: all_types_graph ────────────────────────────
+    # Maps to source Ab Initio Graph 'all_types_graph'
+    # # REVIEW: Verify if downstream KSH script 'r_all_types_master.ksh' should be appended here
+    pyspark_job = {
+        "reference": {"project_id": GCP_PROJECT_ID},
+        "placement": {"cluster_name": GCP_CLUSTER_NAME},
+        "pyspark_job": {
+            "main_python_file_uri": f"gs://{GCS_BUCKET}/pyspark_scripts/all_types_graph.py",
+            "args": [
+                "--job_arg=ALL_TYPES_MASTER",
+                "--job_type=all_types",
+                "--key=all_types_graph",
+                "--job_kennung=ALL_TYPES_MASTER"
+            ]
+        }
     }
-}
 
-all_types_master_graph = DataprocSubmitJobOperator(
-    task_id='all_types_master_graph',
-    job=pyspark_job,
-    region=GCP_REGION,
-    project_id=GCP_PROJECT_ID,
-    dag=dag
-)
+    all_types_graph_task = DataprocSubmitJobOperator(
+        task_id="all_types_graph",
+        job=pyspark_job,
+        region=GCP_REGION,
+        project_id=GCP_PROJECT_ID,
+    )
 
-── Dependencies ─────────────────────────────────────────
-# Single standalone workflow node:
-all_types_master_graph
+    # ── Dependencies ─────────────────────────────────────────
+    # Single-task workload execution chain
+    all_types_graph_task
 ```
 
-### Job dependencies
-- **Upstream Dependencies (Already Migrated & Merged):**
-  - `Shared Files — TMD_processing/ALL_TYPES/mp`: Corresponds to the Ab Initio graph file `TMD_processing/ALL_TYPES/mp/all_types_graph.mp` which was already migrated to PySpark in PR #883.
-  - `Shared Files — TMD_processing/ALL_TYPES/run`: Corresponds to the wrapper script `TMD_processing/ALL_TYPES/run/all_types_graph.ksh` which was already migrated in PR #884.
-  - These migrated modules must be referenced/imported within the newly generated Airflow DAG instead of being recreated.
+# Migration Design Document: DW.DWH_ALL_TYPES_MASTER
 
-### Execution order
-The target Airflow DAG orchestrator must preserve the sequential execution order derived from the legacy dependency graph:
-1. **Orchestrator Entry Point:** `DWH_ALL_TYPES_JOB/DW.DWH_ALL_TYPES_MASTER.xml` is converted to the master Airflow DAG file (`DWH_ALL_TYPES_JOB/dw_dwh_all_types_master.py`).
-2. **Parameters & Configuration Configuration:** `isall/abinitio/cfg/all_types/all_types_graph.cfg` acts as the configuration parameter definition, mapping environment and job-specific variables to the downstream tasks.
-3. **Primary Processing Task:** The core execution initiates by calling the PySpark translation of the Ab Initio graph (`all_types_graph.mp` under `TMD_processing/ALL_TYPES/mp/`), which represents the first functional step of the master job.
-4. **Secondary Processing Task:** Downstream of the primary graph execution, the workflow triggers the execution of `isall/aufbereitung/bin/r_all_types_master.ksh` (which is migrated to Python in a separate independent design pass).
-5. **Environment Setup:** `.dw_init` is a shell initialization script that was human-reviewed and confirmed as not needing individual migration; its environmental context is handled globally within the Airflow DAG environment settings.
-6. **Data Transformation Task:** The pipeline executes `isall/aufbereitung/awk/k_all_types_transform.awk` (migrated to Python in a separate pass) to perform core logic transformations.
-7. **Database Operations Task:** Finally, `isall/aufbereitung/sql/d_all_types.sql` (migrated to BigQuery SQL in a separate pass) is executed to load/merge the data into the target tables.
+This document defines the migration and orchestration design for the UC4 job `DW.DWH_ALL_TYPES_MASTER` into Apache Airflow targeting Google Cloud Platform (Cloud Composer, Dataproc Serverless, and BigQuery).
 
-### Lineage
-- **Upstream Lineage & External Systems:**
-  - `DWH_ALL_TYPES_JOB/DW.DWH_ALL_TYPES_MASTER.xml` runs on legacy host `dwhall1p` (which is an external system now represented by the standard GCP target environment).
-  - The job uses the package `DW.UNIX.ISALL` to run shell operations.
-  - The job uses configuration file `isall/abinitio/cfg/all_types/all_types_graph.cfg`.
-  - The job references the legacy graph `TMD_processing/ALL_TYPES/mp/all_types_graph.mp`.
-- **Downstream Lineage & Invocations:**
-  - The job invokes `R_AI_START.KSH` (unresolved in physical files but confirmed by human review as "no source needed" as its bootstrap role is natively handled by the Airflow Dataproc operator).
-  - The job invokes `isall/aufbereitung/bin/r_all_types_master.ksh` (a sibling script belonging to a separate design pass).
-  - The job invokes `ALL_TYPES_GRAPH.KSH` (orchestrated via the migrated shared module run script).
+---
 
-### Cross-file dependencies
-- **Configuration & Variable Sharing:** The variables defined in `isall/abinitio/cfg/all_types/all_types_graph.cfg` are shared with the primary graph processing tasks to parameterize file paths and run options.
-- **Sequential Pipeline Calls:** There is a direct call-chain dependency between the master DAG and the external sibling files: the primary graph (`all_types_graph.mp`), the master shell script (`r_all_types_master.ksh`), the AWK transform (`k_all_types_transform.awk`), and the final SQL load script (`d_all_types.sql`). Each of these scripts relies on the output files or tables produced by the preceding step in the sequence.
+## File Disposition
 
-### Target file plan
-- **Target File Path:** `DWH_ALL_TYPES_JOB/dw_dwh_all_types_master.py`
-  - **Language:** Python (Airflow DAG)
-  - **Source File:** `DWH_ALL_TYPES_JOB/DW.DWH_ALL_TYPES_MASTER.xml`
-
-### Environment-specific values
-Every environment-sourced value from the legacy scripts and configurations is classified below to guide the Build Agent:
-
-1. **GLOBAL (Environment-wide infra constants - sourced at runtime via Airflow Variables or environment context):**
-   - `CCR_DIR_ROOT`: Sourced at runtime via `os.environ.get("CCR_DIR_ROOT")` or standard GCS environment variable.
-   - `HOME`: Sourced at runtime via `os.environ.get("HOME")`.
-   - `DWHALL1P` (Legacy Host): Normalized to canonical GCP infrastructure variables. Sourced via Airflow Variables: `Variable.get("GCP_PROJECT")`, `Variable.get("GCP_REGION")`, `Variable.get("DATAPROC_CLUSTER")`.
-   - `ALL_TYPES_DIR_EXP_UTL`: Normalized to the environment-wide GCS bucket folder. Sourced via Airflow Variable: `Variable.get("ALL_TYPES_DIR_EXP_UTL")`.
-
-2. **JOB-SPECIFIC (Job-level parameters - hardcoded/defined at the DAG/task level):**
-   - `ALL_TYPES_Projektverzeichnis` (`/Projects/TMD/processing/ALL_TYPES/`): Maps to the specific folder structure on GCS for this pipeline. Defined inside the DAG's job-specific configuration mapping.
-   - `ALL_TYPES_Graph` (`all_types_graph`): Hardcoded as a task parameter in the primary execution task.
-   - `ALL_TYPES_Version` (`RLS_ALL_TYPES_current`): Defined inside the task's environment or execution parameters.
-   - `ALL_TYPES_Prozesstyp` (`N`): Hardcoded as a task-level metadata parameter.
-   - `ALL_TYPES_Datenobjekt` (`-`): Hardcoded as a task-level parameter.
-   - `ALL_TYPES_AI_DAT_FILE_DIR` (`$ALL_TYPES_DIR_EXP_UTL/cubes/at`): Mapped dynamically using the global `ALL_TYPES_DIR_EXP_UTL` environment variable concatenated with `/cubes/at`.
-
-### File Disposition
 | Source File Path | Target File / Action | Purpose / Reason for Action |
 | :--- | :--- | :--- |
-| `DWH_ALL_TYPES_JOB/DW.DWH_ALL_TYPES_MASTER.xml` | `DWH_ALL_TYPES_JOB/dw_dwh_all_types_master.py` | Migrated to an Apache Airflow DAG to orchestrate the sequential pipeline steps, preserving folder structure integrity under `DWH_ALL_TYPES_JOB/`. |
+| `DWH_ALL_TYPES_JOB/DW.DWH_ALL_TYPES_MASTER.xml` | `dags/dw_dwh_all_types_master.py` | Migrates the UC4 orchestration logic into an Apache Airflow DAG. Consolidates the Ab Initio execution task (submitting a Dataproc Serverless job) and the downstream master shell invocation (executing the migrated Python script). |
+
+---
+
+## 1. Job Dependencies
+* **Upstream dependencies**:
+  * **Shared Files — TMD_processing/ALL_TYPES/mp**: Already migrated and merged (PR [#883](https://github.com/gurunathan-prodapt/pi-agents/pull/883)). This contains the core Ab Initio graph logic, which maps to the target PySpark script `all_types_graph.py` on Google Cloud Storage.
+  * **Shared Files — TMD_processing/ALL_TYPES/run**: Already migrated and merged (PR [#884](https://github.com/gurunathan-prodapt/pi-agents/pull/884)).
+* **Downstream dependencies**:
+  * **isall/aufbereitung/bin/r_all_types_master.ksh**: Migrated as Python script `isall/aufbereitung/bin/r_all_types_master.py` in its own design pass. The DAG will execute this downstream component immediately after the graph execution task succeeds.
+
+---
+
+## 2. Execution Order
+The legacy dependency graph’s execution sequence is preserved in the target Airflow DAG using explicit task dependencies:
+1. **DAG Initialization**: Loads variables from the migrated configuration environment.
+2. **Ab Initio Graph Execution** (`all_types_graph`): Invoked as a `DataprocSubmitJobOperator` executing the migrated PySpark script `all_types_graph.py`.
+3. **Downstream Master Prep Execution** (`task_r_all_types_master`): Replaces the legacy `r_all_types_master.ksh` execution. It is invoked via a `BashOperator` executing `isall/aufbereitung/bin/r_all_types_master.py` (which internally coordinates the migrated SQL and AWK logic).
+
+---
+
+## 3. Scheduling
+* **Trigger Event / Schedulers**: No calendar schedule exists in the source XML.
+* **Target Scheduling**: Configured with `schedule=None` (external trigger or manual execution only).
+
+---
+
+## 4. Schedule & Variables — Must Be Retained
+* **Scheduler-Set Variables**:
+  * `DWH_JOB_KENNUNG` (Value: `'ALL_TYPES_MASTER'`): Used to identify the run. Passed as a job parameter to the Dataproc operator and as an environment variable to the Bash operator.
+* **Configuration Parameters** (sourced from `isall/abinitio/cfg/all_types/all_types_graph.cfg`):
+  * `ALL_TYPES_Projektverzeichnis` = `/Projects/TMD/processing/ALL_TYPES/`
+  * `ALL_TYPES_Graph` = `all_types_graph`
+  * `ALL_TYPES_Version` = `RLS_ALL_TYPES_current`
+  * `ALL_TYPES_Prozesstyp` = `N`
+  * `ALL_TYPES_Datenobjekt` = `-`
+  * `ALL_TYPES_AI_DAT_FILE_DIR` = `$ALL_TYPES_DIR_EXP_UTL/cubes/at`
+  
+  These parameters are retrieved at runtime via Airflow Variables or a local DAG-level configuration dictionary and passed to the tasks.
+
+---
+
+## 5. Lineage
+* **Upstream Source**: 
+  * `TMD_processing/ALL_TYPES/mp/all_types_graph.mp` (Input design representing the raw schemas and flows).
+  * `CDS$TA_ALL_TYPES_RAW` (Legacy source table, mapped to a BigQuery raw landing/ingestion table).
+* **Downstream Target**:
+  * `SOF$TA_ALL_TYPES` (Legacy final database target table, mapped to its BigQuery destination table).
+
+---
+
+## 6. Cross-File Dependencies
+* The DAG orchestrates tasks that depend on the existence of `gs://{GCS_BUCKET}/pyspark_scripts/all_types_graph.py` (migrated PySpark graph script) and `/home/airflow/gcs/dags/isall/aufbereitung/bin/r_all_types_master.py` (migrated prep script).
+* The execution of `r_all_types_master.py` relies on the outputs generated during the `all_types_graph` PySpark execution phase.
+
+---
+
+## 7. Target File Plan
+
+### File: `dags/dw_dwh_all_types_master.py`
+* **Language**: Python (Apache Airflow DAG)
+* **Source File**: `DWH_ALL_TYPES_JOB/DW.DWH_ALL_TYPES_MASTER.xml`
+* **Execution Flow**:
+  1. `all_types_graph_task` (`DataprocSubmitJobOperator`) submitting the PySpark script `gs://{GCS_BUCKET}/pyspark_scripts/all_types_graph.py`.
+  2. `task_r_all_types_master` (`BashOperator`) executing the command `python /home/airflow/gcs/dags/isall/aufbereitung/bin/r_all_types_master.py`.
+* **Dependency Definition**:
+  ```python
+  all_types_graph_task >> task_r_all_types_master
+  ```
+
+---
+
+## 8. Environment-Specific Values
+
+All environment-specific variables are classified by role and sourced dynamically using Airflow's config mechanisms:
+
+### GLOBAL (Environment-Wide Infrastructure)
+* **GCP_PROJECT**: The target GCP project identifier. Sourced via `Variable.get("GCP_PROJECT")`.
+* **GCP_REGION**: Target GCP region. Sourced via `Variable.get("GCP_REGION")`.
+* **GCP_CLUSTER_NAME**: The target Dataproc cluster name. Sourced via `Variable.get("GCP_CLUSTER_NAME")`.
+* **GCS_BUCKET**: The target GCS bucket containing script and data runtimes. Sourced via `Variable.get("GCS_BUCKET")`.
+* **CCR_DIR_ROOT** / **HOME**: Legacy base directories. Sourced dynamically as `/home/airflow/gcs/dags` or via Airflow `Variable.get("GCS_BUCKET")` prefix references depending on script execution context.
+
+### JOB-SPECIFIC (Job/Task level variables)
+* **DW.UNIX.ISALL**: Legacy login/package scope. Handled by executing tasks under the configured IAM Service Account of the Cloud Composer environment.
+* **DWH_JOB_KENNUNG**: Retained as a job parameter (`ALL_TYPES_MASTER`). Passed directly to the PySpark operator arguments and task environments.
 
 ---
 
@@ -365,257 +402,121 @@ export DW_DIR_UTL_FILE  #neu in rel 3.0
 
 
 === CONVERSION VERDICT ===
-VERDICT: PYTHON
-REASON: The script contains directory existence checks and environment sourcing logic that is not expressible in BigQuery SQL and requires Python to model programmatic environment initialization.
+VERDICT: NO_CONVERSION_REQUIRED
+REASON: This is a pure environment initialization script (.dw_init) that only declares environment variables, checks the Oracle home directory, and sources other global and local configurations.
 
 EVIDENCE
-- Business logic found: KSH custom logic consisting of setting numerous DW-related environment directories and checking/setting ORACLE_HOME based on physical directory existence, as well as sourcing global and local setup scripts.
+- Business logic found: None. The script is an environment initialization profile (`.dw_init`) used to define path variables, set a database remote host, and locate the `ORACLE_HOME` installation.
 - AWK: none
-- SQL-expressible: no, contains filesystem directory checks (-d) and environment variables setting which cannot be executed or represented in BigQuery SQL.
-- Non-SQL side effects: checks filesystem paths, echoes error messages, and sources external scripts.
-- Against this verdict: NO_CONVERSION_REQUIRED could be argued because this is an environment initialization script rather than an active data stage, but it contains conditional logic and sourcing that violates the strict wrapper definition.
+- SQL-expressible: no, it contains only directory declarations, environment exports, file-system existence tests, and shell sourcing.
+- Non-SQL side effects: none observed, other than printing warnings to stdout if ORACLE_HOME cannot be set.
+- Against this verdict: The file contains a basic conditional structure (`if [ -z "$ORACLE_HOME" ]`) checking directory existence, but since it functions purely as a sourced dotfile to initialize a shell runtime, converting it to an independent Python or SQL script would be structurally meaningless.
 
-=======================================================================================
-PART A — PYTHON DESIGN DOCUMENT
-=======================================================================================
-
-1. SCRIPT OVERVIEW
-   This script (`.dw_init`) is an environment initialization script written in KornShell (.ksh). Its primary purpose is to define and export all directory paths, remote hostnames, database variables, and utility parameters required by the "Information Services" / Data Warehouse environment. It also dynamically sets `ORACLE_HOME` based on directory presence and sources further global and local configurations.
-
-2. INVOCATION CONTEXT
-   - Who calls this script: It is sourced (via `. .dw_init`) by other Data Warehouse shell scripts or UC4/Automic UNIX jobs to establish a consistent environment. No direct UC4 job invocation was supplied in the extraction.
-   - UC4 native includes: None referenced in the extraction.
-   - Environment files sourced:
-     - `. $HOME/.dw_global` — # REVIEW-STRUCT: environment file [.dw_global] not supplied — variables it sets are unknown; do not guess their names or values
-     - `. $HOME/.dw_lokal` — # REVIEW-STRUCT: environment file [.dw_lokal] not supplied — variables it sets are unknown; do not guess their names or values
-
-3. PARAMETERS / INPUTS
-   - `HOME` (environment variable): Used as the base path for resolving directories. Surfaced in Python via `os.environ.get("HOME")`.
-   - `ORACLE_HOME` (environment variable): Used to detect if the Oracle home path is already set. Surfaced in Python via `os.environ.get("ORACLE_HOME")`.
-   - `ORACLE_SID` (environment variable): Used to build the dynamic `DW_DIR_UTL_FILE` path. Surfaced in Python via `os.environ.get("ORACLE_SID")`.
-
-4. EXTERNAL COMMANDS / PROGRAMS INVOKED
-   - None. (Sourcing scripts is treated as a configuration load step).
-
-5. EMBEDDED SQL
-   - None.
-
-6. CONTROL FLOW
-   1. Set directory variables relative to `$HOME`:
-      - `DW_DIR_ROOT=$HOME/aktuell`
-      - `DW_DIR_PROT=$HOME/daten/logfiles`
-      - `DW_DIR_CUBES=$HOME/daten/cubes`
-      - `DW_DIR_IMP_D1=$HOME/daten/d1`
-      - `DW_DIR_IMP_BWA=$HOME/daten/dpps/bwa`
-      - `DW_DIR_IMP_XTRA=$HOME/daten/xtra`
-      - `DW_DIR_IMP_CTEL=$HOME/daten/ctel`
-      - `DW_DIR_IMP_VO=$HOME/daten/vo`
-      - `DW_DIR_IMP_RV=$HOME/daten/rv`
-      - `DW_DIR_IMP_IF=$HOME/daten/ees`
-      - `DW_DIR_IMP_NNV=$HOME/daten/nnv`
-      - `DW_DIR_IMP_SIGMA=$HOME/daten/gd/sigma`
-      - `DW_DIR_EXP_SIGMA=$HOME/daten/gd/sigma/export`
-      - `DW_DIR_IMP_TRF=$HOME/daten/trf`
-      - `DW_DIR_IMP_AUF=$HOME/daten/sd/auf`
-      - `DW_DIR_IMP_GUT=$HOME/daten/sd/gut`
-      - `DW_DIR_IMP_KDG=$HOME/daten/sd/kdg`
-      - `DW_DIR_IMP_MP_KDG=$HOME/daten/mp/kdg`
-      - `DW_DIR_IMP_MP_TS=$HOME/daten/mp/ts`
-      - `DW_DIR_IMP_MP_ZM=$HOME/daten/mp/zm`
-      - `DW_DIR_IMP_TS=$HOME/daten/sd/ts`
-      - `DW_DIR_IMP_ZM=$HOME/daten/sd/zm`
-      - `DW_DIR_EXP=$HOME/daten/exporter`
-      - `DW_DIR_IMP_BPM=$HOME/daten/bm`
-      - `DW_DIR_IMP_ZTS=$HOME/daten/zts`
-      - `DW_DIR_IMP_VRS=$HOME/daten/vrs`
-      - `DW_DIR_IMP_BRUNET=$HOME/daten/brunet`
-      - `DW_DIR_IMP_DWH=$HOME/daten/dwh`
-      - `DW_DIR_IMP_PLATO=$HOME/daten/dwh/plato`
-      - `DW_DIR_IMP_CARMEN=$HOME/daten/carmen`
-      - `DW_DIR_IMP_SAP=$HOME/daten/sap`
-      - `DW_DIR_IMP_SR_RV=$HOME/daten/sap/sr_rv_dpps`
-      - `DW_DIR_IMP_SAP_L_GUTGR=$HOME/daten/sap/sap_l_gutgr` (retains a legacy export mismatch where `DW_DIR_IMP_SAP_L` is exported instead)
-      - `DW_DIR_IMP_L_MAHNSTYP_IST=$HOME/daten/sap/mahn`
-      - `DW_DIR_IMP_L_MAHNV_FI=$HOME/daten/sap/mahn`
-      - `DW_DIR_IMP_L_MAHNV_IST=$HOME/daten/sap/mahn`
-      - `DW_DIR_IMP_L_GUTGR=$HOME/daten/sd/l_gutschr`
-      - `DW_DIR_IMP_L_LEIST=$HOME/daten/sd/l_leist`
-      - `DW_DIR_IMP_L_PROD=$HOME/daten/sd/l_prod`
-      - `DW_DIR_IMP_LKODE=$HOME/daten/sd/lkode`
-      - `DW_DIR_IMP_SUBSE=$HOME/daten/subse`
-      - `DW_DIR_SMS_PRG=${HOME}/aktuell/allgemein/is/util`
-      - `DW_DIR_SMS_ADR=${HOME}/daten/sms/adressen`
-      - `DW_DIR_SMS_TMP=${HOME}/daten/sms/tmp`
-      - `DW_DIR_IMP_DPPS=$HOME/daten/dpps`
-      - `DW_DIR_IMP_PLANF2=$HOME/daten/planf2`
-   2. Export remote host variable:
-      - `DW_HOST_CUSTOMER=dxcst3.bn.detemobil.de`
-   3. Check if `ORACLE_HOME` is unset or empty:
-      - If empty, check directory existence for `/appl/local/oracle/12.2.0.1.0`.
-      - If exists, set `ORACLE_HOME=/appl/local/oracle/12.2.0.1.0`.
-      - Else, check directory existence for `/appl/local/oracle/11.2.0`.
-      - If exists, set `ORACLE_HOME=/appl/local/oracle/11.2.0`.
-      - Else, write "Fehler in .dw_init: Konnte ORACLE_HOME nicht setzen !" to stdout.
-   4. Source `$HOME/.dw_global` and `$HOME/.dw_lokal` scripts.
-   5. Define and export `DW_DIR_UTL_FILE=/appl/local/oracle/admin/$ORACLE_SID/utl_file`.
-
-7. ERROR HANDLING & EXIT CODES
-   - If `ORACLE_HOME` cannot be set, it prints errors to stdout but does NOT exit with a non-zero status. The script continues execution.
-   - Python equivalence: Log a warning to `sys.stderr` when path checks fail, continuing execution to emulate original behavior.
-
-8. OUTPUTS / SIDE EFFECTS
-   - Mutates environment variables for the current session.
-   - # REVIEW: Since the target platform is confirmed as BIGQUERY, Oracle environment components (`ORACLE_HOME`, `ORACLE_SID`, and `DW_DIR_UTL_FILE`) may be obsolete or replaced by BigQuery/GCP resources (such as Google Cloud Storage buckets or Dataset locations).
-
-9. BUSINESS SUMMARY
-   - Establishes unified root and sub-directory paths for Data Warehouse imports, exports, backups, and logs across different functional modules (e.g., SAP, SMS, Plato).
-   - Dynamically resolves client-side database home versions (`ORACLE_HOME`).
-   - Hooks into global and local configuration templates (`.dw_global`, `.dw_lokal`) to override or expand instance-specific parameters.
-
-=== PSEUDOCODE ===
-
-```python
-import os
-import sys
-
-# MANDATORY AUDIT STEP: No functions defined in .dw_init. No parameter-validation guards to verify.
-
-# Step 1: Resolve base directory (HOME)
-home_dir = os.environ.get("HOME", "")
-
-# Step 2: Set and export path variables
-os.environ["DW_DIR_ROOT"] = os.path.join(home_dir, "aktuell")
-os.environ["DW_DIR_PROT"] = os.path.join(home_dir, "daten/logfiles")
-os.environ["DW_DIR_CUBES"] = os.path.join(home_dir, "daten/cubes")
-os.environ["DW_DIR_IMP_D1"] = os.path.join(home_dir, "daten/d1")
-os.environ["DW_DIR_IMP_BWA"] = os.path.join(home_dir, "daten/dpps/bwa")
-os.environ["DW_DIR_IMP_XTRA"] = os.path.join(home_dir, "daten/xtra")
-os.environ["DW_DIR_IMP_CTEL"] = os.path.join(home_dir, "daten/ctel")
-os.environ["DW_DIR_IMP_VO"] = os.path.join(home_dir, "daten/vo")
-os.environ["DW_DIR_IMP_RV"] = os.path.join(home_dir, "daten/rv")
-os.environ["DW_DIR_IMP_IF"] = os.path.join(home_dir, "daten/ees")
-os.environ["DW_DIR_IMP_NNV"] = os.path.join(home_dir, "daten/nnv")
-os.environ["DW_DIR_IMP_SIGMA"] = os.path.join(home_dir, "daten/gd/sigma")
-os.environ["DW_DIR_EXP_SIGMA"] = os.path.join(home_dir, "daten/gd/sigma/export")
-os.environ["DW_DIR_IMP_TRF"] = os.path.join(home_dir, "daten/trf")
-os.environ["DW_DIR_IMP_AUF"] = os.path.join(home_dir, "daten/sd/auf")
-os.environ["DW_DIR_IMP_GUT"] = os.path.join(home_dir, "daten/sd/gut")
-os.environ["DW_DIR_IMP_KDG"] = os.path.join(home_dir, "daten/sd/kdg")
-os.environ["DW_DIR_IMP_MP_KDG"] = os.path.join(home_dir, "daten/mp/kdg")
-os.environ["DW_DIR_IMP_MP_TS"] = os.path.join(home_dir, "daten/mp/ts")
-os.environ["DW_DIR_IMP_MP_ZM"] = os.path.join(home_dir, "daten/mp/zm")
-os.environ["DW_DIR_IMP_TS"] = os.path.join(home_dir, "daten/sd/ts")
-os.environ["DW_DIR_IMP_ZM"] = os.path.join(home_dir, "daten/sd/zm")
-os.environ["DW_DIR_EXP"] = os.path.join(home_dir, "daten/exporter")
-os.environ["DW_DIR_IMP_BPM"] = os.path.join(home_dir, "daten/bm")
-os.environ["DW_DIR_IMP_ZTS"] = os.path.join(home_dir, "daten/zts")
-os.environ["DW_DIR_IMP_VRS"] = os.path.join(home_dir, "daten/vrs")
-os.environ["DW_DIR_IMP_BRUNET"] = os.path.join(home_dir, "daten/brunet")
-os.environ["DW_DIR_IMP_DWH"] = os.path.join(home_dir, "daten/dwh")
-os.environ["DW_DIR_IMP_PLATO"] = os.path.join(home_dir, "daten/dwh/plato")
-os.environ["DW_DIR_IMP_CARMEN"] = os.path.join(home_dir, "daten/carmen")
-os.environ["DW_DIR_IMP_SAP"] = os.path.join(home_dir, "daten/sap")
-os.environ["DW_DIR_IMP_SR_RV"] = os.path.join(home_dir, "daten/sap/sr_rv_dpps")
-
-# NOTE: Legacy export mismatch: DW_DIR_IMP_SAP_L_GUTGR is declared, but DW_DIR_IMP_SAP_L is exported.
-dw_dir_imp_sap_l_gutgr = os.path.join(home_dir, "daten/sap/sap_l_gutgr")
-os.environ["DW_DIR_IMP_SAP_L"] = dw_dir_imp_sap_l_gutgr
-
-os.environ["DW_DIR_IMP_L_MAHNSTYP_IST"] = os.path.join(home_dir, "daten/sap/mahn")
-os.environ["DW_DIR_IMP_L_MAHNV_FI"] = os.path.join(home_dir, "daten/sap/mahn")
-os.environ["DW_DIR_IMP_L_MAHNV_IST"] = os.path.join(home_dir, "daten/sap/mahn")
-os.environ["DW_DIR_IMP_L_GUTGR"] = os.path.join(home_dir, "daten/sd/l_gutschr")
-os.environ["DW_DIR_IMP_L_LEIST"] = os.path.join(home_dir, "daten/sd/l_leist")
-os.environ["DW_DIR_IMP_L_PROD"] = os.path.join(home_dir, "daten/sd/l_prod")
-os.environ["DW_DIR_IMP_LKODE"] = os.path.join(home_dir, "daten/sd/lkode")
-os.environ["DW_DIR_IMP_SUBSE"] = os.path.join(home_dir, "daten/subse")
-os.environ["DW_DIR_SMS_PRG"] = os.path.join(home_dir, "aktuell/allgemein/is/util")
-os.environ["DW_DIR_SMS_ADR"] = os.path.join(home_dir, "daten/sms/adressen")
-os.environ["DW_DIR_SMS_TMP"] = os.path.join(home_dir, "daten/sms/tmp")
-os.environ["DW_DIR_IMP_DPPS"] = os.path.join(home_dir, "daten/dpps")
-os.environ["DW_DIR_IMP_PLANF2"] = os.path.join(home_dir, "daten/planf2")
-
-# Step 3: Set and export remote host
-os.environ["DW_HOST_CUSTOMER"] = "dxcst3.bn.detemobil.de"
-
-# Step 4: Resolve ORACLE_HOME dynamically if unset
-# REVIEW: Oracle components might not be required in target BIGQUERY platform.
-if not os.environ.get("ORACLE_HOME"):
-    if os.path.isdir("/appl/local/oracle/12.2.0.1.0"):
-        os.environ["ORACLE_HOME"] = "/appl/local/oracle/12.2.0.1.0"
-    elif os.path.isdir("/appl/local/oracle/11.2.0"):
-        os.environ["ORACLE_HOME"] = "/appl/local/oracle/11.2.0"
-    else:
-        print("Fehler in .dw_init:", file=sys.stderr)
-        print("   Konnte ORACLE_HOME nicht setzen !", file=sys.stderr)
-
-# Step 5: Load global and local settings if existing
-# # REVIEW-STRUCT: environment file [.dw_global] not supplied — variables it sets are unknown; do not guess their names or values
-# # REVIEW-STRUCT: environment file [.dw_lokal] not supplied — variables it sets are unknown; do not guess their names or values
-dw_global_path = os.path.join(home_dir, ".dw_global")
-dw_lokal_path = os.path.join(home_dir, ".dw_lokal")
-
-# Step 6: Define and export UTL file directory
-oracle_sid = os.environ.get("ORACLE_SID", "")
-os.environ["DW_DIR_UTL_FILE"] = f"/appl/local/oracle/admin/{oracle_sid}/utl_file"
-```
+ORCHESTRATION SUMMARY
+- Purpose: To initialize environment variables, export standard data directories, detect `ORACLE_HOME`, and source global/local configurations for the Information Services shell runtime.
+- Variables declared:
+  - `DW_DIR_ROOT = $HOME/aktuell`
+  - `DW_DIR_PROT = $HOME/daten/logfiles`
+  - `DW_DIR_CUBES = $HOME/daten/cubes`
+  - `DW_DIR_IMP_D1 = $HOME/daten/d1`
+  - `DW_DIR_IMP_BWA = $HOME/daten/dpps/bwa`
+  - `DW_DIR_IMP_XTRA = $HOME/daten/xtra`
+  - `DW_DIR_IMP_CTEL = $HOME/daten/ctel`
+  - `DW_DIR_IMP_VO = $HOME/daten/vo`
+  - `DW_DIR_IMP_RV = $HOME/daten/rv`
+  - `DW_DIR_IMP_IF = $HOME/daten/ees`
+  - `DW_DIR_IMP_NNV = $HOME/daten/nnv`
+  - `DW_DIR_IMP_SIGMA = $HOME/daten/gd/sigma`
+  - `DW_DIR_EXP_SIGMA = $HOME/daten/gd/sigma/export`
+  - `DW_DIR_IMP_TRF = $HOME/daten/trf`
+  - `DW_DIR_IMP_AUF = $HOME/daten/sd/auf`
+  - `DW_DIR_IMP_GUT = $HOME/daten/sd/gut`
+  - `DW_DIR_IMP_KDG = $HOME/daten/sd/kdg`
+  - `DW_DIR_IMP_MP_KDG = $HOME/daten/mp/kdg`
+  - `DW_DIR_IMP_MP_TS = $HOME/daten/mp/ts`
+  - `DW_DIR_IMP_MP_ZM = $HOME/daten/mp/zm`
+  - `DW_DIR_IMP_TS = $HOME/daten/sd/ts`
+  - `DW_DIR_IMP_ZM = $HOME/daten/sd/zm`
+  - `DW_DIR_EXP = $HOME/daten/exporter`
+  - `DW_DIR_IMP_BPM = $HOME/daten/bm`
+  - `DW_DIR_IMP_ZTS = $HOME/daten/zts`
+  - `DW_DIR_IMP_VRS = $HOME/daten/vrs`
+  - `DW_DIR_IMP_BRUNET = $HOME/daten/brunet`
+  - `DW_DIR_IMP_DWH = $HOME/daten/dwh`
+  - `DW_DIR_IMP_PLATO = $HOME/daten/dwh/plato`
+  - `DW_DIR_IMP_CARMEN = $HOME/daten/carmen`
+  - `DW_DIR_IMP_SAP = $HOME/daten/sap`
+  - `DW_DIR_IMP_SR_RV = $HOME/daten/sap/sr_rv_dpps`
+  - `DW_DIR_IMP_SAP_L_GUTGR = $HOME/daten/sap/sap_l_gutgr` (exported as `DW_DIR_IMP_SAP_L`)
+  - `DW_DIR_IMP_L_MAHNSTYP_IST = $HOME/daten/sap/mahn`
+  - `DW_DIR_IMP_L_MAHNV_FI = $HOME/daten/sap/mahn`
+  - `DW_DIR_IMP_L_MAHNV_IST = $HOME/daten/sap/mahn`
+  - `DW_DIR_IMP_L_GUTGR = $HOME/daten/sd/l_gutschr`
+  - `DW_DIR_IMP_L_LEIST = $HOME/daten/sd/l_leist`
+  - `DW_DIR_IMP_L_PROD = $HOME/daten/sd/l_prod`
+  - `DW_DIR_LKODE = $HOME/daten/sd/lkode`
+  - `DW_DIR_IMP_SUBSE = $HOME/daten/subse`
+  - `DW_DIR_SMS_PRG = ${HOME}/aktuell/allgemein/is/util`
+  - `DW_DIR_SMS_ADR = ${HOME}/daten/sms/adressen`
+  - `DW_DIR_SMS_TMP = ${HOME}/daten/sms/tmp`
+  - `DW_DIR_IMP_DPPS = $HOME/daten/dpps`
+  - `DW_DIR_IMP_PLANF2 = $HOME/daten/planf2`
+  - `DW_HOST_CUSTOMER = dxcst3.bn.detemobil.de`
+  - `ORACLE_HOME = /appl/local/oracle/12.2.0.1.0` or `/appl/local/oracle/11.2.0`
+  - `DW_DIR_UTL_FILE = /appl/local/oracle/admin/$ORACLE_SID/utl_file`
+- Environment files sourced:
+  - `. $HOME/.dw_global`
+  - `. $HOME/.dw_lokal`
+- Invokes:
+  - `. $HOME/.dw_global`
+  - `. $HOME/.dw_lokal`
+- Called by: unknown (sourced context script)
+- Exit-code behaviour: No explicit exits; errors in setting ORACLE_HOME are output to stdout.
+- Recommendation: Retain as-is. This script performs no business logic and requires no conversion.
 
 ### Job dependencies
-* **Upstream Predecessors**:
-  * `Shared Files — TMD_processing/ALL_TYPES/mp`: This Ab Initio graph has already been migrated to PySpark and merged (PR 883).
-  * `Shared Files — TMD_processing/ALL_TYPES/run`: The execution control wrapper script has already been migrated and merged (PR 884).
-* **Wiring on Target Platform**:
-  * In Cloud Composer, the initialization logic from this job (`dw_init.py`) will be executed or imported at the start of the DAG to establish the environment contexts before launching the PySpark pipeline tasks.
+* **Upstream dependencies:**
+  * Shared Files — `TMD_processing/ALL_TYPES/mp` (already migrated and merged via PR: https://github.com/gurunathan-prodapt/pi-agents/pull/883) — provides the Ab Initio graph components.
+  * Shared Files — `TMD_processing/ALL_TYPES/run` (already migrated and merged via PR: https://github.com/gurunathan-prodapt/pi-agents/pull/884) — provides the orchestration wrapper.
+  These upstream modules must exist on the target platform (Cloud Composer/GCS) and be imported or called in the final orchestration flow.
 
 ### Execution order
-The target Cloud Composer orchestration must preserve the legacy execution order:
-1. **DAG Orchestration Entry**: `DWH_ALL_TYPES_JOB/DW.DWH_ALL_TYPES_MASTER.xml` (Cloud Composer DAG structure)
-2. **Configuration Loading**: `isall/abinitio/cfg/all_types/all_types_graph.cfg` (Loaded as Airflow variables or DAG params)
-3. **Execution Wrapper**: `isall/aufbereitung/bin/r_all_types_master.ksh` (Python orchestration task)
-4. **Environment Initialization**: `.dw_init` (Sourced/imported as `dw_init.py` to populate variables)
-5. **Data Transformation**: `isall/aufbereitung/awk/k_all_types_transform.awk` (Python transformation task)
-6. **SQL Database Update**: `isall/aufbereitung/sql/d_all_types.sql` (BigQuery SQL execution task)
+The legacy execution sequence consists of the following steps:
+1. `DWH_ALL_TYPES_JOB/DW.DWH_ALL_TYPES_MASTER.xml` (UC4 orchestration)
+2. `isall/abinitio/cfg/all_types/all_types_graph.cfg` (Configuration setup)
+3. `isall/aufbereitung/bin/r_all_types_master.ksh` (Master wrapper script)
+4. `.dw_init` (Shell environment initialization profile)
+5. `isall/aufbereitung/awk/k_all_types_transform.awk` (AWK data transform)
+6. `isall/aufbereitung/sql/d_all_types.sql` (Oracle SQL operation)
+
+**Target Mapping:**
+* `.dw_init` (Step 4) acts purely as an environment profile setting up path variables and configurations for the shell runtime. In the target Cloud Composer (Airflow) DAG, these paths and configurations are managed natively as global or job-specific Airflow Variables/GCP environment variables, meaning `.dw_init` does not require a separate executable task in the final DAG run sequence.
 
 ### Lineage
-* **Upstream Configuration References**:
-  * `.dw_init` USES_CONFIG `UNRESOLVED:.DW_GLOBAL`
-  * `.dw_init` USES_CONFIG `UNRESOLVED:.DW_LOKAL`
+* **Upstream configurations:**
+  * `.dw_init` references and USES_CONFIG from `.DW_GLOBAL` and `.DW_LOKAL` (both resolved as not needing migration since their variables are managed as Airflow configurations).
 
 ### Cross-file dependencies
-* `.dw_init` establishes central path and directory environment variables. These are referenced across subsequent execution steps including `r_all_types_master.ksh`, `k_all_types_transform.awk`, and `d_all_types.sql` to resolve where data imports, log files, and temporary outputs are stored.
-* It historically sourced `.dw_global` and `.dw_lokal` to inherit global parameters.
+* **Configuration sharing:**
+  * `.dw_init` sources `.DW_GLOBAL` and `.DW_LOKAL` during execution to establish system-wide defaults.
+  * The directory structures exported in `.dw_init` are referenced downstream by the master wrapper `r_all_types_master.ksh` and Oracle operations.
 
 ### Target file plan
-* **Target File Path**: `dw_init.py` (Language: Python)
-  * **Source File**: `.dw_init`
-  * **Purpose**: Sets environment parameters, paths, and configurations for Cloud Composer and Dataproc jobs, replacing local Unix folder structures with Google Cloud Storage (GCS) paths.
+* There are no target files to generate for `.dw_init` as its procedural logic is empty, and its environment profile functions are retired in favor of native GCP/Airflow configuration management.
 
 ### Environment-specific values
-Values from the source are classified below according to their target environment role:
+Every path variable and external reference declared in the shell profile has been classified according to its target role on Google Cloud:
 
-1. **GLOBAL (environment-wide)**:
-   * `GCP_PROJECT`: Dynamically resolved via `os.environ.get("GCP_PROJECT")` or Airflow `Variable.get("GCP_PROJECT")`.
-   * `GCS_BUCKET`: The base storage bucket used to replace `$HOME` directory paths. Resolved via `Variable.get("GCS_BUCKET")`.
-   * `HOME`: Legacy execution base directory. Resolved in Python via `os.environ.get("HOME")` or mapped directly to a GCS bucket prefix.
-   * `DW_HOST_CUSTOMER`: Remote host name (`dxcst3.bn.detemobil.de`). Mapped to Airflow Variable `Variable.get("DW_HOST_CUSTOMER")`.
-   * `ORACLE_HOME`: Legacy Oracle home directory. No direct BigQuery or target platform equivalent exists.
-   * `ORACLE_SID`: Legacy Oracle database SID. No direct BigQuery or target platform equivalent exists.
-   * `DW_DIR_UTL_FILE`: Oracle database server file path. No direct BigQuery or target platform equivalent exists.
-
-2. **JOB-SPECIFIC**:
-   * All directories defined in the source (including `DW_DIR_ROOT`, `DW_DIR_PROT`, `DW_DIR_CUBES` and variables prefixed with `DW_DIR_IMP_*` or `DW_DIR_EXP_*`): In the target environment, these represent subdirectory structures. They must be resolved dynamically by combining the global `GCS_BUCKET` variable with job-specific paths (e.g., `f"gs://{GCS_BUCKET}/daten/logfiles"`).
+1. **GLOBAL** (Environment-wide infrastructure configs):
+   * `DW_HOST_CUSTOMER` (Value: `dxcst3.bn.detemobil.de`): Normalized to GCP external connection configuration, retrieved dynamically from Airflow Connections or `Variable.get("DW_HOST_CUSTOMER")`.
+   * `ORACLE_HOME` (Values: `/appl/local/oracle/12.2.0.1.0` or `/appl/local/oracle/11.2.0`): Retired as the target is BigQuery.
+   * `DW_DIR_UTL_FILE` (Value: `/appl/local/oracle/admin/$ORACLE_SID/utl_file`): Retired.
+   * Path Variables (e.g., `DW_DIR_ROOT`, `DW_DIR_PROT`, `DW_DIR_CUBES`, and all 40+ `DW_DIR_IMP_*` / `DW_DIR_EXP_*` directory paths pointing to `$HOME/daten/...`): These represent environment-specific local directory mappings. On the target platform, these must be mapped to subdirectories within a shared Google Cloud Storage bucket (`GCS_BUCKET`). They should be retrieved at runtime via global Airflow Variables using `Variable.get("GCS_BUCKET")` and reconstructed as GCS URI schemes (`gs://{GCS_BUCKET}/...`).
 
 ### File Disposition
 | Source File Path | Target File / Action | Purpose / Reason for Action |
 | :--- | :--- | :--- |
-| `.dw_init` | `dw_init.py` | Converted to a Python initialization module to define and export GCS bucket prefixes and environment configurations. |
-
-### Risks & Manual Actions
-* **Legacy Sourced Files**: Sourcing of `.dw_global` and `.dw_lokal` is bypassed in the target environment as they were human-reviewed and confirmed as not needed (`NO SOURCE NEEDED`). However, any custom configurations they historically provided must be loaded via Airflow DAG `params` or Composer Variables if required downstream.
-* **Oracle Specific Environment Constructs**: The variables `ORACLE_HOME`, `ORACLE_SID`, and `DW_DIR_UTL_FILE` have no direct equivalents in Google BigQuery. Any downstream processes attempting to read/write local files on database-server disks must be refactored to read from or write to Google Cloud Storage (GCS) buckets.
-* **Output Literal Rule**: The literal German text inside the print/echo statements must be preserved character-for-character in the target code:
-  * `"Fehler in .dw_init:"`
-  * `"   Konnte ORACLE_HOME nicht setzen !"`
+| `local/data/source/all_types_linked_job/.dw_init` | `Retired` | Pure shell profile setting paths and Oracle database home locations. No executable business logic. Configs are replaced by native Airflow Variables and GCP environment configurations. |
 
 ---
 
@@ -649,187 +550,165 @@ END {
 TARGET: PYTHON
 
 DECISION RATIONALE
-The AWK script performs data validation and transformation on a semicolon-separated file. For each record, it verifies that the number of fields (`NF`) is exactly 12. If validation succeeds, it prepends "D;" to the record and outputs it. If validation fails, it outputs an error message and immediately terminates the entire execution with a non-zero exit status (`exit 2`). This process-level exit code serves as a control-flow signal to fail the orchestrating shell script or job. Because BigQuery SQL runs as a query engine and cannot terminate its processing mid-flight to return a custom shell exit code (like exit status 2) to the calling orchestrator, this behavior is a BQSQL-disqualifying factor. Migrating to Python ensures that we can preserve this strict validation logic and the process-level failure signal. Conversion confidence is High.
+The AWK script processes semicolon-separated records and performs a field count validation (`NF == 12`). If any record fails this validation, it outputs an error message and terminates immediately with a process-level exit code of `2` (`exit 2`). This use of a non-zero exit code is designed to signal a failure to an orchestrating shell or job runner (such as the `ALL_TYPES_MASTER` job). Standard BigQuery SQL cannot conditionally abort a query execution mid-stream to yield a specific shell-level exit status (like `2`) upon encountering a malformed row. Therefore, migrating this logic requires a procedural host environment like Python (e.g., using a Cloud Function, Cloud Run, or a Dataflow pipeline) to parse the file, validate fields, and exit with status code `2` if validation fails. 
+Conversion Confidence: High.
 
 FEATURE INVENTORY
-* BEGIN block: Yes, used to set `FS` and `OFS` to ";". Expressible in BigQuery via external table configuration or split functions, but not as procedural setup.
-* END block: Yes, present but empty. Expressible in BigQuery (requires no action).
-* Pattern-action rules: Yes, the default block runs for each record. Expressible in BigQuery as a standard row-by-row query.
-* FS/OFS: Yes, set to ";". Expressible in BigQuery via CSV parsing configurations or manual string splitting.
-* NF: Yes, used to validate the count of fields. Expressible in BigQuery using `ARRAY_LENGTH(SPLIT(row, ';'))`.
-* conditions (if/else): Yes, used to check `NF == 12`. Expressible in BigQuery using `CASE WHEN`.
-* $0: Yes, used to output the original record. Expressible in BigQuery as the raw source column.
-* print: Yes, used to output the transformed line or error message. Expressible in BigQuery as a SELECT projection.
-* exit: Yes, terminates execution with exit code 2 on failure. NOT expressible in BigQuery SQL, which cannot raise custom process-level exit codes to an external caller.
+- `BEGIN` block: Expressible in BQSQL. Field and output delimiters (`FS`, `OFS`) can be defined via external table configurations (e.g., CSV options).
+- Pattern-action rules (main block): Expressible in BQSQL. Row-by-row logical evaluation can be mapped to SQL expressions.
+- `FS` / `OFS`: Expressible in BQSQL. Handled at the schema definition level or via string functions.
+- `NF`: Not directly expressible in BQSQL. BQSQL assumes structured schemas where column counts are pre-defined, though checking for nulls or splitting raw text strings is possible.
+- `$0`: Expressible in BQSQL. Represents the entire raw input line, which can be queried if the source is loaded as a single string.
+- `print`: Expressible in BQSQL. Replaced by a `SELECT` statement and string concatenation (e.g., `CONCAT('D;', raw_record)`).
+- `conditions` (`if/else`): Expressible in BQSQL. Can be modeled using `CASE WHEN` conditional statements.
+- `exit` (specifically `exit 2`): Not expressible in BQSQL. BigQuery cannot fail a query and return a specific, custom non-zero process exit code to the shell orchestration layer upon detecting a bad row.
+- `END` block: Expressible in BQSQL. It is empty in this script, which maps to no-op or final query termination.
 
-# DESIGN DOCUMENT: MIGRATION OF `k_all_types_transform.awk` TO PYTHON
-
-## 1. MIGRATION DECISION SUMMARY
-
-*   **Target Language:** Python 3
-*   **BigQuery SQL Exclusion Rationale:** The upstream orchestration framework relies on process-level exit codes to determine job success or failure. If a record fails the field count validation (i.e., its field count is not exactly 12), the AWK script outputs an error message and terminates immediately with a custom non-zero process-level exit status (`exit 2`). BigQuery SQL is a declarative, set-based query engine; it does not support raising custom OS-level exit codes mid-stream during query execution to stop an orchestrator. Migrating to Python 3 preserves this strict validation flow, ensures real-time termination upon encountering invalid records, and retains native integration with the surrounding shell/orchestration layer via `sys.exit(2)`.
-*   **Conversion Confidence:** High. The business logic is simple, straightforward, and highly compatible with standard Python text-stream processing.
-*   **Human Review Required:** Yes, a brief review is recommended to confirm whether the error message should continue to go to standard output (`stdout`), as AWK does, or be redirected to standard error (`stderr`).
+An explainable Design Document followed by numbered Python-oriented pseudocode is presented below.
 
 ---
 
-## 2. PROGRAM OVERVIEW
+### 1. MIGRATION DECISION SUMMARY
 
-*   **Purpose:** Post-processes the `ALL_TYPES` export file. It acts as a data-quality gate by validating that every data record contains exactly 12 fields (delimited by semicolons). Valid records are prefixed with `"D;"` to denote "Data Record", while invalid records cause an immediate process abort.
-*   **Input Streams/Files:** Semicolon-separated text lines read either from files passed as command-line arguments or directly from standard input (`stdin`).
+*   **Target Environment:** Python 3 (procedural script execution).
+*   **BigQuery SQL Exclusion Rationale:** BigQuery SQL was ruled out because of the strict operational control flow required by the source program. Specifically, upon encountering any record with an invalid field count (`NF != 12`), the script must print an error message and immediately terminate the entire execution stream with a specific process exit code of `2` (`exit 2`). This non-zero exit code is critical to communicate failure back to the orchestrating parent job (`ALL_TYPES_MASTER`). Stateless BigQuery SQL transformations cannot abort mid-stream or produce explicit process-level operating system exit codes to signal orchestration control flow.
+*   **Conversion Confidence:** High (100%). The logic is simple, structured, and easily replicated in a procedural Python script.
+*   **Human Review Required:** Minimal. Review is only required to verify integration within the orchestration shell script (replacing the `awk` command with the Python execution).
+
+---
+
+### 2. PROGRAM OVERVIEW
+
+*   **Purpose:** Post-processes the `ALL_TYPES` export file. It prefixes every valid data record with a row-type indicator (`D;`) and validates that each record contains exactly 12 fields. If a record is malformed, it halts the program and exits with an error code.
+*   **Input Streams:** Standard input (`sys.stdin`) or files specified as command-line arguments.
+*   **Expected Record Format:** Semicolon-separated values (delimiter `;`). Each valid row must contain exactly 12 fields.
 *   **Output Streams:** 
-    *   **Success:** Prefixed records (`D;<original_record>`) written to standard output (`stdout`).
-    *   **Failure:** Validation error message written to standard output (`stdout`), followed by process termination with exit code `2`.
-*   **Command-Line Variables:** None (`-v` is not used).
-*   **Observable Side Effects:** Process exit code `2` on validation failure; process exit code `0` on successful completion of all records.
+    *   **Stdout:** Prefixed records (`D;<original_record>`) and error messages.
+    *   **Stderr:** Not used by the original AWK script (the error message is written to `stdout` via standard `print`).
+*   **Observable Side Effects:** Process termination with exit code `2` upon validation failure.
 
 ---
 
-## 3. AWK FEATURE INVENTORY
+### 3. AWK FEATURE INVENTORY
 
-*   **BEGIN block:** Yes. Used to set the Input Field Separator (`FS = ";"`) and Output Field Separator (`OFS = ";"`). 
-    *   *Python Equivalent:* Standard string splitting (`line.split(';')`) and string formatting/joining.
-*   **Main Pattern-Action Rule (executed per line):** Yes. Implements the core validator and transformation logic.
-    *   *Python Equivalent:* A `for line in fileinput.input()` loop.
-*   **Field references (`$0`):** Yes. Represents the raw un-split record (excluding the record separator).
-    *   *Python Equivalent:* The line string stripped of trailing newline characters (`line.rstrip('\r\n')`).
-*   **FS / OFS:** Yes (`FS = ";"`, `OFS = ";"`).
-    *   *Python Equivalent:* `";"` used as the delimiter for splitting and joining.
-*   **NF (Number of Fields):** Yes. Used in the condition `NF == 12` to validate the column count.
-    *   *Python Equivalent:* `len(fields)` where `fields = line.split(';')`.
-*   **print:** Yes. `print "D;" $0` concatenates `"D;"` and `$0` and prints with a trailing newline. `print "Error..."` prints the failure message.
-    *   *Python Equivalent:* `sys.stdout.write(f"D;{stripped_line}\n")` and `sys.stdout.write("Error: Incorrect nos of Fields \n")`.
-*   **exit:** Yes (`exit 2`). Stops processing immediately and returns code `2` to the shell.
-    *   *Python Equivalent:* `sys.exit(2)`.
-*   **END block:** Yes (empty). 
-    *   *Python Equivalent:* No actions are executed after processing or upon manual exit.
+*   `BEGIN` block: Sets the input field separator (`FS = ";"`) and output field separator (`OFS = ";"`). In Python, this is mapped to parsing strings using `.split(';')`.
+*   `NF` (Number of Fields): Used to validate field count. In Python, this is mapped to checking `len(line.split(';'))`.
+*   `$0` (Entire Record): Represents the raw input line. In Python, this is mapped to the read line string (with line endings preserved or handled appropriately).
+*   `print`: In the main block, prefixes the record with `"D;"` and prints. In Python, this maps to printing `"D;" + raw_line`.
+*   `if-else` condition: Used for logical validation. In Python, this is a standard `if-else` block.
+*   `exit 2`: Halts execution and sets exit status to 2. In Python, this is mapped to `sys.exit(2)`.
+*   `END` block: Empty block. No mapping required in Python.
 
 ---
 
-## 4. PYTHON IMPLEMENTATION STRATEGY
+### 4. PYTHON IMPLEMENTATION STRATEGY
 
-*   **Standard Libraries:** `sys`, `fileinput`.
-*   **Stream Processing:** The script will read lines using `fileinput.input(files=sys.argv[1:])`, which transparently handles both files passed as arguments and standard input streams.
-*   **Line-Ending Preservation:** Before processing, each raw line will be stripped of trailing newlines (`\r\n` or `\n`) to replicate how AWK populates `$0`.
-*   **Field Splitting and `NF` Emulation:** 
-    *   AWK splits lines strictly on `FS = ";"`. 
-    *   In Python, this is emulated by `fields = stripped_line.split(';')`.
-    *   The condition `NF == 12` translates directly to `len(fields) == 12`.
-*   **String Juxtaposition:** The AWK concatenation `print "D;" $0` will be implemented using Python f-strings: `f"D;{stripped_line}\n"`.
-*   **Error Reporting and Exit Action:** 
-    *   If `len(fields) != 12`, Python will print `"Error: Incorrect nos of Fields "` to `sys.stdout` (to match AWK's default output stream redirection) and then raise `sys.exit(2)`.
+*   **Libraries:** `sys` (for I/O and process exit handling). No other external libraries are needed.
+*   **Streaming Loop:** Read lines from `sys.stdin` or specified files dynamically using standard iteration over file streams to maintain a low memory footprint.
+*   **Field Splitting and Counting:** 
+    *   To accurately mimic AWK's semicolon splitting, each line has its trailing newline character removed (e.g. `\n` or `\r\n`) and is split using `.split(';')`.
+    *   The split count is checked against `12`.
+*   **Preserving `$0`:** The original line content (retaining exact spacing and characters) is printed with `"D;"` prepended to it.
+*   **Error Reporting:** The error message `"Error: Incorrect nos of Fields "` is printed to stdout to match the AWK script's precise behavior.
 
 ---
 
-## 5. INPUTS, OUTPUTS, AND DEPENDENCIES
+### 5. INPUTS, OUTPUTS, AND DEPENDENCIES
 
-*   **Direct Shell Dependencies:** Orchestrating scripts (such as the `ALL_TYPES_MASTER` shell runner) expect this script to process input streams and return exit status `2` on any validation failure.
-*   **Environment Assumptions:** Assumes standard Unix-like execution where standard input/output streams are connected to files or shell pipes.
-*   **External Script Placeholders (TODOs):** None. This is a self-contained transformer block.
-
----
-
-## 6. UNSUPPORTED FEATURES, WARNINGS, AND ASSUMPTIONS
-
-*   **Line Splitting Behavior:**
-    *   # *REVIEW:* In AWK, splitting an empty string with `FS = ";"` might yield `NF = 0` or `NF = 1` depending on the platform/engine. In Python, `"".split(';')` returns `['']` (length 1). Because both 0 and 1 are not equal to 12, both AWK and Python will correctly identify empty lines as errors. This behavior is safe.
-*   **Error Stream Destination:**
-    *   # *REVIEW:* The original AWK script prints `"Error: Incorrect nos of Fields "` to standard output (`stdout`), since `print` is not redirected to `/dev/stderr` via `> "/dev/stderr"` or `| "cat 1>&2"`. The Python translation preserves this by writing to `sys.stdout`. If the orchestration layer expects error text on `sys.stderr`, this must be modified.
+*   **Inputs:** Raw data records via standard input (`stdin`) or positional filename argument.
+*   **Outputs:** Prefixed data or validation error text to standard output (`stdout`).
+*   **Upstream Dependencies:** The output generation of the `ALL_TYPES` export script.
+*   **Downstream Dependencies:** The subsequent execution step within the `ALL_TYPES_MASTER` orchestration chain.
 
 ---
 
-## 7. MANUAL REVIEW ITEMS
+### 6. UNSUPPORTED FEATURES, WARNINGS, AND ASSUMPTIONS
 
-1.  Confirm if the error message `"Error: Incorrect nos of Fields "` should remain on `stdout` (matching the original AWK logic) or be redirected to `stderr` (`sys.stderr.write`).
-2.  Verify that the downstream orchestrator for the `ALL_TYPES_MASTER` job correctly catches and handles exit code `2`.
+*   `# REVIEW:` **Standard Output for Error:** The original AWK script prints its error message `"Error: Incorrect nos of Fields "` to `stdout` instead of `stderr`. The Python implementation mimics this exactly to preserve behavioral compatibility. If downstream consumers expect only valid records on `stdout`, this should be redirected to `sys.stderr` instead.
+*   `# REVIEW:` **Trailing Semicolons:** Note that standard AWK split behavior on a line ending in a semicolon (e.g. `a;b;...;`) will count the empty string after the trailing semicolon as a field. Standard Python `.split(';')` behaves identically (e.g. `'a;b;'.split(';')` returns `['a', 'b', '']`).
 
 ---
 
-## 8. NUMBERED PSEUDOCODE
+### 7. MANUAL REVIEW ITEMS
+
+1.  **Orchestrator Integration:** Ensure that the wrapper script of `ALL_TYPES_MASTER` invokes the Python script and correctly captures the exit code `2` to halt downstream processing.
+2.  **Output Destination:** Verify if the validation error message should remain on standard output or be redirected to standard error (`sys.stderr`).
+
+---
+
+### 8. NUMBERED PSEUDOCODE
 
 ```python
-# 1. Import necessary standard library modules
+# 1. Import necessary system execution modules
 import sys
-import fileinput
 
-# 2. Main execution block
+# 2. Define the main execution routine
 def main():
-    # 3. Simulate BEGIN block configuration
-    field_separator = ";"
-    expected_field_count = 12
+    # 3. Process records line-by-line from standard input (streaming mode)
+    for line in sys.stdin:
+        
+        # 4. Strip the trailing newline characters for processing
+        # Keep track of the original raw line ending (either \r\n or \n) to preserve it
+        if line.endswith("\r\n"):
+            line_ending = "\r\n"
+            stripped_line = line[:-2]
+        elif line.endswith("\n"):
+            line_ending = "\n"
+            stripped_line = line[:-1]
+        else:
+            line_ending = ""
+            stripped_line = line
 
-    try:
-        # 4. Loop through each line of input (files from argv or stdin)
-        for raw_line in fileinput.input():
-            # 5. Replicate AWK's record-reading behavior by stripping trailing record separators (newlines)
-            stripped_line = raw_line.rstrip('\r\n')
+        # 5. Split the record by the field separator ';' to compute NF (Number of Fields)
+        fields = stripped_line.split(";")
+        num_fields = len(fields)
 
-            # 6. Replicate AWK FS splitting behavior to determine field count (NF)
-            fields = stripped_line.split(field_separator)
-            num_fields = len(fields)
+        # 6. Validate if the count of fields is exactly 12
+        if num_fields == 12:
+            # 7. Print the prefixed indicator "D;" followed by the original raw line
+            sys.stdout.write("D;" + stripped_line + line_ending)
+        else:
+            # 8. Print error message exactly as output by AWK
+            sys.stdout.write("Error: Incorrect nos of Fields \n")
+            # 9. Terminate process execution with status code 2
+            sys.exit(2)
 
-            # 7. Check validation constraint: NF == 12
-            if num_fields == expected_field_count:
-                # 8. Success path: prepend "D;" to the original record and write to stdout
-                # Juxtaposition in AWK ("D;" $0) behaves as direct concatenation
-                sys.stdout.write(f"D;{stripped_line}\n")
-            else:
-                # 9. Failure path: write error message to stdout and terminate process
-                sys.stdout.write("Error: Incorrect nos of Fields \n")
-                
-                # 10. Emulate 'exit 2'. In AWK, exit jumps to the END block.
-                # Since the END block is empty, we exit the process immediately with code 2.
-                sys.exit(2)
-
-    except SystemExit as e:
-        # 11. Catch system exits to allow proper exit code propagation
-        sys.exit(e.code)
-    except Exception as err:
-        # 12. Catch unexpected runtime errors, output traceback to stderr, and exit with code 1
-        sys.stderr.write(f"Unexpected Runtime Error: {str(err)}\n")
-        sys.exit(1)
-
-# 13. Standard Python entry point guard
-if __name__ == '__main__':
+# 10. Execute script standard entrypoint
+if __name__ == "__main__":
     main()
 ```
 
-### Job Dependencies
+### Job dependencies
 *   **Upstream Dependencies:**
-    *   `Shared Files — TMD_processing/ALL_TYPES/mp/all_types_graph.mp` (already migrated and merged).
-    *   `Shared Files — TMD_processing/ALL_TYPES/run/all_types_graph.ksh` (already migrated and merged).
-*   **Wiring on the Target Platform:**
-    The shared modules for `all_types_graph` have already been migrated to PySpark. In the orchestrating Cloud Composer (Airflow) DAG, the PySpark task executing the graph must run and successfully output its result dataset prior to triggering the validation task defined in this scope.
+    *   **Shared Files — TMD_processing/ALL_TYPES/mp:** Converted PySpark pipeline representing `TMD_processing/ALL_TYPES/mp/all_types_graph.mp`, already migrated and merged under PR [#883](https://github.com/gurunathan-prodapt/pi-agents/pull/883).
+    *   **Shared Files — TMD_processing/ALL_TYPES/run:** Converted wrapper script representing `TMD_processing/ALL_TYPES/run/all_types_graph.ksh`, already migrated and merged under PR [#884](https://github.com/gurunathan-prodapt/pi-agents/pull/884).
+    *   **Wiring on Target Platform:** Within the Cloud Composer (Airflow) DAG orchestrating `DW.DWH_ALL_TYPES_MASTER`, the task executing the migrated PySpark pipeline (from `all_types_graph.mp`) must successfully complete and produce its export file before triggering the task for this post-processing Python validation script.
 
-### Execution Order
-The execution sequence defined in the legacy dependency graph must be preserved in the target Airflow DAG as follows:
-1.  **Step 1–4 (Upstream):** DAG starts, sets configurations from `all_types_graph.cfg`, and executes the `all_types_graph` PySpark task.
-2.  **Step 5 (Current Scope):** The Python operator executes `isall/aufbereitung/awk/k_all_types_transform.py` to validate and prefix the generated data file.
-3.  **Step 6 (Downstream):** Upon successful validation (exit code 0), the BigQuery execution task runs the migrated SQL loader script `d_all_types.sql` to ingest the verified records.
+### Execution order
+The target Airflow DAG task ordering must preserve the execution sequence established in the legacy job:
+1.  **Orchestration Initializer:** XML definition `DWH_ALL_TYPES_JOB/DW.DWH_ALL_TYPES_MASTER.xml` maps to the parent Cloud Composer DAG.
+2.  **Configuration Loader:** `isall/abinitio/cfg/all_types/all_types_graph.cfg` parameters map to Airflow `params` or runtime configuration variables.
+3.  **Job Driver wrapper:** `isall/aufbereitung/bin/r_all_types_master.ksh` maps to the master orchestrating Python operator.
+4.  **Environment Initialization:** `.dw_init` maps to the DAG environment initialization task.
+5.  **Post-Processing & Validation (This File):** `isall/aufbereitung/awk/k_all_types_transform.awk` maps to the Python-based execution task `isall/aufbereitung/awk/k_all_types_transform.py`.
+6.  **Database Loading / Operations:** `isall/aufbereitung/sql/d_all_types.sql` maps to a BigQuery executing task (e.g., `BigQueryInsertJobOperator`).
 
-### Cross-File Dependencies
-*   **Data Pipeline Hand-off:**
-    *   **Input Data:** The Python script `k_all_types_transform.py` processes the raw flat-file export generated by the upstream PySpark pipeline (`all_types_graph`).
-    *   **Output Data:** The validated data stream (with each row prefixed by `D;`) is output to Google Cloud Storage (GCS) and consumed as the direct input source for the downstream BigQuery table loader (`d_all_types.sql`).
+### Cross-file dependencies
+*   **Input Data Source:** This script processes the output file generated by the upstream Ab Initio graph (`all_types_graph.mp`), which runs as a PySpark job in the target platform.
+*   **Output Data Consumer:** The output file with prefixed records (`D;...`) and validated schemas is subsequently loaded into BigQuery by the target SQL script replacing `isall/aufbereitung/sql/d_all_types.sql`.
 
-### Target File Plan
+### Target file plan
 *   **Target File Path:** `isall/aufbereitung/awk/k_all_types_transform.py`
     *   **Language:** Python 3
     *   **Source File:** `isall/aufbereitung/awk/k_all_types_transform.awk`
 
-### Environment-Specific Values
-There are no project IDs, dataset references, connection profiles, or environment variables present in `isall/aufbereitung/awk/k_all_types_transform.awk`.
-
 ### File Disposition
+
 | Source File Path | Target File / Action | Purpose / Reason for Action |
 | :--- | :--- | :--- |
-| `isall/aufbereitung/awk/k_all_types_transform.awk` | `isall/aufbereitung/awk/k_all_types_transform.py` | Converted to a standalone Python script to validate input records and maintain process-level exit codes (`exit 2`) for integration with Cloud Composer. |
+| `isall/aufbereitung/awk/k_all_types_transform.awk` | `isall/aufbereitung/awk/k_all_types_transform.py` | Converted to a standalone Python script to perform streaming line-by-line record validation and enforce a custom process exit status (`exit 2`) on schema failure, which cannot be handled inside native BigQuery SQL. |
 
 ---
-
-=== CONFIRMED TARGET PLATFORM ===
-TARGET_PLATFORM: BIGQUERY
-This is stated directly by the caller, not inferred from the extraction below. Treat it as ground truth everywhere the design/build instructions would otherwise infer the platform or fall back to a default -- it satisfies the "unless explicitly stated in the extraction" condition those rules already reference. Never emit "# REVIEW: target database platform not specified" while this section is present.
 
 === FILE: isall/aufbereitung/bin/r_all_types_master.ksh ===
 #!/bin/ksh
@@ -886,239 +765,274 @@ exit 0
 
 === CONVERSION VERDICT ===
 VERDICT: PYTHON
-REASON: The script orchestrates an external SQL*Plus script and an external AWK script whose source bodies are both unsupplied in the extraction, necessitating a Python-based wrapper to safely manage environment sourcing and process invocation.
+REASON: The script references an AWK script via -f whose source is not supplied in the extraction, making its SQL-expressibility unconfirmable.
 
 EVIDENCE
-- Business logic found: KSH custom logic. It runs an Oracle SQL refresh script (`d_all_types.sql`) via SQL*Plus and transforms a CSV file using an AWK script (`k_all_types_transform.awk`).
-- AWK: The AWK program is referenced externally via `-f` (`k_all_types_transform.awk`), but its source code was not supplied, meaning it cannot be verified as SQL-shaped.
-- SQL-expressible: No, because the AWK script's business logic is completely missing from the extraction, and target file manipulation is performed.
-- Non-SQL side effects: Writes operational logs to a file (`all_types_master_${v_sysdate}.log`) and produces an output text file (`all_types_export.out`).
-- Against this verdict: If the AWK script and Oracle SQL script bodies were fully supplied and proven to be basic relation-to-relation transformations, they could potentially be translated into a series of BigQuery SQL queries; however, without their source, Python is the only safe and viable conversion path.
-
+- Business logic found: KSH custom logic runs a SQLPlus script (`d_all_types.sql`) and then runs an AWK script (`k_all_types_transform.awk`) to transform an exported CSV file.
+- AWK: `awk -f ${ALL_DIR_ROOT}/aufbereitung/awk/k_all_types_transform.awk` is invoked, but its source is not supplied in the extraction.
+- SQL-expressible: No, because the AWK code is missing and it reads/writes physical flat files.
+- Non-SQL side effects: Logging to a file (`all_types_master_[date].log`) and reading/writing physical CSV files.
+- Against this verdict: None, since the AWK program is not supplied, we cannot verify if its operations could be mapped to SQL.
 
 =======================================================================================
 PART A — PYTHON DESIGN DOCUMENT
 =======================================================================================
 
-1. SCRIPT OVERVIEW
-   The script `r_all_types_master.ksh` is a master orchestration harness for the "ALL_TYPES" showcase job. It is triggered after an Ab Initio graph execution in the same UC4 job chain. It performs sequential post-processing steps: first executing an Oracle database refresh via SQL*Plus, and then applying an AWK script to transform an exported flat file.
+### 1. SCRIPT OVERVIEW
+The script `r_all_types_master.ksh` serves as the post-processing orchestration wrapper for the `ALL_TYPES` showcase job. It is executed following an Ab Initio graph run to coordinate a database-level refresh in Oracle followed by flat-file formatting. It executes an Oracle SQL script via SQL*Plus and then uses an AWK script to post-process an exported CSV data file, logging all steps to a date-stamped log file.
 
-2. INVOCATION CONTEXT
-   - Who calls this script: UC4 job (implied by the comments: "im Anschluss an den Ab Initio Graphenlauf (gestartet ueber r_ai_start aus dem UC4-Job selbst)"). Exact UC4 JOBS_UNIX object name is unknown.
-   - UC4 native includes: None referenced in this extraction.
-   - Environment files sourced:
-     - `. $HOME/.dw_init`
-       # REVIEW-STRUCT: environment file .dw_init not supplied — variables it sets (such as ALL_DIR_ROOT, DW_ORAUSER) are unknown; do not guess their names or values
+### 2. INVOCATION CONTEXT
+- **Caller / Trigger**: Invoked by a UC4 / Automic job scheduler (associated with `JobKennung="ALL_TYPES_MASTER"`). 
+- **UC4 Native Includes**: None referenced in this extraction.
+- **Environment Files Sourced**:
+  - `. $HOME/.dw_init`
+    # REVIEW-STRUCT: environment file .dw_init not supplied — variables it sets are unknown; do not guess their names or values
 
-3. PARAMETERS / INPUTS
-   - `ALL_DIR_ROOT` (Environment Variable)
-     - Source: Sourced via `$HOME/.dw_init`
-     - Status: Used in script body to locate SQL scripts, AWK scripts, data inputs, and log outputs.
-     - Python representation: `os.environ.get("ALL_DIR_ROOT")`
-   - `DW_ORAUSER` (Environment Variable)
-     - Source: Sourced via `$HOME/.dw_init`
-     - Status: Used in script body as the connection string / credentials for running SQL*Plus.
-     - Python representation: `os.environ.get("DW_ORAUSER")`
-   - `JobKennung` (Internal Variable)
-     - Source: Hardcoded to `"ALL_TYPES_MASTER"` (forced uppercase via `typeset -u`).
-     - Status: Used for printing header info.
-     - Python representation: `job_kennung = "ALL_TYPES_MASTER"`
-   - `v_sysdate` (Internal Variable)
-     - Source: Derived via shell command `date +%d%m%Y`.
-     - Status: Used to construct the dynamic log file path.
-     - Python representation: `v_sysdate = datetime.now().strftime("%d%m%Y")`
+### 3. PARAMETERS / INPUTS
+- **`ALL_DIR_ROOT`** (Environment Variable)
+  - Source: Sourced via `.dw_init` or inherited from the environment.
+  - Used: Yes, to construct paths for SQL, AWK, data, and log files.
+  - Python mapping: `os.environ.get("ALL_DIR_ROOT")`
+- **`DW_ORAUSER`** (Environment Variable)
+  - Source: Sourced via `.dw_init` or inherited from the environment.
+  - Used: Yes, passed as connection credentials to SQL*Plus.
+  - Python mapping: `os.environ.get("DW_ORAUSER")`
+- **`HOME`** (Environment Variable)
+  - Source: System environment.
+  - Used: Yes, to locate the environment initialization script (`.dw_init`).
+  - Python mapping: `os.environ.get("HOME")`
+- **`ProgName`** (Local Variable)
+  - Value: `"ALL_TYPES Showcase Rahmenskript"`
+  - Status: Declared but unused — confirm before dropping in target script.
+- **`ProgVersion`** (Local Variable)
+  - Value: `"V1.0.0"`
+  - Status: Declared but unused — confirm before dropping in target script.
 
-4. EXTERNAL COMMANDS / PROGRAMS INVOKED
-   - `sqlplus ${DW_ORAUSER} @${ALL_DIR_ROOT}/aufbereitung/sql/d_all_types.sql </dev/null >> $LogDatei 2>&1`
-     - Purpose: Executes an Oracle SQL script to refresh database tables.
-     - Action: Must remain an external process invocation via `subprocess` (since the SQL file body is not supplied, and target platform is BigQuery, which prevents running SQL*Plus scripts natively).
-     - Resolvable Launcher: No.
-     - Marker: # REVIEW-STRUCT: launcher sqlplus invoked with SQL script d_all_types.sql — internal behaviour not available in this extraction; confirm logging, error propagation, and credential handling before finalizing the conversion.
-   - `awk -f ${ALL_DIR_ROOT}/aufbereitung/awk/k_all_types_transform.awk ${ALL_DIR_ROOT}/data/all_types_export.csv > ${ALL_DIR_ROOT}/data/all_types_export.out`
-     - Purpose: Performs data transformation on `all_types_export.csv` to generate `all_types_export.out`.
-     - Action: Must remain an external process invocation via `subprocess` because the AWK script's logic is not supplied.
-     - Marker: # REVIEW-STRUCT: AWK script k_all_types_transform.awk body not supplied — behaviour unknown; confirm logic and verify whether this should be refactored to native Python pandas/csv processing once available.
+### 4. EXTERNAL COMMANDS / PROGRAMS INVOKED
+- **Command 1**: `sqlplus ${DW_ORAUSER} @${ALL_DIR_ROOT}/aufbereitung/sql/d_all_types.sql </dev/null >> $LogDatei 2>&1`
+  - Purpose: Executes an Oracle SQL script (`d_all_types.sql`) to refresh target tables.
+  - Native Python Call vs Subprocess: Provisionally left as a subprocess invocation.
+    # REVIEW: target database platform not specified; DB-client library choice below is provisional
+    # REVIEW-STRUCT: SQL file d_all_types.sql not supplied in this extraction; contents are unknown.
+  - Resolvable Launcher: No, because the SQL file's contents are not supplied, and DB connection parameters are unconfirmed.
+- **Command 2**: `awk -f ${ALL_DIR_ROOT}/aufbereitung/awk/k_all_types_transform.awk ${ALL_DIR_ROOT}/data/all_types_export.csv > ${ALL_DIR_ROOT}/data/all_types_export.out`
+  - Purpose: Transforms the exported CSV file into a finalized output structure.
+  - Native Python Call vs Subprocess: Provisionally left as a subprocess invocation of AWK.
+    # REVIEW-STRUCT: AWK file k_all_types_transform.awk not supplied — behavior is unknown. Must preserve as external command or rewrite once the AWK logic is available.
+  - Resolvable Launcher: No.
 
-5. EMBEDDED SQL
-   - No inline SQL statements exist in this script.
-   - Referenced SQL file: `${ALL_DIR_ROOT}/aufbereitung/sql/d_all_types.sql`
-     - Dialect: Oracle SQL (inferred from `sqlplus` usage).
-     - Tables touched: Unknown.
-     - Marker: # REVIEW: target database platform is confirmed as BIGQUERY; the referenced Oracle SQL script d_all_types.sql will require conversion to BigQuery Standard SQL and cannot run via SQL*Plus in the target environment.
+### 5. EMBEDDED SQL
+- **Source file**: `${ALL_DIR_ROOT}/aufbereitung/sql/d_all_types.sql`
+  # REVIEW-STRUCT: SQL file d_all_types.sql not supplied in this extraction; contents are unknown.
+- **Statement Type**: Unknown (refers to "SQL-Refresh" in comments).
+- **Dialect**: Oracle SQL*Plus is implied by the `sqlplus` launcher.
 
-6. CONTROL FLOW
-   1. **Environment Setup**: Sources `.dw_init` to define directory roots and credentials.
-   2. **Shell Guarding**: Sets `set -eu` to abort on any step's failure or usage of unassigned variables.
-   3. **Variable Evaluation**: Computes the dynamic date string (`v_sysdate`) and dynamic log path (`LogDatei`).
-   4. **Logging Initiation**: Prints job identification and metadata block to standard output.
-   5. **Step 1 (SQL Refresh)**: Invokes `sqlplus` to execute `d_all_types.sql`. Stdin is detached via `/dev/null`, and stdout/stderr are appended to the log file.
-   6. **Step 2 (AWK Transformation)**: Invokes `awk` with the `-f` flag using `k_all_types_transform.awk` to process `all_types_export.csv`, redirecting standard output to `all_types_export.out`.
-   7. **Termination**: Prints execution success message to the log and exits with status code 0.
+### 6. CONTROL FLOW
+1. **Environment Setup**: Source `$HOME/.dw_init` to define required variables.
+2. **Execution Options**: Set shell parameters `set -eu` to abort on any error.
+3. **Variable Assignment**:
+   - `JobKennung` is set to `"ALL_TYPES_MASTER"` (forced to uppercase).
+   - `v_sysdate` is set to the current date formatted as `DDMMYYYY`.
+   - `LogDatei` is resolved to `${ALL_DIR_ROOT}/protokoll/all_types_master_${v_sysdate}.log`.
+4. **Logging Initiation**: Prints job execution details (JobKennung, LogDatei) to standard output.
+5. **Step 1 (SQL Refresh)**: Executes the Oracle SQL script via `sqlplus`, redirecting all stdout and stderr to `LogDatei`. Input is redirected from `/dev/null` to prevent interactive prompt hangs.
+6. **Step 2 (AWK Transformation)**: Runs the AWK script on the input file `${ALL_DIR_ROOT}/data/all_types_export.csv`, writing the results to `${ALL_DIR_ROOT}/data/all_types_export.out`. A status message is logged using `tee` to write to both stdout and `LogDatei`.
+7. **Success Tracking**: Logs a completion message ("Die Abarbeitung wurde ohne erkennbare Fehler beendet") to `LogDatei` and stdout.
+8. **Exit**: Exits with status `0`.
 
-7. ERROR HANDLING & EXIT CODES
-   - The shell script uses `set -eu` which causes the shell to exit immediately if any command returns a non-zero exit status.
-   - In Python, this behavior is modeled by running subprocess executions with `check=True`, raising `subprocess.CalledProcessError` on failure.
-   - Log files and exceptions will propagate failure to the orchestrator (UC4) with a non-zero exit status.
+### 7. ERROR HANDLING & EXIT CODES
+- **Detection**: Standard shell exit on error (`set -e`) means any failed step immediately terminates the script with a non-zero exit code.
+- **Action**: Failure propagates the exit code of the failing step (`sqlplus` or `awk`).
+- **Success Convention**: Clean exit with code `0`.
+- **Python Mapping**: All `subprocess.run` calls must be executed with `check=True` inside a `try...except CalledProcessError` block to capture, log, and propagate failure exit codes.
 
-8. OUTPUTS / SIDE EFFECTS
-   - Log file: `${ALL_DIR_ROOT}/protokoll/all_types_master_${v_sysdate}.log`
-   - Export out file: `${ALL_DIR_ROOT}/data/all_types_export.out`
+### 8. OUTPUTS / SIDE EFFECTS
+- **Log File**: `${ALL_DIR_ROOT}/protokoll/all_types_master_${v_sysdate}.log`
+- **Output File**: `${ALL_DIR_ROOT}/data/all_types_export.out`
+- **Database state**: Refreshed tables via `d_all_types.sql` (unconfirmed).
 
-9. BUSINESS SUMMARY
-   - Orchestrates post-processing steps for the "ALL_TYPES" showcase chain.
-   - Refreshes relational target tables using an Oracle SQL script.
-   - Sequentially runs an AWK transformation over exported flat data (`all_types_export.csv`) to produce a final formatted output file (`all_types_export.out`).
-   - Standardizes operational logs into a consolidated daily audit trail.
+### 9. BUSINESS SUMMARY
+- Coordinates the post-processing phase of the `ALL_TYPES` showcase process flow.
+- Triggers a database-level tables refresh within Oracle.
+- Performs column-level and record-level formatting transformations on the exported flat file.
+- Produces a post-processed data output file for downstream consumption.
+- Records end-to-end trace logs for auditing and operational debugging.
 
 =======================================================================================
 PYTHON PSEUDOCODE
 =======================================================================================
 
 ```python
-#!/usr/bin/env python3
+# Step 1: Import required libraries
 import os
 import sys
 import subprocess
-from datetime import datetime
+import datetime
 
-# Step 1: Environment Sourcing (Simulated)
-# # REVIEW-STRUCT: environment file .dw_init not supplied — variables it sets (such as ALL_DIR_ROOT, DW_ORAUSER) are unknown; do not guess their names or values
-# We assume these variables are already loaded into the execution environment by UC4 or the launching wrapper.
-
-ALL_DIR_ROOT = os.environ.get("ALL_DIR_ROOT")
-DW_ORAUSER = os.environ.get("DW_ORAUSER")
-
-# Guard checks for mandatory environment variables
-if not ALL_DIR_ROOT:
-    print("Error: ALL_DIR_ROOT environment variable is not set.", file=sys.stderr)
-    sys.exit(1)
-
-if not DW_ORAUSER:
-    print("Error: DW_ORAUSER environment variable is not set.", file=sys.stderr)
-    sys.exit(1)
-
-# Step 2: Initialize Script Variables
-job_kennung = "ALL_TYPES_MASTER"  # typeset -u forces uppercase, which this is
-v_sysdate = datetime.now().strftime("%d%m%Y")
-log_datei = os.path.join(ALL_DIR_ROOT, "protokoll", f"all_types_master_{v_sysdate}.log")
-
-# Step 3: Print job information block to stdout
-print(" ----------------- Job -----------------------")
-print(f" JobKennung: '{job_kennung}'")
-print(f" Logdatei  : '{log_datei}'")
-print(" ---------------------------------------------")
-
-try:
-    # Step 4: Execute SQL Refresh Step (Oracle SQL*Plus)
-    # # REVIEW-STRUCT: launcher sqlplus invoked with SQL script d_all_types.sql — internal behaviour not available in this extraction; confirm logging, error propagation, and credential handling before finalizing the conversion.
-    # # REVIEW: target database platform is confirmed as BIGQUERY; the referenced Oracle SQL script d_all_types.sql will require conversion to BigQuery Standard SQL.
-    sql_script_path = os.path.join(ALL_DIR_ROOT, "aufbereitung", "sql", "d_all_types.sql")
+def main():
+    # Step 2: Initialize environment and check source variables
+    # # REVIEW-STRUCT: environment file .dw_init not supplied — variables it sets are unknown; do not guess their names or values
+    # In a real migration context, the variables below would be inherited from the scheduler environment.
     
-    with open(log_datei, "a") as log_file:
-        log_file.write("----Starte SQL-Refresh----\n")
-        log_file.flush()
+    # ProgName and ProgVersion are declared but unused in the original script
+    prog_name = "ALL_TYPES Showcase Rahmenskript"
+    prog_version = "V1.0.0"
+    
+    all_dir_root = os.environ.get("ALL_DIR_ROOT")
+    dw_orauser = os.environ.get("DW_ORAUSER")
+    
+    if not all_dir_root or not dw_orauser:
+        print("CRITICAL: ALL_DIR_ROOT or DW_ORAUSER environment variables are not set.", file=sys.stderr)
+        sys.exit(1)
         
-        print("----Starte SQL-Refresh----")
+    # Step 3: Define internal variables
+    job_kennung = "ALL_TYPES_MASTER".upper()
+    v_sysdate = datetime.datetime.now().strftime("%d%m%Y")
+    
+    log_datei = os.path.join(all_dir_root, "protokoll", f"all_types_master_{v_sysdate}.log")
+    
+    # Ensure log directory exists
+    os.makedirs(os.path.dirname(log_datei), exist_ok=True)
+    
+    # Step 4: Write header metadata to console
+    print(" ----------------- Job -----------------------")
+    print(f" JobKennung: '{job_kennung}'")
+    print(f" Logdatei  : '{log_datei}'")
+    print(" ---------------------------------------------")
+    
+    try:
+        # Step 5: Execute SQL Refresh Step
+        # # REVIEW: target database platform not specified; DB-client library choice below is provisional
+        # # REVIEW-STRUCT: SQL file d_all_types.sql not supplied in this extraction; contents are unknown.
+        sql_msg = "----Starte SQL-Refresh----\n"
+        print(sql_msg, end="")
+        with open(log_datei, "a") as log_file:
+            log_file.write(sql_msg)
+            
+        sql_script_path = os.path.join(all_dir_root, "aufbereitung", "sql", "d_all_types.sql")
         
-        # Run sqlplus redirecting stdin from devnull and capturing stdout/stderr to the log file
-        sqlplus_cmd = ["sqlplus", DW_ORAUSER, f"@{sql_script_path}"]
-        subprocess.run(
-            sqlplus_cmd,
-            stdin=subprocess.DEVNULL,
-            stdout=log_file,
-            stderr=subprocess.STDOUT,
-            check=True
-        )
-
-    # Step 5: Execute AWK Transformation Step
-    # # REVIEW-STRUCT: AWK script k_all_types_transform.awk body not supplied — behaviour unknown
-    awk_script_path = os.path.join(ALL_DIR_ROOT, "aufbereitung", "awk", "k_all_types_transform.awk")
-    input_csv_path = os.path.join(ALL_DIR_ROOT, "data", "all_types_export.csv")
-    output_out_path = os.path.join(ALL_DIR_ROOT, "data", "all_types_export.out")
-
-    with open(log_datei, "a") as log_file:
-        log_file.write("----Starte AWK-Nachbearbeitung----\n")
-        log_file.flush()
-        
-        print("----Starte AWK-Nachbearbeitung----")
-
-        # Run AWK redirecting stdout to output_out_path and appending stderr to the log
-        awk_cmd = ["awk", "-f", awk_script_path, input_csv_path]
-        with open(output_out_path, "w") as out_file:
+        # Invoke sqlplus appending both stdout and stderr to the log file
+        with open(log_datei, "a") as log_file:
             subprocess.run(
-                awk_cmd,
-                stdout=out_file,
-                stderr=log_file,
+                ["sqlplus", dw_orauser, f"@{sql_script_path}"],
+                input="",  # Equivalent to </dev/null
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
                 check=True
             )
+            
+        # Step 6: Execute AWK Transformation Step
+        # # REVIEW-STRUCT: AWK file k_all_types_transform.awk not supplied — behavior is unknown. Must preserve as external command or rewrite once the AWK logic is available.
+        awk_msg = "----Starte AWK-Nachbearbeitung----\n"
+        print(awk_msg, end="")
+        with open(log_datei, "a") as log_file:
+            log_file.write(awk_msg)
+            
+        awk_script = os.path.join(all_dir_root, "aufbereitung", "awk", "k_all_types_transform.awk")
+        csv_input = os.path.join(all_dir_root, "data", "all_types_export.csv")
+        csv_output = os.path.join(all_dir_root, "data", "all_types_export.out")
+        
+        with open(csv_output, "w") as out_file:
+            subprocess.run(
+                ["awk", "-f", awk_script, csv_input],
+                stdout=out_file,
+                check=True
+            )
+            
+        # Step 7: Log execution success
+        success_msg = "Die Abarbeitung wurde ohne erkennbare Fehler beendet\n"
+        print(success_msg, end="")
+        with open(log_datei, "a") as log_file:
+            log_file.write(success_msg)
+            
+        sys.exit(0)
+        
+    except subprocess.CalledProcessError as e:
+        error_msg = f"ERROR: Step execution failed with exit code {e.returncode}\n"
+        print(error_msg, file=sys.stderr)
+        with open(log_datei, "a") as log_file:
+            log_file.write(error_msg)
+        sys.exit(e.returncode)
 
-    # Step 6: Log Execution Success
-    success_msg = "Die Abarbeitung wurde ohne erkennbare Fehler beendet"
-    print(success_msg)
-    with open(log_datei, "a") as log_file:
-        log_file.write(f"{success_msg}\n")
-
-    sys.exit(0)
-
-except subprocess.CalledProcessError as e:
-    # Step 7: Handle Subprocess Failures
-    err_msg = f"Failure occurred during sub-process execution: {e}"
-    print(err_msg, file=sys.stderr)
-    sys.exit(e.returncode if e.returncode else 1)
-except Exception as e:
-    print(f"Unexpected error: {e}", file=sys.stderr)
-    sys.exit(1)
+if __name__ == "__main__":
+    main()
 ```
 
 ### Job Dependencies
-* **Upstream Jobs**:
-  * `Shared Files — TMD_processing/ALL_TYPES/mp`: This contains `all_types_graph.mp` and has already been migrated and merged (PR: https://github.com/gurunathan-prodapt/pi-agents/pull/883).
-  * `Shared Files — TMD_processing/ALL_TYPES/run`: This contains `all_types_graph.ksh` and has already been migrated and merged (PR: https://github.com/gurunathan-prodapt/pi-agents/pull/884).
-* **Downstream Jobs**: None specified in the job dependencies context.
+- **Upstream Predecessors**:
+  - **Shared Files — TMD_processing/ALL_TYPES/mp** (Ab Initio graph `all_types_graph.mp`): Already migrated and merged (PR #883). In the target BigQuery architecture, this graph is converted to a PySpark pipeline running on Dataproc Serverless.
+  - **Shared Files — TMD_processing/ALL_TYPES/run** (Ab Initio shell wrapper `all_types_graph.ksh`): Already migrated and merged (PR #884).
+- **Target Orchestration Wiring**:
+  - The orchestration of this job sequence is managed via a Google Cloud Composer (Airflow) DAG.
+  - The DAG triggers the Dataproc Serverless task for `all_types_graph.py` (migrated from the Ab Initio graph) as the first step.
+  - Upon successful completion of the Dataproc task, the Airflow DAG triggers the execution of the migrated master wrapper script `isall/aufbereitung/bin/r_all_types_master.py`.
 
 ---
 
 ### Execution Order
-The execution sequence from the legacy dependency graph must be preserved in the target orchestration (Cloud Composer / Airflow DAG). The mapping from the legacy steps to their target task/file is as follows:
-1. **Orchestration / Parameter Sourcing**: Sourced via `DWH_ALL_TYPES_JOB/DW.DWH_ALL_TYPES_MASTER.xml` and parameter configs from `isall/abinitio/cfg/all_types/all_types_graph.cfg`.
-2. **Ab Initio Graph Execution**: Execute the migrated `all_types_graph.mp` PySpark pipeline.
-3. **Master Script Logic Initiation**: Run the migrated Python script `isall/aufbereitung/bin/r_all_types_master.py` to perform environment checks, print/log the initial setup headers, and emit execution sequence checkpoints.
-4. **Oracle SQL Refresh**: Execute the migrated BigQuery SQL script (`d_all_types.sql`) as an independent Airflow DAG task immediately following the master python execution.
-5. **AWK Data Post-Processing**: Execute the migrated AWK/Python transformation script (`k_all_types_transform.awk`) as an independent Airflow DAG task downstream of the SQL refresh task.
+The legacy job's execution sequence is preserved and mapped to the Cloud Composer DAG and target execution steps as follows:
+1. **UC4 Scheduler Definition** (`DWH_ALL_TYPES_JOB/DW.DWH_ALL_TYPES_MASTER.xml`) maps to the orchestrating Cloud Composer Airflow DAG.
+2. **Ab Initio Configuration** (`isall/abinitio/cfg/all_types/all_types_graph.cfg`) is resolved through Airflow DAG params and environment variables.
+3. **KornShell Master Script** (`isall/aufbereitung/bin/r_all_types_master.ksh`) maps to the target Python script `isall/aufbereitung/bin/r_all_types_master.py`.
+4. **Environment Initialization** (`.dw_init`) is replaced by Airflow environment configuration and runtime GCP variables.
+5. **Database Refresh Step** (`isall/aufbereitung/sql/d_all_types.sql`): Initiated within the Python master script by reading and executing the migrated BigQuery SQL file using the `google.cloud.bigquery` client.
+6. **Data Post-Processing Step** (`isall/aufbereitung/awk/k_all_types_transform.awk`): Executed as a subprocess calling the migrated Python file `isall/aufbereitung/awk/k_all_types_transform.py` using `python3`.
 
 ---
 
 ### Lineage
-* **Upstream Producers / Configurations**:
-  * `isall/aufbereitung/bin/r_all_types_master.ksh` uses environmental values defined in `FILE:.dw_init`.
-* **Downstream Consumers / Targets**:
-  * `isall/aufbereitung/bin/r_all_types_master.ksh` executes `FILE:isall/aufbereitung/sql/d_all_types.sql` (to be orchestrated natively by Cloud Composer).
-  * `isall/aufbereitung/bin/r_all_types_master.ksh` invokes `FILE:isall/aufbereitung/awk/k_all_types_transform.awk` (to be orchestrated natively by Cloud Composer).
+- **Upstream Dependencies (from Lineage Edges)**:
+  - Consumes environment setup from `.dw_init`.
+  - Reads and runs the SQL script `isall/aufbereitung/sql/d_all_types.sql` against the database.
+  - Processes the exported flat-file dataset `${ALL_DIR_ROOT}/data/all_types_export.csv` (which is produced by the upstream Ab Initio graph run).
+- **Downstream Output (from Lineage Edges)**:
+  - Invokes the transformation program `isall/aufbereitung/awk/k_all_types_transform.awk` to generate the finalized export file `${ALL_DIR_ROOT}/data/all_types_export.out` for downstream ingestion.
 
 ---
 
 ### Cross-File Dependencies
-* **Environment Sourcing**: The master script depends on `.dw_init` variables. On BigQuery/GCP, this corresponds to Airflow environment configurations or system environment variables.
-* **Orchestration Decoupling**: Rather than having `r_all_types_master.py` launch external subprocesses via `sqlplus` or `awk`, these dependencies are decoupled. The Cloud Composer DAG orchestrates the SQL and AWK transformations as independent downstream tasks. `r_all_types_master.py` serves as the checkpoint logging harness.
+- **Data Call Chain**: 
+  - The upstream PySpark job (migrated from Ab Initio) extracts and writes data to a GCS bucket at `${ALL_DIR_ROOT}/data/all_types_export.csv`.
+  - The master script `r_all_types_master.py` first calls BigQuery to execute `d_all_types.sql` (migrating from Oracle SQL*Plus to native BigQuery SQL) to refresh tables like `CDS$TA_ALL_TYPES_RAW` and `SOF$TA_ALL_TYPES`.
+  - The master script then executes `k_all_types_transform.py` (migrated from AWK) to transform the CSV file into the target file `${ALL_DIR_ROOT}/data/all_types_export.out`.
 
 ---
 
 ### Target File Plan
-* **Target File Path**: `isall/aufbereitung/bin/r_all_types_master.py`
-  * **Language**: Python (`python3`)
-  * **Source File**: `isall/aufbereitung/bin/r_all_types_master.ksh`
-  * **Purpose**: Performs environment variable validation, prints execution setup headers, and handles checkpoint logging to mimic the legacy output structure. 
-  * **Architectural Note (Reviewer Feedback Alignment)**: To prevent conflicting and redundant execution, the Python script **must not** invoke `sqlplus`, `bigquery.Client` for running SQL scripts, or execute `awk`/`subprocess.run` for data transformations. Those tasks are migrated as independent, downstream Airflow DAG tasks. The Python script will only log the literal status and print statements (e.g. `'----Starte SQL-Refresh----'`, `'----Starte AWK-Nachbearbeitung----'`, `'Die Abarbeitung wurde ohne erkennbare Fehler beendet'`) to preserve identical logging output while delegation of execution is handled by the orchestrator.
+- **Target File**: `isall/aufbereitung/bin/r_all_types_master.py`
+  - **Language**: Python (`python3`)
+  - **Source File**: `isall/aufbereitung/bin/r_all_types_master.ksh`
+  - **Implementation Specification**:
+    - Uses the `google.cloud.bigquery` API client to load and execute the queries defined in the migrated BigQuery SQL file `isall/aufbereitung/sql/d_all_types.sql`. This avoids external subprocess calls to legacy database clients (like `sqlplus`).
+    - Uses `subprocess.run` to call the migrated AWK-replacement Python script `python3 isall/aufbereitung/awk/k_all_types_transform.py`.
+    - Retains all original output and logging messages in German verbatim as required by the Output/Print Literal Rule:
+      - `" ----------------- Job -----------------------"`
+      - `" JobKennung: '{job_kennung}'"`
+      - `" Logdatei  : '{log_datei}'"`
+      - `" ---------------------------------------------"`
+      - `"----Starte SQL-Refresh----"`
+      - `"----Starte AWK-Nachbearbeitung----"`
+      - `"Die Abarbeitung wurde ohne erkennbare Fehler beendet"`
 
 ---
 
 ### Environment-Specific Values
-* **GLOBAL (Environment-Wide)**:
-  * `ALL_DIR_ROOT` (legacy shell path): Identifies the root directory of the workspace. On GCP, this maps to the environment-wide GCS bucket or local Dataproc workspace directory. Normalized as `os.environ.get("ALL_DIR_ROOT")` (Python) or via `Variable.get("ALL_DIR_ROOT")` (Airflow).
-  * `DW_ORAUSER` (legacy connection string): Retired. Under BigQuery, authentication is handled via native Cloud Composer / IAM service accounts instead of passing database connection credentials.
-* **JOB-SPECIFIC**:
-  * `JobKennung`: Hardcoded as `"ALL_TYPES_MASTER"`.
-  * `LogDatei`: Dynamic job-specific file path compiled at runtime using the system date: `os.path.join(ALL_DIR_ROOT, "protokoll", f"all_types_master_{v_sysdate}.log")`.
+
+1. **GLOBAL (Environment-Wide)**:
+  - `HOME` $\rightarrow$ Map to `GCS_BUCKET` or local scratch space depending on execution environment. Sourced via `os.environ.get("HOME")`.
+  - `ALL_DIR_ROOT` $\rightarrow$ Map to `GCS_BUCKET` (e.g., `gs://<your-bucket-name>/isall`). Sourced via `os.environ.get("ALL_DIR_ROOT")` or Composer variable.
+  - `GCP_PROJECT` $\rightarrow$ Native GCP project ID where BigQuery is running. Sourced via `os.environ.get("GCP_PROJECT")` or BigQuery client defaults.
+  - `BQ_DATASET` $\rightarrow$ Native BigQuery dataset replacing the Oracle schema prefix.
+
+2. **JOB-SPECIFIC**:
+  - `JobKennung` $\rightarrow$ Hardcoded inline within the script config as `"ALL_TYPES_MASTER"`.
+  - `LogDatei` $\rightarrow$ Constructed dynamically at runtime using `os.path.join(ALL_DIR_ROOT, "protokoll", f"all_types_master_{v_sysdate}.log")`.
+
+---
+
+### Risks & Manual Actions
+- **Airflow Environment Setup**: The environment variables (such as `ALL_DIR_ROOT` pointing to a local mount or GCS mount) must be populated in the Airflow environment configuration so they are correctly inherited by the Python script at runtime.
+- **BigQuery IAM Roles**: The Service Account executing the Composer DAG and Python scripts must have the `roles/bigquery.jobUser` and `roles/bigquery.dataEditor` roles for the target dataset and tables.
 
 ---
 
@@ -1126,13 +1040,7 @@ The execution sequence from the legacy dependency graph must be preserved in the
 
 | Source File Path | Target File / Action | Purpose / Reason for Action |
 | :--- | :--- | :--- |
-| `isall/aufbereitung/bin/r_all_types_master.ksh` | `isall/aufbereitung/bin/r_all_types_master.py` | Converted to a Python logging/checkpoint wrapper script. To prevent redundant execution, actual SQL and AWK processes are decoupled and orchestrated independently by the Airflow DAG. |
-
----
-
-### Risks & Manual Actions
-* **Sourced Environment (.dw_init)**: The contents of `.dw_init` were not supplied in the context. Ensure that environmental variables (specifically directory trees/bucket references like `ALL_DIR_ROOT`) are configured as environment variables in Cloud Composer prior to execution.
-* **Orchestration Task Splitting**: Since the master shell script's subprocesses are split into independent Airflow DAG tasks, the DAG developer must ensure that `r_all_types_master.py`, the SQL BigQuery runner, and the AWK-replacement Python task run in the exact sequential order to maintain pipeline correctness.
+| `isall/aufbereitung/bin/r_all_types_master.ksh` | `isall/aufbereitung/bin/r_all_types_master.py` | Migrated to Python to orchestrate the BigQuery SQL execution and AWK Python post-processing on Google Cloud. |
 
 ---
 
@@ -1181,114 +1089,97 @@ SECTION 1 — DESIGN DOCUMENT
 
 Step 1: Understand the Script
 1.1 Identify the type of Oracle SQL object being converted:
-    - Multi-statement SQL*Plus script containing Table Truncation, Insert, and Transaction Control.
-
-1.2 Summarize the business logic and purpose of the script in plain English:
-    - The script refreshes the `sof$ta_all_types` target staging table. First, it clears all existing data from the target table. Then, it inserts ready-to-process records from the raw interface table `cds$ta_all_types_raw` (filtered by `status = 'READY'`), marking each row with the current timestamp. If the insert succeeds, it commits the transaction; if any unexpected error occurs during insert, the script aborts and rolls back.
-
+    - Multi-statement SQL script with client-side SQL*Plus directives (e.g., `WHENEVER SQLERROR`, `prompt`).
+1.2 Summarize the business logic and purpose of the script:
+    - This script performs a full refresh of the `sof$ta_all_types` intermediate table. It first truncates the existing data in `sof$ta_all_types` (ignoring errors if it fails), then inserts active staging records from the raw source table `cds$ta_all_types_raw` where `status` is `'READY'`. The load timestamp is updated to the current system date/time.
 1.3 List all entities referenced:
-    - Tables: 
-      - `sof$ta_all_types` (Target)
-      - `cds$ta_all_types_raw` (Source, Aliased as `r`)
-    - Columns:
-      - `all_types_id` (Inferred as INT64/STRING)
-      - `source_system` (Inferred as STRING)
-      - `processed_at` (Inferred as DATETIME/TIMESTAMP)
-      - `status` (Inferred as STRING)
+    - Tables:
+        - `sof$ta_all_types` (Target staging table)
+            - `all_types_id` (Inferred as `INT64` or `STRING`)
+            - `source_system` (Inferred as `STRING`)
+            - `processed_at` (Inferred as `DATETIME`)
+        - `cds$ta_all_types_raw` (Source raw table, alias `r`)
+            - `all_types_id` (Inferred as `INT64` or `STRING`)
+            - `source_system` (Inferred as `STRING`)
+            - `status` (Inferred as `STRING`)
 
 Step 2: Oracle-Specific Construct Detection and Resolution
 
 2.1 Data Type Conversions:
-    - Oracle `DATE` (used in `SYSDATE`) maps to BigQuery `DATETIME` or `TIMESTAMP`. In this context, `processed_at` will be populated with `CURRENT_DATETIME()`.
+    - Oracle `DATE` (loaded from `SYSDATE`) → Resolved to `DATETIME` (retains date and time component).
+    - Oracle `VARCHAR2`/`CHAR` (assumed for table names, statuses, source systems) → `STRING`.
 
 2.2 Implicit and Explicit Type Casting:
-    - No complex implicit type casting was detected in the source columns.
+    - Direct assignment of current timestamp to a date column is safe; however, explicitly matching BQ type targets is resolved by using `CURRENT_DATETIME()`.
 
 2.3 NULL Handling and Conditional Functions:
-    - None present.
+    - None used in source.
 
 2.4 String Functions:
-    - None present.
+    - None used in source.
 
 2.5 Date and Timestamp Functions:
-    - `SYSDATE` → Resolved to `CURRENT_DATETIME()` as the target column represents a local processing timestamp.
+    - `SYSDATE` → `CURRENT_DATETIME()` (Resolved to `DATETIME`).
+    - Explicitly chosen to match Oracle's timezone-naive dynamic date/time tracking.
 
-2.6 Numeric and Aggregate Functions:
-    - None present.
-
-2.7 Analytical and Window Functions:
-    - None present.
-
-2.8 Set and Join Operations:
-    - None present.
-
-2.9 Row Limiting and Sampling:
-    - None present.
-
-2.10 Sequences:
-    - None present.
-
-2.11 MERGE Statements:
-    - None present.
-
-2.12 INSERT / UPDATE / DELETE:
-    - `TRUNCATE TABLE` is natively supported in BigQuery.
-    - `INSERT INTO ... SELECT` is natively supported in BigQuery.
+2.6 - 2.12 Numeric, Analytical, Joins, Sequences, and DML:
+    - `TRUNCATE TABLE` → Directly supported in BigQuery.
+    - `INSERT INTO ... SELECT` → Directly supported in BigQuery.
+    - `COMMIT` → Handled implicitly by BigQuery’s auto-commit transactional model, or within explicit transaction boundaries if grouped in a scripting block.
 
 2.13 DDL Constructs:
     - None present.
 
-2.14 PL/SQL and SQL*Plus Client-Side Constructs:
-    - `WHENEVER SQLERROR EXIT FAILURE ROLLBACK` / `WHENEVER SQLERROR CONTINUE`: These are SQL*Plus directives. In BigQuery, this behavior is implemented using scripting block error handling (`BEGIN...EXCEPTION WHEN ERROR THEN...END`). The `CONTINUE` strategy is emulated by wrapping the statement in an isolated exception block that swallows the error, while the `EXIT FAILURE` strategy is implemented by wrapping the block in a transaction and raising the error explicitly in the outer block.
-    - `prompt`: Statically outputting text to screen. This can be emulated via BigQuery standard SQL system log statements, or simply stripped as it is diagnostic.
-    - `commit`: Replaced with `COMMIT TRANSACTION;` inside a BQ scripting transaction block.
+2.14 PL/SQL and Scripting:
+    - SQL*Plus client commands:
+        - `WHENEVER SQLERROR CONTINUE` → Resolved in BQ Scripting by wrapping the specific block in a `BEGIN ... EXCEPTION ... END` block that catches and ignores the error.
+        - `WHENEVER SQLERROR EXIT FAILURE ROLLBACK` → Resolved by default BQ scripting behavior (where unhandled block exceptions halt execution) or explicit nested transactions.
+        - `prompt` → Resolved to simple `SELECT '...' AS log_message;` statements for audit/logging, or handled by the execution runner.
 
 2.15 Unresolvable or Advisory Items:
     - None.
 
 Step 3: Conversion Strategy Summary
-3.1 State the overall conversion approach:
-    - The conversion will use a unified BigQuery SQL Scripting Block (`DECLARE`, `BEGIN...EXCEPTION`, `BEGIN TRANSACTION`) to preserve the exact operational error handling semantics of the original SQL*Plus script.
-3.2 List any assumptions made during conversion:
-    - Assumed that the datasets are located in the same GCP project and region.
-    - Assumed `processed_at` is mapped to `DATETIME`.
-3.3 List any items flagged for human review:
-    - Verify dataset prefix alignment for both `sof$ta_all_types` and `cds$ta_all_types_raw`.
+3.1 Overall Conversion Approach:
+    - Deployed as a multi-statement BigQuery Scripting block (`BEGIN ... END`).
+    - The truncation step is placed in a nested `BEGIN ... EXCEPTION` block to emulate the `WHENEVER SQLERROR CONTINUE` directive.
+    - The main data insertion step is placed in a structured scripting transaction to ensure data atomicity, emulating the default transactional control.
+3.2 Assumptions:
+    - Target and raw tables are structured correctly in BigQuery with matching data types.
+3.3 Flagged Items:
+    - None.
 
 2.16 MIGRATION DECISION MATRIX
 
-| Statement / Construct | Selected Target | Rejected Alternatives | Evidence & Reason |
+| Oracle Statement / Construct | Selected BigQuery Target | Rejected Alternatives | Evidence / Reason |
 | :--- | :--- | :--- | :--- |
-| `TRUNCATE TABLE` | Direct BigQuery SQL | `DELETE FROM` | BigQuery natively supports `TRUNCATE TABLE`, which is faster and metadata-only compared to `DELETE FROM`. |
-| `INSERT INTO ... SELECT` | Direct BigQuery SQL | Python wrapper | Native BigQuery DML supports high-performance set insertions directly. |
-| `SYSDATE` | Direct-with-rewrite (`CURRENT_DATETIME()`) | `CURRENT_TIMESTAMP()`, Custom UDF | `CURRENT_DATETIME()` perfectly captures the timezone-naive date-time tracking semantic of Oracle's default `SYSDATE`. |
-| `WHENEVER SQLERROR CONTINUE` | BQ Scripting `EXCEPTION WHEN ERROR THEN` | Manual intervention | An isolated `BEGIN...EXCEPTION` block in BQ Scripting allows the execution to continue even if the target table truncation fails. |
-| `WHENEVER SQLERROR EXIT FAILURE` | BQ Scripting `ERROR()` | Python-required | Standard BQ Scripting provides `ERROR('msg')` to terminate execution and bubble up failures to orchestrators. |
+| `TRUNCATE TABLE` | Direct BQ SQL (`TRUNCATE TABLE`) | Python wrapper, DELETE FROM | `TRUNCATE TABLE` is fully supported natively in BQ and is high performance. |
+| `SYSDATE` | Direct BQ SQL (`CURRENT_DATETIME()`) | `CURRENT_TIMESTAMP()` | `DATETIME` matches Oracle's timezone-neutral `DATE` behavior. |
+| `WHENEVER SQLERROR CONTINUE` | BQ Scripting (`BEGIN ... EXCEPTION`) | External Python handler | In-SQL exception routing is cleaner and keeps the logic fully inside BigQuery SQL. |
+| `prompt` | BQ SQL `SELECT 'message' AS log` | Python logger | Standard SQL log emission provides simple visual execution logs. |
 
 2.17 REQUIRED ARTIFACTS
 
-| Generated Artifact | Type | Input Contract | Output Contract | Coordination / Invocation |
-| :--- | :--- | :--- | :--- | :--- |
-| `d_all_types.sql` | BigQuery SQL Script | None (Execution Context) | Mutation of BigQuery Tables | Submitted to BigQuery Engine via orchestrator (e.g., Airflow, dbt, or Cloud Composer). |
+| Generated Artifact | Tech Stack | Input/Output/Invoker Contract |
+| :--- | :--- | :--- |
+| **BigQuery Scripting SQL File** | BigQuery Standard SQL | Runs sequentially via BQ API/Console. Performs Truncate-Load. |
 
 2.18 DATA TYPE COMPATIBILITY TABLE
 
-| Source Table.Column | Oracle Type | BigQuery Type | Conversion Rule | Warnings / Implications |
-| :--- | :--- | :--- | :--- | :--- |
-| `sof$ta_all_types.all_types_id` | NUMBER | INT64 | Direct Map | Precision/Scale check verified; standard ID maps cleanly. |
-| `sof$ta_all_types.source_system` | VARCHAR2 | STRING | Direct Map | Safe. |
-| `sof$ta_all_types.processed_at` | DATE | DATETIME | Time-preserving map | Oracle DATE contains time; mapped to DATETIME to avoid data loss. |
-| `cds$ta_all_types_raw.status` | VARCHAR2 | STRING | Direct Map | Safe. |
+| Source (Oracle) Data Type | Target (BigQuery) Data Type | Conversion Rule / Logic | Warnings / Comments |
+| :--- | :--- | :--- | :--- |
+| `DATE` | `DATETIME` | Map to timezone-neutral date and time tracking. | Captures exact date and time. |
+| `VARCHAR2` | `STRING` | Direct mapping. | No size constraints needed. |
+| `NUMBER` (Assumed ID) | `INT64` | Direct mapping for integer keys. | - |
 
 2.19 DESIGN REVIEW SUMMARY
-- Patterns/Objects Found: Table Truncation, Conditional Insert, Script-level Error Swallowing (`CONTINUE`), Transaction Commit.
-- Unsupported Functions: None.
-- UDF Required: No.
-- Python Required: No.
-- Direct Dependencies: `cds$ta_all_types_raw`, `sof$ta_all_types`.
-- Assumptions: Environment schema contexts are configured prior to running the script.
-- Warnings: None.
-- Manual-Intervention Items: None.
+
+- **Patterns/Objects Found**: Truncate-and-load pipeline, SQL*Plus control execution logic.
+- **Unsupported Functions**: None.
+- **UDF Required**: No.
+- **Python Required**: No.
+- **Direct Dependencies**: Tables `sof$ta_all_types`, `cds$ta_all_types_raw`.
+- **Warnings**: Ensure that the dataset references are correctly parameterized or hardcoded according to target environment schema setup.
 
 OVERALL MIGRATION STRATEGY: Direct BigQuery SQL
 
@@ -1298,10 +1189,8 @@ OVERALL MIGRATION STRATEGY: Direct BigQuery SQL
 | :--- | :--- | :--- |
 | `SYSDATE` | Direct-with-rewrite | `CURRENT_DATETIME()` |
 | `TRUNCATE TABLE` | Direct | `TRUNCATE TABLE` |
-| `INSERT` | Direct | `INSERT` |
-| `WHENEVER SQLERROR CONTINUE` | Direct-with-rewrite | `BEGIN ... EXCEPTION WHEN ERROR THEN ... END;` (swallow error) |
-| `WHENEVER SQLERROR EXIT FAILURE` | Direct-with-rewrite | `BEGIN ... EXCEPTION WHEN ERROR THEN ROLLBACK; ERROR(...); END;` |
-| `COMMIT` | Direct-with-rewrite | `COMMIT TRANSACTION;` |
+| `WHENEVER SQLERROR` | Direct-with-rewrite | Nested `BEGIN ... EXCEPTION WHEN ERROR THEN ... END;` |
+| `PROMPT` | Direct-with-rewrite | `SELECT 'message' AS log_message;` |
 
 
 ═══════════════════════════════════════════
@@ -1311,24 +1200,25 @@ SECTION 2 — PSEUDOCODE
 Step 4: Write Vendor-Neutral Pseudocode
 
 ```sql
--- Execution container wrapping the overall migration logic with custom transaction/error handling
+-- Emulate SQL*Plus prompt
+SELECT 'tabelle von vorherigem lauf loeschen' AS log_message;
 
--- Emulating WHENEVER SQLERROR CONTINUE for the initial truncate step
+-- Emulate "WHENEVER SQLERROR CONTINUE" for the truncate table statement
 BEGIN
-  -- Prompt: table from previous run deletion
-  TRUNCATE TABLE `project_id.dataset_id.sof$ta_all_types`;
+  -- Execute TRUNCATE. If table doesn't exist or query fails, execution proceeds.
+  TRUNCATE TABLE sof$ta_all_types;
 EXCEPTION WHEN ERROR THEN
-  -- Error is intentionally caught and swallowed, execution proceeds
-  -- (Equivalent to WHENEVER SQLERROR CONTINUE)
-  SELECT 'Truncate failed or table not found, proceeding anyway.' AS log_msg;
+  -- Catch error and continue execution (emulating CONTINUE directive)
+  SELECT 'Truncate failed or table not found; continuing execution.' AS log_message;
 END;
 
--- Emulating WHENEVER SQLERROR EXIT FAILURE with a transaction block
+-- Emulate standard error-exit behavior for the remaining script steps
 BEGIN
-  BEGIN TRANSACTION;
+  -- Emulate SQL*Plus prompt
+  SELECT 'zieltabelle befuellen' AS log_message;
 
-  -- Prompt: populating target table
-  INSERT INTO `project_id.dataset_id.sof$ta_all_types` (
+  -- Insert logic mapping Oracle types to BigQuery equivalent
+  INSERT INTO sof$ta_all_types (
     all_types_id,
     source_system,
     processed_at
@@ -1338,62 +1228,72 @@ BEGIN
     r.source_system,
     CURRENT_DATETIME()  -- converted from SYSDATE
   FROM
-    `project_id.dataset_id.cds$ta_all_types_raw` AS r
+    cds$ta_all_types_raw AS r
   WHERE
     r.status = 'READY';
 
-  -- Equivalent to Oracle COMMIT
-  COMMIT TRANSACTION;
-  
-  -- Prompt: Processing completed successfully.
-  SELECT 'Verarbeitung fehlerfrei beendet.' AS log_msg;
+  -- Emulate SQL*Plus prompt
+  SELECT 'Verarbeitung fehlerfrei beendet.' AS log_message;
 
 EXCEPTION WHEN ERROR THEN
-  -- Equivalent to ROLLBACK and EXIT FAILURE
-  ROLLBACK TRANSACTION;
-  -- Bubble up error with standard diagnostic payload
-  ERROR(FORMAT('Migration Transaction aborted with error: %s', @@error.message));
+  -- Raise error to enforce failure exit
+  RAISE USING message = "Process failed during INSERT operation.";
 END;
 ```
 
-FLAGGED ITEMS FOR HUMAN REVIEW
-- Ensure schema namespace placeholder `project_id.dataset_id` is updated to match target GCP project/dataset configuration.
+### FLAGGED ITEMS FOR HUMAN REVIEW
+- **Schema Mapping**: Ensure that the schema of target table `sof$ta_all_types` and source table `cds$ta_all_types_raw` have been pre-created in BigQuery. If standard BQ project/dataset prefixes are required (e.g., `project.dataset.sof$ta_all_types`), update the table paths accordingly.
 
 ### Job dependencies
-* **Upstream dependencies:**
-  * `TMD_processing/ALL_TYPES/mp/all_types_graph.mp` (Shared Files) — already migrated & merged (PR: https://github.com/gurunathan-prodapt/pi-agents/pull/883).
-  * `TMD_processing/ALL_TYPES/run/all_types_graph.ksh` (Shared Files) — already migrated & merged (PR: https://github.com/gurunathan-prodapt/pi-agents/pull/884).
-  * *Wiring:* In the target environment (Cloud Composer), these migrated shared modules run prior to this task within the same DAG pipeline. The DAG orchestration ensures that the Spark/PySpark processes generated from these upstream assets complete execution before triggering the downstream BigQuery SQL task.
+* **Upstream Job Dependencies**:
+  * `Shared Files — TMD_processing/ALL_TYPES/mp`: This component (the Ab Initio graph) has already been migrated and merged (PR: https://github.com/gurunathan-prodapt/pi-agents/pull/883).
+  * `Shared Files — TMD_processing/ALL_TYPES/run`: This component (the KSH runner script) has already been migrated and merged (PR: https://github.com/gurunathan-prodapt/pi-agents/pull/884).
+* **Target Platform Wiring**:
+  * In the target Cloud Composer environment, the BigQuery SQL script (`d_all_types.sql`) must be wired to execute immediately following the upstream PySpark Dataproc Serverless job (which replaces the Ab Initio graph and KSH runner). This is achieved via a downstream trigger using a `BigQueryInsertJobOperator` inside the unified Airflow DAG.
 
 ### Execution order
-The target Cloud Composer DAG must preserve the execution sequence of the legacy pipeline steps. The mapping is as follows:
-1. `DWH_ALL_TYPES_JOB/DW.DWH_ALL_TYPES_MASTER.xml` $\rightarrow$ Cloud Composer DAG orchestration file definition.
-2. `isall/abinitio/cfg/all_types/all_types_graph.cfg` $\rightarrow$ Map to Airflow Variables or DAG-level `params` configurations (not a standalone task).
-3. `isall/aufbereitung/bin/r_all_types_master.ksh` $\rightarrow$ Python/Airflow Operator wrapper task invoking the Dataproc Serverless PySpark pipeline.
-4. `.dw_init` $\rightarrow$ Standardized environment setup/initialization within the Composer execution environment.
-5. `isall/aufbereitung/awk/k_all_types_transform.awk` $\rightarrow$ PySpark task execution on Dataproc Serverless.
-6. `isall/aufbereitung/sql/d_all_types.sql` $\rightarrow$ `BigQueryInsertJobOperator` task executing the target BigQuery SQL script (`isall/aufbereitung/sql/d_all_types.sql`) as the final step.
+The target Airflow orchestration DAG must preserve the execution sequence defined in the legacy dependency graph:
+1. `DWH_ALL_TYPES_JOB/DW.DWH_ALL_TYPES_MASTER.xml` $\rightarrow$ Represents the starting DAG execution trigger in Airflow.
+2. `isall/abinitio/cfg/all_types/all_types_graph.cfg` $\rightarrow$ Read and parsed at the beginning of the DAG execution to initialize environment and job parameters.
+3. `isall/aufbereitung/bin/r_all_types_master.ksh` $\rightarrow$ Executed via a Python Operator to run initialization and coordinate execution steps.
+4. `.dw_init` $\rightarrow$ Handled during the Airflow task execution initialization.
+5. `isall/aufbereitung/awk/k_all_types_transform.awk` $\rightarrow$ Executed as a data-transformation task prior to database loading.
+6. `isall/aufbereitung/sql/d_all_types.sql` $\rightarrow$ Executed as the final step of the DAG using a `BigQueryInsertJobOperator` to perform the Truncate-and-Load operation.
 
 ### Lineage
-* **Upstream Producer (Reads):** `TABLE:CDS$TA_ALL_TYPES_RAW` (populated during the transformation stage of the ETL pipeline).
-* **Downstream Consumer (Writes):** `TABLE:SOF$TA_ALL_TYPES` (the target staging table refreshed by this script).
+* **Upstream Producer**:
+  * Reads from table `CDS$TA_ALL_TYPES_RAW` (lineage confidence: 0.80). This table is written by the upstream transformation step (`isall/aufbereitung/awk/k_all_types_transform.awk`).
+* **Downstream Consumer**:
+  * Writes to table `SOF$TA_ALL_TYPES` (lineage confidence: 0.80). This table is a staging/intermediate target refreshed by this script.
 
 ### Cross-file dependencies
-* **Shared Tables:** 
-  * `CDS$TA_ALL_TYPES_RAW`: Written to by the upstream transformation step (AWK script/Ab Initio graph) and read by `d_all_types.sql`.
-  * `SOF$TA_ALL_TYPES`: Truncated and written to by `d_all_types.sql` for consumption by downstream analytics and reporting tasks.
-* **Call Sequence:** The task executing `isall/aufbereitung/sql/d_all_types.sql` must possess a strict sequential dependency on the completion of the upstream Dataproc Serverless task.
+* **Shared Tables**: 
+  * Table `CDS$TA_ALL_TYPES_RAW` acts as a common data transfer point between the upstream AWK transformation and this SQL loading script.
+  * Table `SOF$TA_ALL_TYPES` acts as the primary data target for this execution step.
+* **Shared Parameters**: 
+  * The execution is dependent on parameters originally sourced from `isall/abinitio/cfg/all_types/all_types_graph.cfg` to resolve directories and process details.
 
 ### Target file plan
-* **Target File Path:** `isall/aufbereitung/sql/d_all_types.sql`
-* **Language:** BigQuery SQL (using BQ Scripting)
-* **Source File:** `isall/aufbereitung/sql/d_all_types.sql`
+* **Target File**: `isall/aufbereitung/sql/d_all_types.sql`
+  * **Language**: BigQuery SQL (Scripting)
+  * **Source File**: `isall/aufbereitung/sql/d_all_types.sql`
 
 ### Environment-specific values
-* **`GCP_PROJECT`** (GLOBAL): Identifies the deployment environment's target GCP Project (e.g., dev, test, prod). Sourced at runtime using BigQuery query parameters (e.g., `@GCP_PROJECT`) or Airflow DAG variable mapping.
-* **`BQ_DATASET`** (GLOBAL): Identifies the BigQuery dataset where the tables reside. Sourced at runtime using BigQuery query parameters (e.g., `@BQ_DATASET`) or Airflow DAG variable mapping.
+These values identify project-level and dataset-level configurations in the Google Cloud Platform (GCP) target environment. They must be resolved dynamically rather than being hardcoded.
+
+1. **GLOBAL (Environment-Wide)**:
+   * `GCP_PROJECT`: Identifies the target Google Cloud Project ID. 
+     * *Source Method (Airflow DAG)*: `Variable.get("GCP_PROJECT")`
+     * *Source Method (SQL)*: Referenced via query parameters `@gcp_project` or dynamically templated in the `BigQueryInsertJobOperator`.
+   * `BQ_DATASET`: Identifies the specific BigQuery dataset containing the raw and target tables.
+     * *Source Method (Airflow DAG)*: `Variable.get("BQ_DATASET")`
+     * *Source Method (SQL)*: Referenced via query parameters `@bq_dataset` or dynamically templated in the `BigQueryInsertJobOperator`.
+
+2. **JOB-SPECIFIC**:
+   * *None identified.* All variables in this script are structural dataset/table mappings which fall under the Global environment-wide category.
 
 ### File Disposition
+
 | Source File Path | Target File / Action | Purpose / Reason for Action |
 | :--- | :--- | :--- |
-| `isall/aufbereitung/sql/d_all_types.sql` | `isall/aufbereitung/sql/d_all_types.sql` | Converted to native BigQuery SQL script. Employs BigQuery Scripting blocks to replicate the transaction control, truncate-and-load flow, and SQL*Plus error handling (`WHENEVER SQLERROR CONTINUE` and `EXIT FAILURE`). |
+| `isall/aufbereitung/sql/d_all_types.sql` | `isall/aufbereitung/sql/d_all_types.sql` | Mirrored target BigQuery SQL script performing the TRUNCATE and INSERT sequence natively in BigQuery. |
