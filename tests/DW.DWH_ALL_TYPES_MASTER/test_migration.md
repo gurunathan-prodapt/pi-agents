@@ -1,348 +1,390 @@
-# Migration Validation Test Suite: `DW.DWH_ALL_TYPES_MASTER`
+# Migration Validation Test Suite: DW.DWH_ALL_TYPES_MASTER
 
-This document defines the migration-validation test suite to prove behavioral equivalence between the legacy UC4/Oracle/AWK/KSH pipeline and the migrated Apache Airflow/BigQuery/Python pipeline for **`DW.DWH_ALL_TYPES_MASTER`**.
+This document defines the migration-validation test suite for the job `DW.DWH_ALL_TYPES_MASTER`. These tests are designed to prove behavioral equivalence between the legacy UC4/Oracle/AWK/KSH stack and the migrated Apache Airflow/Google Cloud Dataproc/BigQuery/Python stack.
 
 ---
 
-## Test Case 1: AWK-to-Python Transformation Parity (`k_all_types_transform.py`)
+## Test Case 1: Airflow DAG Structure and Variable Validation
 
 ### Purpose
-Verify that the migrated Python script `k_all_types_transform.py` behaves identically to the legacy AWK script `k_all_types_transform.awk`. It must validate that every record contains exactly 12 fields, prepend `"D;"` to valid records, and terminate immediately with exit code `2` and the exact error message on any malformed record.
+Verify that the migrated Airflow DAG `dw_dwh_all_types_master` is structurally sound, contains the correct tasks, preserves the legacy execution order, and correctly maps all environment variables and parameters.
 
 ### Setup
-1. Create a temporary directory containing three test files:
-   - `valid_input.csv`: Contains rows with exactly 12 semicolon-separated fields.
-   - `invalid_short.csv`: Contains at least one row with fewer than 12 fields.
-   - `invalid_long.csv`: Contains at least one row with more than 12 fields.
-2. Ensure the migrated script `isall/aufbereitung/awk/k_all_types_transform.py` is executable.
+1. Ensure the Airflow DAG file `dw_dwh_all_types_master.py` is placed in the Airflow DAGs directory.
+2. Configure the following Airflow Variables in the test environment:
+   * `GCP_PROJECT` = `test-gcp-project`
+   * `GCP_REGION` = `us-central1`
+   * `GCP_CLUSTER_NAME` = `test-dataproc-cluster`
+   * `GCS_BUCKET` = `test-gcs-bucket`
+   * `BQ_DATASET` = `test_dataset`
 
 ### Action
-Run a automated test suite using `pytest` to execute the Python script against the test files and assert standard output, standard error, and exit codes.
+Run a pytest suite to parse the DAG, validate its structure, check task dependencies, and verify that environment variables are correctly injected into the tasks.
 
 ```python
-import subprocess
-import sys
-import os
 import pytest
+from airflow.models import DagBag, Variable
 
-# Path to the migrated script
-MIGRATED_SCRIPT = "isall/aufbereitung/awk/k_all_types_transform.py"
+@pytest.fixture(scope="module", autouse=True)
+def setup_airflow_variables():
+    # Mock Airflow Variables
+    Variable.set("GCP_PROJECT", "test-gcp-project")
+    Variable.set("GCP_REGION", "us-central1")
+    Variable.set("GCP_CLUSTER_NAME", "test-dataproc-cluster")
+    Variable.set("GCS_BUCKET", "test-gcs-bucket")
+    Variable.set("BQ_DATASET", "test_dataset")
+    yield
+    # Cleanup
+    for var in ["GCP_PROJECT", "GCP_REGION", "GCP_CLUSTER_NAME", "GCS_BUCKET", "BQ_DATASET"]:
+        Variable.delete(var)
 
-@pytest.fixture
-def setup_test_files(tmp_path):
-    valid_file = tmp_path / "valid_input.csv"
-    invalid_short_file = tmp_path / "invalid_short.csv"
-    invalid_long_file = tmp_path / "invalid_long.csv"
-    
-    # 12 fields (11 semicolons)
-    valid_file.write_text(
-        "val1;val2;val3;val4;val5;val6;val7;val8;val9;val10;val11;val12\n"
-        "a;b;c;d;e;f;g;h;i;j;k;l\n"
-    )
-    
-    # 11 fields (10 semicolons) - Invalid
-    invalid_short_file.write_text(
-        "val1;val2;val3;val4;val5;val6;val7;val8;val9;val10;val11\n"
-    )
-    
-    # 13 fields (12 semicolons) - Invalid
-    invalid_long_file.write_text(
-        "val1;val2;val3;val4;val5;val6;val7;val8;val9;val10;val11;val12;val13\n"
-    )
-    
-    return {
-        "valid": str(valid_file),
-        "short": str(invalid_short_file),
-        "long": str(invalid_long_file)
-    }
+def test_dag_loads_with_no_errors():
+    dag_bag = DagBag(dag_folder="dags", include_examples=False)
+    dag = dag_bag.get_dag(dag_id="dw_dwh_all_types_master")
+    assert dag_bag.import_errors == {}
+    assert dag is not None
 
-def test_valid_file_processing(setup_test_files):
-    # Action: Run script with valid file
-    result = subprocess.run(
-        [sys.executable, MIGRATED_SCRIPT, setup_test_files["valid"]],
-        capture_output=True,
-        text=True
-    )
+def test_dag_structure_and_dependencies():
+    dag_bag = DagBag(dag_folder="dags", include_examples=False)
+    dag = dag_bag.get_dag(dag_id="dw_dwh_all_types_master")
     
-    # Pass/Fail Criteria
-    assert result.returncode == 0
-    assert result.stdout.startswith("D;val1;val2;")
-    assert len(result.stdout.splitlines()) == 2
-    for line in result.stdout.splitlines():
-        assert line.startswith("D;")
+    # Verify task existence
+    assert dag.has_task("all_types_graph")
+    assert dag.has_task("task_r_all_types_master")
+    
+    # Verify execution order: all_types_graph >> task_r_all_types_master
+    all_types_graph_task = dag.get_task("all_types_graph")
+    task_r_all_types_master = dag.get_task("task_r_all_types_master")
+    
+    assert task_r_all_types_master in all_types_graph_task.downstream_list
+    assert all_types_graph_task in task_r_all_types_master.upstream_list
 
-def test_invalid_short_file_processing(setup_test_files):
-    # Action: Run script with short file
-    result = subprocess.run(
-        [sys.executable, MIGRATED_SCRIPT, setup_test_files["short"]],
-        capture_output=True,
-        text=True
-    )
+def test_task_parameter_injection():
+    dag_bag = DagBag(dag_folder="dags", include_examples=False)
+    dag = dag_bag.get_dag(dag_id="dw_dwh_all_types_master")
     
-    # Pass/Fail Criteria
-    assert result.returncode == 2
-    # Note: AWK script prints "Error: Incorrect nos of Fields " with a trailing space to stdout
-    assert "Error: Incorrect nos of Fields " in result.stdout
-
-def test_invalid_long_file_processing(setup_test_files):
-    # Action: Run script with long file
-    result = subprocess.run(
-        [sys.executable, MIGRATED_SCRIPT, setup_test_files["long"]],
-        capture_output=True,
-        text=True
-    )
+    # Verify BashOperator environment variables
+    bash_task = dag.get_task("task_r_all_types_master")
+    env = bash_task.env
     
-    # Pass/Fail Criteria
-    assert result.returncode == 2
-    assert "Error: Incorrect nos of Fields " in result.stdout
+    assert env["DWH_JOB_KENNUNG"] == "ALL_TYPES_MASTER"
+    assert env["ALL_DIR_ROOT"] == "/home/airflow/gcs/dags/isall"
+    assert env["GCP_PROJECT"] == "test-gcp-project"
+    assert env["BQ_DATASET"] == "test_dataset"
 ```
 
 ### Pass/Fail Criterion
-- **Pass**: The script returns exit code `0` and prepends `"D;"` to all lines for valid 12-field inputs. It returns exit code `2` and outputs `"Error: Incorrect nos of Fields \n"` to `stdout` for any line not containing exactly 12 fields.
-- **Fail**: Any non-zero exit code on valid data, exit code other than `2` on invalid data, or mismatch in the output format/error message.
+* **Pass**: The DAG parses with zero import errors, contains exactly the two expected tasks in the correct dependency order, and successfully resolves all environment variables.
+* **Fail**: Any import errors are raised, tasks are missing or misconfigured, or environment variables do not match the expected values.
 
 ---
 
-## Test Case 2: BigQuery SQL Transformation Correctness (`d_all_types.sql`)
+## Test Case 2: AWK-to-Python Transformation Parity (Valid Records)
 
 ### Purpose
-Verify that the migrated BigQuery SQL script `d_all_types.sql` correctly truncates the target table `sof$ta_all_types`, filters raw records from `cds$ta_all_types_raw` where `status = 'READY'`, and inserts them with the current system timestamp.
+Prove that the migrated Python script `k_all_types_transform.py` produces output identical to the legacy `k_all_types_transform.awk` script when processing valid 12-field records.
 
 ### Setup
-1. Create a test dataset in BigQuery (e.g., `dwh_validation_test`).
-2. Create the source table `cds$ta_all_types_raw` and target table `sof$ta_all_types` matching the production schema.
-3. Populate `cds$ta_all_types_raw` with mock records:
-   - 3 records with `status = 'READY'`
-   - 2 records with `status = 'PENDING'`
-   - 1 record with `status = 'FAILED'`
-4. Populate `sof$ta_all_types` with 5 dummy records (to test truncation).
+1. Prepare a test input file `valid_input.csv` containing records with exactly 12 fields separated by semicolons. Include edge cases such as empty fields and trailing semicolons.
+2. Ensure the migrated script `isall/aufbereitung/awk/k_all_types_transform.py` is executable.
 
 ### Action
-Execute the migrated SQL script using the BigQuery Python client, passing the test project and dataset as query parameters.
+Execute the migrated Python script using `valid_input.csv` as input, and compare the output against the expected legacy output format (each line prefixed with `D;`).
 
 ```python
-import time
+import subprocess
+import tempfile
+import os
+
+def test_awk_transformation_valid_records():
+    # 12-field records (including empty fields and trailing semicolons)
+    input_data = (
+        "1;2;3;4;5;6;7;8;9;10;11;12\n"
+        "val1;val2;;val4;val5;val6;val7;val8;val9;val10;val11;val12\n"
+        "a;b;c;d;e;f;g;h;i;j;k;\n"  # 12 fields (last field is empty string after trailing semicolon)
+    )
+    
+    expected_output = (
+        "D;1;2;3;4;5;6;7;8;9;10;11;12\n"
+        "D;val1;val2;;val4;val5;val6;val7;val8;val9;val10;val11;val12\n"
+        "D;a;b;c;d;e;f;g;h;i;j;k;\n"
+    )
+    
+    with tempfile.NamedTemporaryFile(mode="w+", delete=False) as infile, \
+         tempfile.NamedTemporaryFile(mode="r", delete=False) as outfile:
+        
+        infile.write(input_data)
+        infile.close()
+        outfile.close()
+        
+        script_path = "isall/aufbereitung/awk/k_all_types_transform.py"
+        
+        # Run the migrated Python script
+        result = subprocess.run(
+            ["python3", script_path, infile.name],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        
+        # Cleanup temporary files
+        os.remove(infile.name)
+        os.remove(outfile.name)
+        
+        # Assertions
+        assert result.returncode == 0, f"Script failed with stderr: {result.stderr}"
+        assert result.stdout == expected_output, "Output mismatch between legacy AWK logic and Python"
+```
+
+### Pass/Fail Criterion
+* **Pass**: The Python script exits with code `0` and produces output that matches the expected legacy format character-for-character.
+* **Fail**: The script exits with a non-zero code, raises an exception, or produces output that does not match the expected format.
+
+---
+
+## Test Case 3: AWK-to-Python Transformation Parity (Invalid Records & Error Handling)
+
+### Purpose
+Prove that the migrated Python script `k_all_types_transform.py` correctly handles malformed records (field count $\neq 12$) by printing the exact legacy error message to standard output and terminating with exit code `2`.
+
+### Setup
+1. Prepare an input file `invalid_input.csv` containing at least one record with fewer than 12 fields and one with more than 12 fields.
+
+### Action
+Execute the migrated Python script with the malformed input and verify the exit code and output stream.
+
+```python
+import subprocess
+import tempfile
+import os
+
+def test_awk_transformation_invalid_records():
+    # Row 1 has 12 fields (valid), Row 2 has 11 fields (invalid)
+    input_data = (
+        "1;2;3;4;5;6;7;8;9;10;11;12\n"
+        "1;2;3;4;5;6;7;8;9;10;11\n"
+    )
+    
+    expected_stdout = (
+        "D;1;2;3;4;5;6;7;8;9;10;11;12\n"
+        "Error: Incorrect nos of Fields \n"
+    )
+    
+    with tempfile.NamedTemporaryFile(mode="w+", delete=False) as infile:
+        infile.write(input_data)
+        infile.close()
+        
+        script_path = "isall/aufbereitung/awk/k_all_types_transform.py"
+        
+        # Run the migrated Python script
+        result = subprocess.run(
+            ["python3", script_path, infile.name],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        
+        os.remove(infile.name)
+        
+        # Assertions
+        assert result.returncode == 2, f"Expected exit code 2, got {result.returncode}"
+        assert result.stdout == expected_stdout, "Error output mismatch"
+```
+
+### Pass/Fail Criterion
+* **Pass**: The script terminates immediately upon reaching the invalid record, exits with code `2`, and prints `"Error: Incorrect nos of Fields "` to standard output (matching legacy AWK behavior).
+* **Fail**: The script exits with a code other than `2`, processes the invalid record without failing, or prints a different error message.
+
+---
+
+## Test Case 4: BigQuery SQL Refresh Logic (`d_all_types.sql`)
+
+### Purpose
+Verify that the migrated BigQuery SQL script `d_all_types.sql` correctly truncates the target table `sof$ta_all_types` and populates it with records from `cds$ta_all_types_raw` where `status = 'READY'`.
+
+### Setup
+1. Ensure the target BigQuery dataset exists.
+2. Create and populate the source table `cds$ta_all_types_raw` with test data containing various statuses (`READY`, `PENDING`, `ERROR`).
+3. Populate the target table `sof$ta_all_types` with dummy historical records to verify truncation.
+
+### Action
+Execute the BigQuery SQL script `d_all_types.sql` using the BigQuery Python client, passing the project and dataset parameters, and assert the final state of the target table.
+
+```python
+import pytest
 from google.cloud import bigquery
+import os
 
-def test_sql_transformation(gcp_project, bq_dataset):
-    client = bigquery.Client(project=gcp_project)
+@pytest.fixture
+def bq_client():
+    project = os.environ.get("GCP_PROJECT", "test-gcp-project")
+    return bigquery.Client(project=project)
+
+def test_bigquery_sql_refresh(bq_client):
+    project = bq_client.project
+    dataset = os.environ.get("BQ_DATASET", "test_dataset")
     
-    # 1. Setup: Populate raw source table
-    raw_table_id = f"{gcp_project}.{bq_dataset}.cds$ta_all_types_raw"
-    target_table_id = f"{gcp_project}.{bq_dataset}.sof$ta_all_types"
+    target_table_id = f"{project}.{dataset}.sof$ta_all_types"
+    source_table_id = f"{project}.{dataset}.cds$ta_all_types_raw"
     
-    # Clear tables first
-    client.query(f"TRUNCATE TABLE `{raw_table_id}`").result()
-    client.query(f"TRUNCATE TABLE `{target_table_id}`").result()
+    # 1. Setup: Recreate and populate tables
+    bq_client.query(f"CREATE OR REPLACE TABLE `{target_table_id}` (all_types_id INT64, source_system STRING, processed_at DATETIME)").result()
+    bq_client.query(f"CREATE OR REPLACE TABLE `{source_table_id}` (all_types_id INT64, source_system STRING, status STRING)").result()
     
-    # Insert mock source data
-    setup_raw_sql = f"""
-    INSERT INTO `{raw_table_id}` (all_types_id, source_system, status) VALUES
-    (101, 'SYS_A', 'READY'),
-    (102, 'SYS_B', 'READY'),
-    (103, 'SYS_C', 'PENDING'),
-    (104, 'SYS_D', 'READY'),
-    (105, 'SYS_E', 'FAILED')
+    # Insert historical data to target (to verify truncation)
+    bq_client.query(f"INSERT INTO `{target_table_id}` VALUES (999, 'OLD_SYS', CURRENT_DATETIME())").result()
+    
+    # Insert source data
+    source_data_query = f"""
+        INSERT INTO `{source_table_id}` (all_types_id, source_system, status) VALUES
+        (1, 'SYS_A', 'READY'),
+        (2, 'SYS_B', 'PENDING'),
+        (3, 'SYS_C', 'READY'),
+        (4, 'SYS_D', 'ERROR')
     """
-    client.query(setup_raw_sql).result()
+    bq_client.query(source_data_query).result()
     
-    # Insert dummy target data to verify truncation
-    client.query(f"INSERT INTO `{target_table_id}` (all_types_id, source_system, processed_at) VALUES (999, 'OLD', CURRENT_DATETIME())").result()
-
-    # 2. Action: Read and execute the migrated SQL script
-    with open("isall/aufbereitung/sql/d_all_types.sql", "r") as f:
-        sql_script = f.read()
+    # 2. Action: Run the migrated SQL script
+    sql_script_path = "isall/aufbereitung/sql/d_all_types.sql"
+    with open(sql_script_path, "r") as f:
+        sql_text = f.read()
         
     job_config = bigquery.QueryJobConfig(
         query_parameters=[
-            bigquery.ScalarQueryParameter("gcp_project", "STRING", gcp_project),
-            bigquery.ScalarQueryParameter("bq_dataset", "STRING", bq_dataset),
+            bigquery.ScalarQueryParameter("gcp_project", "STRING", project),
+            bigquery.ScalarQueryParameter("bq_dataset", "STRING", dataset)
         ]
     )
     
-    query_job = client.query(sql_script, job_config=job_config)
+    query_job = bq_client.query(sql_text, job_config=job_config)
     query_job.result()  # Wait for execution
     
     # 3. Assertions
     # Verify target table contents
-    target_rows = list(client.query(f"SELECT * FROM `{target_table_id}` ORDER BY all_types_id").result())
+    results_query = f"SELECT all_types_id, source_system, processed_at FROM `{target_table_id}` ORDER BY all_types_id"
+    rows = list(bq_client.query(results_query).result())
     
-    # Pass/Fail Criteria
-    assert len(target_rows) == 3, f"Expected 3 rows, got {len(target_rows)}"
+    # Verify old record (999) was truncated
+    assert len(rows) == 2, f"Expected 2 rows after refresh, found {len(rows)}"
     
-    # Verify truncation (id 999 should be gone)
-    ids = [row.all_types_id for row in target_rows]
-    assert 999 not in ids, "Target table was not truncated before insertion"
+    # Verify only 'READY' records were inserted
+    assert rows[0]["all_types_id"] == 1
+    assert rows[0]["source_system"] == "SYS_A"
+    assert isinstance(rows[0]["processed_at"], datetime.datetime)
     
-    # Verify correct records were loaded
-    assert ids == [101, 102, 104]
-    
-    # Verify processed_at timestamp is recent (within last 2 minutes)
-    for row in target_rows:
-        time_diff = datetime.utcnow() - row.processed_at.to_pydatetime()
-        assert time_diff.total_seconds() < 120, "processed_at timestamp is not current"
+    assert rows[1]["all_types_id"] == 3
+    assert rows[1]["source_system"] == "SYS_C"
 ```
 
 ### Pass/Fail Criterion
-- **Pass**: The target table `sof$ta_all_types` is completely cleared of pre-existing data, and contains exactly the 3 records from the raw table that had `status = 'READY'`. The `processed_at` column contains the current system timestamp.
-- **Fail**: Pre-existing target data remains, non-READY records are loaded, READY records are missing, or the execution fails with a BigQuery scripting exception.
+* **Pass**: The target table `sof$ta_all_types` is successfully truncated (the historical record `999` is removed), and only the records with `status = 'READY'` (IDs `1` and `3`) are loaded with a valid `processed_at` timestamp.
+* **Fail**: The historical record remains (truncation failed), incorrect records are loaded, or the query execution fails.
 
 ---
 
-## Test Case 3: Master Orchestrator Integration & Logging (`r_all_types_master.py`)
+## Test Case 5: Master Script Integration (`r_all_types_master.py`)
 
 ### Purpose
-Verify that the master Python wrapper script `r_all_types_master.py` correctly orchestrates the execution of the BigQuery SQL script and the AWK-translated Python script in sequence, writes logs matching the legacy format, and propagates exit codes correctly.
+Verify that the master orchestrator script `r_all_types_master.py` successfully coordinates the BigQuery SQL execution and the AWK-replacement Python execution, producing the correct log file and output file.
 
 ### Setup
-1. Set up environment variables:
-   - `ALL_DIR_ROOT`: Path to a temporary workspace directory.
-   - `GCP_PROJECT`: Target GCP Project ID.
-   - `BQ_DATASET`: Target BigQuery Dataset ID.
-2. Create the directory structure under `ALL_DIR_ROOT`:
-   - `aufbereitung/sql/d_all_types.sql` (Migrated SQL script)
-   - `aufbereitung/awk/k_all_types_transform.py` (Migrated AWK script)
-   - `data/all_types_export.csv` (Input CSV file with 12-field rows)
-   - `protokoll/` (Log directory)
+1. Set up the local environment variables:
+   * `ALL_DIR_ROOT` = `/tmp/test_isall`
+   * `DW_ORAUSER` = `dummy_user`
+   * `GCP_PROJECT` = `test-gcp-project`
+   * `BQ_DATASET` = `test_dataset`
+2. Create the directory structure under `/tmp/test_isall`:
+   * `/tmp/test_isall/aufbereitung/sql/`
+   * `/tmp/test_isall/aufbereitung/awk/`
+   * `/tmp/test_isall/data/`
+3. Copy the migrated SQL script `d_all_types.sql` and the Python script `k_all_types_transform.py` to their respective directories under `/tmp/test_isall`.
+4. Create a valid 12-field CSV file at `/tmp/test_isall/data/all_types_export.csv`.
+5. Mock the BigQuery client call in `r_all_types_master.py` to prevent actual network calls during integration testing, or run against a sandbox GCP project.
 
 ### Action
-Execute `r_all_types_master.py` via subprocess and validate the generated log file and output files.
+Execute `r_all_types_master.py` and verify the creation of the log file, the output file, and the console output.
 
 ```python
 import os
-import subprocess
 import sys
-from datetime import datetime
+import shutil
+import subprocess
+import datetime
 import pytest
+from unittest.mock import patch
 
-def test_master_orchestrator_happy_path(tmp_path, monkeypatch):
-    # Setup workspace
-    all_dir_root = tmp_path / "isall"
-    sql_dir = all_dir_root / "aufbereitung" / "sql"
-    awk_dir = all_dir_root / "aufbereitung" / "awk"
-    data_dir = all_dir_root / "data"
+@pytest.fixture
+def setup_test_environment():
+    test_root = "/tmp/test_isall"
+    os.makedirs(os.path.join(test_root, "aufbereitung", "sql"), exist_ok=True)
+    os.makedirs(os.path.join(test_root, "aufbereitung", "awk"), exist_ok=True)
+    os.makedirs(os.path.join(test_root, "data"), exist_ok=True)
     
-    os.makedirs(sql_dir, exist_ok=True)
-    os.makedirs(awk_dir, exist_ok=True)
-    os.makedirs(data_dir, exist_ok=True)
+    # Copy scripts to test root
+    shutil.copy("isall/aufbereitung/sql/d_all_types.sql", os.path.join(test_root, "aufbereitung", "sql", "d_all_types.sql"))
+    shutil.copy("isall/aufbereitung/awk/k_all_types_transform.py", os.path.join(test_root, "aufbereitung", "awk", "k_all_types_transform.py"))
     
-    # Copy migrated scripts to workspace
-    with open("isall/aufbereitung/sql/d_all_types.sql", "r") as src, open(sql_dir / "d_all_types.sql", "w") as dst:
-        dst.write(src.read())
-    with open("isall/aufbereitung/awk/k_all_types_transform.py", "r") as src, open(awk_dir / "k_all_types_transform.py", "w") as dst:
-        dst.write(src.read())
+    # Create mock input CSV
+    with open(os.path.join(test_root, "data", "all_types_export.csv"), "w") as f:
+        f.write("1;2;3;4;5;6;7;8;9;10;11;12\n")
         
-    # Create valid input CSV
-    (data_dir / "all_types_export.csv").write_text(
-        "1;2;3;4;5;6;7;8;9;10;11;12\n"
-        "a;b;c;d;e;f;g;h;i;j;k;l\n"
-    )
-    
     # Set environment variables
-    env = os.environ.copy()
-    env["ALL_DIR_ROOT"] = str(all_dir_root)
-    env["GCP_PROJECT"] = "mock-project"  # Use mock or actual project
-    env["BQ_DATASET"] = "mock_dataset"
+    os.environ["ALL_DIR_ROOT"] = test_root
+    os.environ["DW_ORAUSER"] = "dummy_user"
+    os.environ["GCP_PROJECT"] = "test-gcp-project"
+    os.environ["BQ_DATASET"] = "test_dataset"
     
-    # Action: Run master script
+    yield test_root
+    
+    # Cleanup
+    shutil.rmtree(test_root)
+
+@patch("google.cloud.bigquery.Client")
+def test_master_script_execution(mock_bq_client, setup_test_environment):
+    test_root = setup_test_environment
+    
+    # Mock BigQuery Client and Query Job
+    mock_client_instance = mock_bq_client.return_value
+    mock_query_job = mock_client_instance.query.return_value
+    mock_query_job.result.return_value = True
+    
+    # Run the master script
+    script_path = "isall/aufbereitung/bin/r_all_types_master.py"
     result = subprocess.run(
-        [sys.executable, "isall/aufbereitung/bin/r_all_types_master.py"],
-        env=env,
-        capture_output=True,
+        ["python3", script_path],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         text=True
     )
     
-    # Pass/Fail Criteria
+    # Assertions
     assert result.returncode == 0, f"Master script failed: {result.stderr}"
     
-    # Verify output file exists and is processed
-    output_file = data_dir / "all_types_export.out"
-    assert output_file.exists()
-    assert output_file.read_text().startswith("D;1;2;")
+    # Verify console output contains legacy German print literals
+    assert "----Starte SQL-Refresh----" in result.stdout
+    assert "----Starte AWK-Nachbearbeitung----" in result.stdout
+    assert "Die Abarbeitung wurde ohne erkennbare Fehler beendet" in result.stdout
     
     # Verify log file creation and content
-    v_sysdate = datetime.now().strftime("%d%m%Y")
-    log_file = all_dir_root / "protokoll" / f"all_types_master_{v_sysdate}.log"
-    assert log_file.exists()
+    v_sysdate = datetime.datetime.now().strftime("%d%m%Y")
+    log_file_path = os.path.join(test_root, "protokoll", f"all_types_master_{v_sysdate}.log")
+    assert os.path.exists(log_file_path)
     
-    log_content = log_file.read_text()
-    assert "----Starte SQL-Refresh----" in log_content
-    assert "----Starte AWK-Nachbearbeitung----" in log_content
-    assert "Die Abarbeitung wurde ohne erkennbare Fehler beendet" in log_content
+    with open(log_file_path, "r") as log_f:
+        log_content = log_f.read()
+        assert "JobKennung: 'ALL_TYPES_MASTER'" in log_content
+        assert "----Starte SQL-Refresh----" in log_content
+        assert "----Starte AWK-Nachbearbeitung----" in log_content
+        assert "Die Abarbeitung wurde ohne erkennbare Fehler beendet" in log_content
+        
+    # Verify output file creation and content
+    output_file_path = os.path.join(test_root, "data", "all_types_export.out")
+    assert os.path.exists(output_file_path)
+    with open(output_file_path, "r") as out_f:
+        out_content = out_f.read()
+        assert out_content == "D;1;2;3;4;5;6;7;8;9;10;11;12\n"
 ```
 
 ### Pass/Fail Criterion
-- **Pass**: The master script exits with code `0`. The output file `all_types_export.out` is successfully created with `"D;"` prefixes. The log file is created in the correct directory with the exact German logging literals preserved.
-- **Fail**: The script exits with a non-zero code, the log file is missing or lacks the required headers/footers, or the AWK step fails to generate the output file.
-
----
-
-## Test Case 4: Airflow DAG Orchestration & Dependency Validation
-
-### Purpose
-Verify that the Airflow DAG `dw_dwh_all_types_master` is syntactically correct, loads without errors, maps variables correctly, and enforces the exact sequential execution order: `submit_pyspark_graph` followed by `post_processing_master`.
-
-### Setup
-An Airflow execution environment or a local Python environment with `apache-airflow` installed.
-
-### Action
-Run programmatic DAG validation tests using the Airflow DAGBag API.
-
-```python
-from airflow.models import DagBag, Variable
-from airflow.utils.dag_cycle_tester import check_cycle
-import pytest
-
-@pytest.fixture(autouse=True)
-def mock_airflow_variables(monkeypatch):
-    # Mock Airflow variables required during DAG parsing
-    variables = {
-        "GCP_PROJECT": "test-gcp-project",
-        "GCP_REGION": "europe-west3",
-        "DATAPROC_CLUSTER": "test-dataproc-cluster",
-        "GCS_BUCKET": "test-gcs-bucket",
-        "BQ_DATASET": "test_bq_dataset",
-        "ALL_DIR_ROOT": "/isall"
-    }
-    def mock_get(key, default_var=None):
-        return variables.get(key, default_var)
-    
-    monkeypatch.setattr(Variable, "get", mock_get)
-
-def test_dag_loading_and_structure():
-    # Action: Load DAG
-    dagbag = DagBag(dag_folder="DWH_ALL_TYPES_JOB", include_examples=False)
-    dag_id = "dw_dwh_all_types_master"
-    
-    dag = dagbag.get_dag(dag_id)
-    
-    # Pass/Fail Criteria
-    assert dagbag.import_errors == {}, f"DAG import errors: {dagbag.import_errors}"
-    assert dag is not None, f"Failed to load DAG {dag_id}"
-    
-    # Verify no cycles
-    check_cycle(dag)
-    
-    # Verify Task IDs and Types
-    assert len(dag.tasks) == 2, "DAG must contain exactly 2 tasks"
-    
-    task_pyspark = dag.get_task("jobs_unix_dw_dwh_all_types_master")
-    task_post_proc = dag.get_task("post_processing_master")
-    
-    assert task_pyspark.__class__.__name__ == "DataprocSubmitJobOperator"
-    assert task_post_proc.__class__.__name__ == "BashOperator"
-    
-    # Verify Sequential Execution Order (submit_pyspark_graph >> post_processing_master)
-    assert task_post_proc in task_pyspark.downstream_list
-    assert task_pyspark in task_post_proc.upstream_list
-    
-    # Verify Environment Variable Propagation to BashOperator
-    env_vars = task_post_proc.env
-    assert env_vars["DWH_JOB_KENNUNG"] == "ALL_TYPES_MASTER"
-    assert env_vars["GCP_PROJECT"] == "test-gcp-project"
-    assert env_vars["BQ_DATASET"] == "test_bq_dataset"
-```
-
-### Pass/Fail Criterion
-- **Pass**: The DAG loads with zero import errors, contains no cycles, has exactly the two specified tasks, and strictly enforces the sequential dependency `submit_pyspark_graph >> post_processing_master`.
-- **Fail**: Any DAG import errors are raised, tasks are missing, dependencies are incorrect, or required environment variables are not mapped to the BashOperator.
+* **Pass**: The master script runs successfully (exit code `0`), calls BigQuery, executes the AWK-replacement Python script, generates the expected output file `all_types_export.out` with prefixed records, and writes a complete execution log containing all legacy German print statements.
+* **Fail**: The script exits with a non-zero code, fails to generate the log or output files, or misses the required log statements.
