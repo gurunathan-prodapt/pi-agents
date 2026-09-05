@@ -1,0 +1,1 @@
+ERROR: migration notes skipped for Shared Files — dw_source/isdwh/allgemein/is/util/sql — build phase failed or produced no output.
